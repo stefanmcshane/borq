@@ -1,0 +1,30 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+	"github.com/stefanmcshane/borq/foundations/logger"
+)
+
+// NewRootCommand builds the borq CLI root command.
+func NewRootCommand(ctx context.Context, log logger.Logger) *cobra.Command {
+	command := &cobra.Command{
+		Use:           "borq",
+		Short:         "Borq manages opinionated Kubernetes-backed deployment clouds.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	command.AddCommand(newManagementCommand(ctx, log))
+
+	command.SetOut(os.Stdout)
+	command.SetErr(os.Stderr)
+	command.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
+	})
+
+	return command
+}
