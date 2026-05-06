@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,6 @@ import (
 const (
 	testRegistryContainer = "borq-kind-registry-it"
 	testRegistryImage     = "registry:2"
-	testVaultImageSource  = "hashicorp/vault:1.21.2"
-	testWhoamiImageSource = "traefik/whoami:latest"
 )
 
 func TestExecuteIntegration(t *testing.T) {
@@ -43,8 +42,7 @@ func TestExecuteIntegration(t *testing.T) {
 
 	clusterName := "borq-management-it"
 	registryHost := fmt.Sprintf("localhost:%d", registryPort)
-	whoamiRegistryImage := fmt.Sprintf("%s/traefik-whoami:latest", registryHost)
-	vaultRegistryImage := fmt.Sprintf("%s/hashicorp-vault:1.21.2", registryHost)
+	borqRegistryImage := fmt.Sprintf("%s/borq-it:latest", registryHost)
 
 	kindConfigPath, err := writeIntegrationKindConfig(hostPort, registryPort)
 	if err != nil {
@@ -73,11 +71,8 @@ func TestExecuteIntegration(t *testing.T) {
 	if err := configureRegistryForKindNodes(testContext, clusterName, registryPort); err != nil {
 		t.Fatalf("configure registry for kind nodes: %v", err)
 	}
-	if err := mirrorImageToLocalRegistry(testContext, testWhoamiImageSource, whoamiRegistryImage); err != nil {
-		t.Fatalf("mirror whoami image: %v", err)
-	}
-	if err := mirrorImageToLocalRegistry(testContext, testVaultImageSource, vaultRegistryImage); err != nil {
-		t.Fatalf("mirror vault image: %v", err)
+	if err := buildAndPushBorqImage(testContext, borqRegistryImage); err != nil {
+		t.Fatalf("build borq image: %v", err)
 	}
 
 	request := DefaultRequest()
@@ -85,15 +80,14 @@ func TestExecuteIntegration(t *testing.T) {
 	request.HostPort = hostPort
 	request.ProbeURL = ""
 	request.Timeout = 5 * time.Minute
-	request.WhoamiImage = whoamiRegistryImage
-	request.VaultImage = vaultRegistryImage
+	request.BorqImage = borqRegistryImage
 
 	is := is.New(t)
 
 	result, err := Execute(testContext, logger.Logger{}, request)
 	is.NoErr(err)
 	is.Equal(result.ClusterName, clusterName)
-	is.Equal(result.ProbeURL, "http://localhost:"+int32String(hostPort))
+	is.Equal(result.ProbeURL, probeURLForHostPort(hostPort))
 
 	result, err = Execute(testContext, logger.Logger{}, request)
 	is.NoErr(err)
@@ -196,6 +190,94 @@ func mirrorImageToLocalRegistry(ctx context.Context, sourceImage string, targetI
 	return nil
 }
 
+func buildAndPushBorqImage(ctx context.Context, image string) error {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		return fmt.Errorf("resolve repository root: %w", err)
+	}
+
+	targetOS := "linux"
+	targetArch := runtime.GOARCH
+	targetPlatform := fmt.Sprintf("%s/%s", targetOS, targetArch)
+
+	buildContextPath, err := prepareBorqDockerContext(ctx, repositoryRoot, targetOS, targetArch)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(buildContextPath)
+
+	_, err = runCommand(
+		ctx,
+		"docker",
+		"build",
+		"--build-arg", "TARGETOS="+targetOS,
+		"--build-arg", "TARGETARCH="+targetArch,
+		"--build-arg", "TARGETPLATFORM="+targetPlatform,
+		"-t", image,
+		buildContextPath,
+	)
+	if err != nil {
+		return fmt.Errorf("docker build borq image: %w", err)
+	}
+	if _, err := runCommand(ctx, "docker", "push", image); err != nil {
+		return fmt.Errorf("docker push borq image: %w", err)
+	}
+
+	return nil
+}
+
+func prepareBorqDockerContext(ctx context.Context, repositoryRoot string, targetOS string, targetArch string) (string, error) {
+	buildContextPath, err := os.MkdirTemp("", "borq-image-build-*")
+	if err != nil {
+		return "", fmt.Errorf("create borq image build context: %w", err)
+	}
+
+	dockerfileContents := fmt.Sprintf(`FROM scratch
+
+COPY %s/%s/borq /usr/local/bin/borq
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/borq"]
+CMD ["management", "server"]
+`, targetOS, targetArch)
+	if err := os.WriteFile(filepath.Join(buildContextPath, "Dockerfile"), []byte(dockerfileContents), 0o644); err != nil {
+		_ = os.RemoveAll(buildContextPath)
+		return "", fmt.Errorf("write dockerfile: %w", err)
+	}
+
+	platformPath := filepath.Join(buildContextPath, targetOS, targetArch)
+	if err := os.MkdirAll(platformPath, 0o755); err != nil {
+		_ = os.RemoveAll(buildContextPath)
+		return "", fmt.Errorf("create platform directory: %w", err)
+	}
+
+	outputPath := filepath.Join(platformPath, "borq")
+	command := exec.CommandContext(ctx, "go", "build", "-o", outputPath, "./cmd/borq")
+	command.Dir = repositoryRoot
+	command.Env = append(
+		os.Environ(),
+		"CGO_ENABLED=0",
+		fmt.Sprintf("GOOS=%s", targetOS),
+		fmt.Sprintf("GOARCH=%s", targetArch),
+	)
+
+	var stderr strings.Builder
+	command.Stderr = &stderr
+
+	if err := command.Run(); err != nil {
+		_ = os.RemoveAll(buildContextPath)
+		stderrText := strings.TrimSpace(stderr.String())
+		if stderrText == "" {
+			return "", fmt.Errorf("build borq binary: %w", err)
+		}
+
+		return "", fmt.Errorf("build borq binary: %w: %s", err, stderrText)
+	}
+
+	return buildContextPath, nil
+}
+
 func writeIntegrationKindConfig(hostPort int32, registryPort int32) (string, error) {
 	temporaryFile, err := os.CreateTemp("", "borq-kind-integration-*.yaml")
 	if err != nil {
@@ -216,7 +298,7 @@ nodes:
     hostPort: %d
     listenAddress: "0.0.0.0"
     protocol: TCP
-`, nodePort, hostPort)
+`, defaultNodePort, hostPort)
 
 	if _, err := temporaryFile.WriteString(config); err != nil {
 		return "", err

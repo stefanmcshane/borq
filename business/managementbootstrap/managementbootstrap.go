@@ -15,23 +15,27 @@ import (
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	kindconfig "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/yaml"
 )
 
 const (
-	defaultClusterName = "borq-management"
-	defaultNamespace   = "borq-system"
-	defaultHostPort    = 7833
-	defaultNodePort    = 31833
-	defaultTimeout     = 10 * time.Minute
-	defaultFieldOwner  = "borq-management-bootstrap"
-	whoamiImage        = "traefik/whoami:latest"
-	vaultImage         = "hashicorp/vault:1.21.2"
-	whoamiName         = "whoami"
-	vaultName          = "vault"
-	vaultRootToken     = "borq-root"
-	vaultInternalName  = "vault-internal"
+	defaultClusterName          = "borq-management"
+	defaultNamespace            = "borq-system"
+	defaultHostPort             = 7833
+	defaultNodePort             = 31833
+	defaultTimeout              = 10 * time.Minute
+	defaultFieldOwner           = "borq-management-bootstrap"
+	defaultKindStorageClassName = "retain"
+	defaultStorageSize          = "5Gi"
+	borqImage                   = "ghcr.io/stefanmcshane/borq"
+	borqName                    = "borq"
+	borqDataClaimName           = "borq-data"
+	borqDataVolumeName          = "data"
+	borqDataMountPath           = "/var/lib/borq"
+	borqContainerPort           = 8080
+	borqHealthPath              = "/healthz"
 )
 
 // Request describes a management bootstrap run.
@@ -42,8 +46,8 @@ type Request struct {
 	NodePort    int32
 	ProbeURL    string
 	Timeout     time.Duration
-	WhoamiImage string
-	VaultImage  string
+	BorqImage   string
+	StorageSize string
 }
 
 // Result captures the outcome of a management bootstrap run.
@@ -62,8 +66,8 @@ func DefaultRequest() Request {
 		NodePort:    defaultNodePort,
 		ProbeURL:    probeURLForHostPort(defaultHostPort),
 		Timeout:     defaultTimeout,
-		WhoamiImage: whoamiImage,
-		VaultImage:  vaultImage,
+		BorqImage:   borqImage,
+		StorageSize: defaultStorageSize,
 	}
 }
 
@@ -109,26 +113,33 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 		return Result{}, err
 	}
 
-	if err := connection.Namespaces().Apply(timeoutContext, managementNamespace(request.Namespace)); err != nil {
+	if err := connection.StorageClasses().EnsureRetainDefault(timeoutContext, defaultKindStorageClassName); err != nil {
 		return Result{}, err
 	}
-
 	bootstrapApps := bootstrapApps(request)
-	for _, managedApp := range bootstrapApps {
-		if err := managedApp.Apply(timeoutContext, connection); err != nil {
-			return Result{}, err
-		}
-	}
-
-	for _, managedApp := range bootstrapApps {
-		if err := managedApp.WaitReady(timeoutContext, connection); err != nil {
-			return Result{}, err
-		}
+	if err := runBootstrapPhases(timeoutContext, bootstrapApps, bootstrapPhaseRunner{
+		applyNamespace: func(ctx context.Context) error {
+			return connection.Namespaces().Apply(ctx, managementNamespace(request.Namespace))
+		},
+		applyPersistentVolumeClaim: func(ctx context.Context) error {
+			return connection.PersistentVolumeClaims().Apply(ctx, borqDataClaim(request))
+		},
+		applyApp: func(ctx context.Context, managedApp app.App) error {
+			return managedApp.Apply(ctx, connection)
+		},
+		waitForPersistentVolumeClaimBound: func(ctx context.Context) error {
+			return connection.PersistentVolumeClaims().WaitForBound(ctx, request.Namespace, borqDataClaimName)
+		},
+		waitForAppReady: func(ctx context.Context, managedApp app.App) error {
+			return managedApp.WaitReady(ctx, connection)
+		},
+	}); err != nil {
+		return Result{}, err
 	}
 
 	log.Info("management apps are ready")
 	log.Info("probing management liveness endpoint", logger.String("probe_url", request.ProbeURL))
-	if err := probeWhoami(timeoutContext, request.ProbeURL); err != nil {
+	if err := probeBorq(timeoutContext, request.ProbeURL); err != nil {
 		return Result{}, err
 	}
 
@@ -140,6 +151,41 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	)
 
 	return Result{ClusterName: request.ClusterName, ProbeURL: request.ProbeURL, Reused: clusterExists}, nil
+}
+
+type bootstrapPhaseRunner struct {
+	applyNamespace                    func(context.Context) error
+	applyPersistentVolumeClaim        func(context.Context) error
+	applyApp                          func(context.Context, app.App) error
+	waitForPersistentVolumeClaimBound func(context.Context) error
+	waitForAppReady                   func(context.Context, app.App) error
+}
+
+func runBootstrapPhases(ctx context.Context, bootstrapApps []app.App, runner bootstrapPhaseRunner) error {
+	if err := runner.applyNamespace(ctx); err != nil {
+		return err
+	}
+	if err := runner.applyPersistentVolumeClaim(ctx); err != nil {
+		return err
+	}
+	for _, managedApp := range bootstrapApps {
+		if err := runner.applyApp(ctx, managedApp); err != nil {
+			return err
+		}
+	}
+
+	// The default local-path storage class binds on first consumer, so the
+	// workload has to exist before waiting for the claim to bind.
+	if err := runner.waitForPersistentVolumeClaimBound(ctx); err != nil {
+		return err
+	}
+	for _, managedApp := range bootstrapApps {
+		if err := runner.waitForAppReady(ctx, managedApp); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (request Request) withDefaults() Request {
@@ -161,11 +207,11 @@ func (request Request) withDefaults() Request {
 	if request.Timeout == 0 {
 		request.Timeout = defaultTimeout
 	}
-	if request.WhoamiImage == "" {
-		request.WhoamiImage = whoamiImage
+	if request.BorqImage == "" {
+		request.BorqImage = borqImage
 	}
-	if request.VaultImage == "" {
-		request.VaultImage = vaultImage
+	if request.StorageSize == "" {
+		request.StorageSize = defaultStorageSize
 	}
 
 	return request
@@ -190,11 +236,14 @@ func (request Request) validate() error {
 	if strings.TrimSpace(request.ProbeURL) == "" {
 		return errors.New("probe URL must not be empty")
 	}
-	if strings.TrimSpace(request.WhoamiImage) == "" {
-		return errors.New("whoami image must not be empty")
+	if strings.TrimSpace(request.BorqImage) == "" {
+		return errors.New("borq image must not be empty")
 	}
-	if strings.TrimSpace(request.VaultImage) == "" {
-		return errors.New("vault image must not be empty")
+	if strings.TrimSpace(request.StorageSize) == "" {
+		return errors.New("storage size must not be empty")
+	}
+	if _, err := resource.ParseQuantity(request.StorageSize); err != nil {
+		return fmt.Errorf("parse storage size: %w", err)
 	}
 
 	return nil
@@ -245,7 +294,7 @@ func createKindCluster(ctx context.Context, request Request) error {
 }
 
 func probeURLForHostPort(hostPort int32) string {
-	return fmt.Sprintf("http://localhost:%d", hostPort)
+	return fmt.Sprintf("http://localhost:%d%s", hostPort, borqHealthPath)
 }
 
 func kindContextName(clusterName string) string {
@@ -288,8 +337,7 @@ func RenderDefaultKindConfigYAML(hostPortValue int32, nodePortValue int32) ([]by
 
 func bootstrapApps(request Request) []app.App {
 	return []app.App{
-		whoamiApp(request),
-		vaultApp(request),
+		borqApp(request),
 	}
 }
 
@@ -303,105 +351,60 @@ func managementNamespace(namespace string) kubernetes.Namespace {
 	}
 }
 
-func whoamiApp(request Request) app.App {
-	labels := appLabels(whoamiName, "liveness")
-	selector := selectorLabels(whoamiName)
+func borqDataClaim(request Request) kubernetes.PersistentVolumeClaim {
+	return kubernetes.PersistentVolumeClaim{
+		Name:             borqDataClaimName,
+		Namespace:        request.Namespace,
+		Labels:           appLabels(borqName, "server-storage"),
+		AccessModes:      []kubernetes.PersistentVolumeAccessMode{kubernetes.ReadWriteOnceVolume},
+		RequestedStorage: request.StorageSize,
+	}
+}
+
+func borqApp(request Request) app.App {
+	labels := appLabels(borqName, "server")
+	selector := selectorLabels(borqName)
 
 	return app.App{
-		Name:      whoamiName,
+		Name:      borqName,
 		Namespace: request.Namespace,
 		Labels:    labels,
 		Services: []kubernetes.Service{
 			{
-				Name:      whoamiName,
+				Name:      borqName,
 				Namespace: request.Namespace,
 				Labels:    labels,
 				Selector:  selector,
 				Type:      kubernetes.NodePortService,
 				Ports: []kubernetes.ServicePort{
-					{Name: "http", Port: request.HostPort, TargetPort: 80, NodePort: request.NodePort},
+					{Name: "http", Port: 80, TargetPort: borqContainerPort, NodePort: request.NodePort},
 				},
 			},
 		},
 		Workload: app.Workload{
 			Kind: app.DeploymentWorkload,
 			Deployment: kubernetes.Deployment{
-				Name:      whoamiName,
+				Name:      borqName,
 				Namespace: request.Namespace,
 				Labels:    labels,
 				Selector:  selector,
 				Replicas:  1,
 				Pods: kubernetes.PodTemplate{
-					Labels: podLabels(labels, whoamiName),
-					Containers: []kubernetes.Container{
-						{
-							Name:  whoamiName,
-							Image: request.WhoamiImage,
-							Ports: []kubernetes.ContainerPort{{Name: "http", Port: 80}},
-						},
+					Labels: podLabels(labels, borqName),
+					Volumes: []kubernetes.Volume{
+						{Name: borqDataVolumeName, PersistentVolumeClaimName: borqDataClaimName},
 					},
-				},
-			},
-		},
-	}
-}
-
-func vaultApp(request Request) app.App {
-	labels := appLabels(vaultName, "secrets")
-	selector := selectorLabels(vaultName)
-
-	return app.App{
-		Name:      vaultName,
-		Namespace: request.Namespace,
-		Labels:    labels,
-		Services: []kubernetes.Service{
-			{
-				Name:      vaultName,
-				Namespace: request.Namespace,
-				Labels:    labels,
-				Selector:  selector,
-				Type:      kubernetes.ClusterIPService,
-				Ports:     []kubernetes.ServicePort{{Name: "http", Port: 8200, TargetPort: 8200}},
-			},
-			{
-				Name:                     vaultInternalName,
-				Namespace:                request.Namespace,
-				Labels:                   labels,
-				Selector:                 selector,
-				Type:                     kubernetes.ClusterIPService,
-				Headless:                 true,
-				PublishNotReadyAddresses: true,
-				Ports:                    []kubernetes.ServicePort{{Name: "http", Port: 8200, TargetPort: 8200}},
-			},
-		},
-		Workload: app.Workload{
-			Kind: app.StatefulSetWorkload,
-			StatefulSet: kubernetes.StatefulSet{
-				Name:        vaultName,
-				Namespace:   request.Namespace,
-				Labels:      labels,
-				Selector:    selector,
-				Replicas:    1,
-				ServiceName: vaultInternalName,
-				Pods: kubernetes.PodTemplate{
-					Labels: podLabels(labels, vaultName),
 					Containers: []kubernetes.Container{
 						{
-							Name:    vaultName,
-							Image:   request.VaultImage,
-							Command: []string{"vault"},
-							Args: []string{
-								"server",
-								"-dev",
-								"-dev-root-token-id=" + vaultRootToken,
-								"-dev-listen-address=0.0.0.0:8200",
-							},
-							Env:   []kubernetes.EnvVar{{Name: "VAULT_ADDR", Value: "http://127.0.0.1:8200"}},
-							Ports: []kubernetes.ContainerPort{{Name: "http", Port: 8200}},
+							Name:         borqName,
+							Image:        request.BorqImage,
+							Args:         []string{"management", "server", "--port=8080", "--data-dir=" + borqDataMountPath},
+							Ports:        []kubernetes.ContainerPort{{Name: "http", Port: borqContainerPort}},
+							VolumeMounts: []kubernetes.VolumeMount{{Name: borqDataVolumeName, MountPath: borqDataMountPath}},
 							ReadinessProbe: kubernetes.HttpProbe{
-								Path:                "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204",
-								Port:                8200,
-								InitialDelaySeconds: 2,
+								Path:                borqHealthPath,
+								Port:                borqContainerPort,
+								InitialDelaySeconds: 1,
 								PeriodSeconds:       2,
 							},
 						},
@@ -433,8 +436,12 @@ func podLabels(labels map[string]string, name string) map[string]string {
 	return clonedLabels
 }
 
-func probeWhoami(ctx context.Context, probeURL string) error {
+func probeBorq(ctx context.Context, probeURL string) error {
 	client := &http.Client{Timeout: 2 * time.Second}
+	return probeBorqWithClient(ctx, client, probeURL)
+}
+
+func probeBorqWithClient(ctx context.Context, client *http.Client, probeURL string) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 

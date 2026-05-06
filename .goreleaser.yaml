@@ -1,0 +1,50 @@
+version: 2
+
+project_name: borq
+
+release:
+  disable: true
+
+changelog:
+  disable: true
+
+builds:
+  - id: borq
+    main: ./cmd/borq
+    binary: borq
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: borq
+    ids:
+      - borq
+    formats:
+      - tar.gz
+
+dockers_v2:
+  - id: borq
+    ids:
+      - borq
+    dockerfile: zarf/Dockerfile
+    images:
+      - ghcr.io/stefanmcshane/borq
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.source: "{{ .GitURL }}"
+      org.opencontainers.image.version: "{{ .Version }}"

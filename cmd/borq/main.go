@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/stefanmcshane/borq/api/cli"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	log, err := logger.NewCliLogger()
 	if err != nil {

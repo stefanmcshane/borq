@@ -22,6 +22,7 @@ func NewRootCommand(ctx context.Context, log logger.Logger) *cobra.Command {
 
 	command.SetOut(os.Stdout)
 	command.SetErr(os.Stderr)
+	command.SetContext(ctx)
 	command.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
 	})

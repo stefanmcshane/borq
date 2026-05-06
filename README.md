@@ -74,6 +74,7 @@ commands:
 `borq deploy` - builds and deploys images
 `borq secret XXX` - crud for secret management
 `borq management bootstrap` - bootstrap the management cluster
+`borq management server` - operates the server which runs in the management cluster
 `borq management XXX` - operations updating the management cluster
 
 

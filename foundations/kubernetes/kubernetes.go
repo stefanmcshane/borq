@@ -12,7 +12,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -22,7 +24,11 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-const defaultFieldOwner = "borq"
+const (
+	defaultFieldOwner                 = "borq"
+	defaultStorageClassAnnotation     = "storageclass.kubernetes.io/is-default-class"
+	defaultStorageClassBetaAnnotation = "storageclass.beta.kubernetes.io/is-default-class"
+)
 
 // Option configures a Kubernetes connection.
 type Option func(*connectionConfig) error
@@ -79,6 +85,24 @@ type ServicePort struct {
 	NodePort   int32
 }
 
+// PersistentVolumeClaim is a borq-local persistent volume claim manifest.
+type PersistentVolumeClaim struct {
+	Name             string
+	Namespace        string
+	Labels           map[string]string
+	AccessModes      []PersistentVolumeAccessMode
+	StorageClassName string
+	RequestedStorage string
+}
+
+// PersistentVolumeAccessMode is a borq-local access mode.
+type PersistentVolumeAccessMode string
+
+const (
+	// ReadWriteOnceVolume can be mounted read-write by a single node.
+	ReadWriteOnceVolume PersistentVolumeAccessMode = "ReadWriteOnce"
+)
+
 // Deployment is a borq-local deployment manifest.
 type Deployment struct {
 	Name      string
@@ -111,6 +135,7 @@ type Pod struct {
 // PodTemplate is a borq-local pod template.
 type PodTemplate struct {
 	Labels     map[string]string
+	Volumes    []Volume
 	Containers []Container
 }
 
@@ -122,6 +147,7 @@ type Container struct {
 	Args           []string
 	Env            []EnvVar
 	Ports          []ContainerPort
+	VolumeMounts   []VolumeMount
 	ReadinessProbe HttpProbe
 }
 
@@ -135,6 +161,18 @@ type EnvVar struct {
 type ContainerPort struct {
 	Name string
 	Port int32
+}
+
+// Volume is a borq-local pod volume.
+type Volume struct {
+	Name                      string
+	PersistentVolumeClaimName string
+}
+
+// VolumeMount is a borq-local container volume mount.
+type VolumeMount struct {
+	Name      string
+	MountPath string
 }
 
 // HttpProbe is a borq-local HTTP probe.
@@ -192,6 +230,24 @@ func (connection Connection) Services() ServiceManager {
 // Deployments returns a manager for Deployment resources.
 func (connection Connection) Deployments() DeploymentManager {
 	return DeploymentManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// PersistentVolumeClaims returns a manager for PersistentVolumeClaim resources.
+func (connection Connection) PersistentVolumeClaims() PersistentVolumeClaimManager {
+	return PersistentVolumeClaimManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// StorageClasses returns a manager for StorageClass resources.
+func (connection Connection) StorageClasses() StorageClassManager {
+	return StorageClassManager{
 		clientset:  connection.clientset,
 		fieldOwner: connection.fieldOwner,
 		logger:     connection.logger,
@@ -320,6 +376,181 @@ type DeploymentManager struct {
 	clientset  kubernetes.Interface
 	fieldOwner string
 	logger     logger.Logger
+}
+
+// PersistentVolumeClaimManager manages PersistentVolumeClaim resources.
+type PersistentVolumeClaimManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// StorageClassManager manages StorageClass resources.
+type StorageClassManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// Get fetches a PersistentVolumeClaim by namespace and name.
+func (manager PersistentVolumeClaimManager) Get(ctx context.Context, namespace string, name string) (PersistentVolumeClaim, error) {
+	persistentVolumeClaim, err := manager.clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return PersistentVolumeClaim{}, fmt.Errorf("get persistent volume claim %q: %w", name, err)
+	}
+
+	return persistentVolumeClaimFromResource(*persistentVolumeClaim), nil
+}
+
+// List fetches PersistentVolumeClaims in a namespace matching the label selector.
+func (manager PersistentVolumeClaimManager) List(ctx context.Context, namespace string, selector string) ([]PersistentVolumeClaim, error) {
+	persistentVolumeClaimList, err := manager.clientset.CoreV1().PersistentVolumeClaims(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list persistent volume claims in namespace %q: %w", namespace, err)
+	}
+
+	persistentVolumeClaims := make([]PersistentVolumeClaim, 0, len(persistentVolumeClaimList.Items))
+	for _, persistentVolumeClaim := range persistentVolumeClaimList.Items {
+		persistentVolumeClaims = append(persistentVolumeClaims, persistentVolumeClaimFromResource(persistentVolumeClaim))
+	}
+
+	return persistentVolumeClaims, nil
+}
+
+// Apply creates or updates a PersistentVolumeClaim with server-side apply.
+func (manager PersistentVolumeClaimManager) Apply(ctx context.Context, persistentVolumeClaim PersistentVolumeClaim) error {
+	manager.logger.Info("applying persistent volume claim", logger.String("namespace", persistentVolumeClaim.Namespace), logger.String("name", persistentVolumeClaim.Name))
+
+	resource := persistentVolumeClaimToResource(persistentVolumeClaim)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal persistent volume claim %q for apply: %w", persistentVolumeClaim.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.CoreV1().PersistentVolumeClaims(persistentVolumeClaim.Namespace).Patch(
+		ctx,
+		persistentVolumeClaim.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply persistent volume claim %q: %w", persistentVolumeClaim.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a PersistentVolumeClaim if it exists.
+func (manager PersistentVolumeClaimManager) Delete(ctx context.Context, namespace string, name string) error {
+	manager.logger.Info("deleting persistent volume claim", logger.String("namespace", namespace), logger.String("name", name))
+
+	err := manager.clientset.CoreV1().PersistentVolumeClaims(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete persistent volume claim %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// Diff compares a desired PersistentVolumeClaim against the live cluster object.
+func (manager PersistentVolumeClaimManager) Diff(ctx context.Context, persistentVolumeClaim PersistentVolumeClaim) (DiffResult, error) {
+	live, err := manager.Get(ctx, persistentVolumeClaim.Namespace, persistentVolumeClaim.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(persistentVolumeClaim)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, persistentVolumeClaim)
+}
+
+// WaitForBound waits until the PersistentVolumeClaim is bound.
+func (manager PersistentVolumeClaimManager) WaitForBound(ctx context.Context, namespace string, name string) error {
+	manager.logger.Info("waiting for persistent volume claim binding", logger.String("namespace", namespace), logger.String("name", name))
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		persistentVolumeClaim, err := manager.clientset.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("persistent volume claim %q was never created before timeout: %w", name, ctx.Err())
+				case <-ticker.C:
+					continue
+				}
+			}
+			return fmt.Errorf("get persistent volume claim %q: %w", name, err)
+		}
+
+		if persistentVolumeClaim.Status.Phase == corev1.ClaimBound {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("persistent volume claim %q did not bind before timeout: %w", name, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// EnsureRetainDefault ensures the named StorageClass is the cluster default and uses Retain reclaim policy.
+func (manager StorageClassManager) EnsureRetainDefault(ctx context.Context, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("storage class name must not be empty")
+	}
+
+	storageClassList, err := manager.clientset.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list storage classes: %w", err)
+	}
+
+	sourceStorageClass, err := sourceStorageClassForRetain(storageClassList.Items, name)
+	if err != nil {
+		return err
+	}
+
+	manager.logger.Info(
+		"ensuring retain storage class is default",
+		logger.String("name", name),
+		logger.String("source_name", sourceStorageClass.Name),
+	)
+
+	if err := manager.applyStorageClass(ctx, retainStorageClass(sourceStorageClass, name)); err != nil {
+		return err
+	}
+
+	for _, storageClass := range storageClassList.Items {
+		if storageClass.Name == name || !isDefaultStorageClass(storageClass) {
+			continue
+		}
+
+		if err := manager.setDefaultStorageClass(ctx, storageClass.Name, false); err != nil {
+			return err
+		}
+	}
+
+	if sourceStorageClass.Name == name && !isDefaultStorageClass(sourceStorageClass) {
+		if err := manager.setDefaultStorageClass(ctx, name, true); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // Get fetches a Deployment by namespace and name.
@@ -873,6 +1104,49 @@ func serviceFromResource(service corev1.Service) Service {
 	}
 }
 
+func persistentVolumeClaimToResource(persistentVolumeClaim PersistentVolumeClaim) corev1.PersistentVolumeClaim {
+	storageRequirements := corev1.VolumeResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceStorage: resource.MustParse(persistentVolumeClaim.RequestedStorage),
+		},
+	}
+
+	resourceClaim := corev1.PersistentVolumeClaim{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{Name: persistentVolumeClaim.Name, Namespace: persistentVolumeClaim.Namespace, Labels: cloneLabels(persistentVolumeClaim.Labels)},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: accessModesToResource(persistentVolumeClaim.AccessModes),
+			Resources:   storageRequirements,
+		},
+	}
+	if persistentVolumeClaim.StorageClassName != "" {
+		resourceClaim.Spec.StorageClassName = &persistentVolumeClaim.StorageClassName
+	}
+
+	return resourceClaim
+}
+
+func persistentVolumeClaimFromResource(persistentVolumeClaim corev1.PersistentVolumeClaim) PersistentVolumeClaim {
+	requestedStorage := ""
+	if storage, ok := persistentVolumeClaim.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+		requestedStorage = storage.String()
+	}
+
+	storageClassName := ""
+	if persistentVolumeClaim.Spec.StorageClassName != nil {
+		storageClassName = *persistentVolumeClaim.Spec.StorageClassName
+	}
+
+	return PersistentVolumeClaim{
+		Name:             persistentVolumeClaim.Name,
+		Namespace:        persistentVolumeClaim.Namespace,
+		Labels:           cloneLabels(persistentVolumeClaim.Labels),
+		AccessModes:      accessModesFromResource(persistentVolumeClaim.Spec.AccessModes),
+		StorageClassName: storageClassName,
+		RequestedStorage: requestedStorage,
+	}
+}
+
 func deploymentToResource(deployment Deployment) appsv1.Deployment {
 	replicas := deployment.Replicas
 	return appsv1.Deployment{
@@ -962,21 +1236,31 @@ func podTemplateFromResource(template corev1.PodTemplateSpec) PodTemplate {
 }
 
 func podTemplateFromPodSpec(spec corev1.PodSpec, labels map[string]string) PodTemplate {
+	volumes := make([]Volume, 0, len(spec.Volumes))
+	for _, volume := range spec.Volumes {
+		volumes = append(volumes, volumeFromResource(volume))
+	}
+
 	containers := make([]Container, 0, len(spec.Containers))
 	for _, container := range spec.Containers {
 		containers = append(containers, containerFromResource(container))
 	}
 
-	return PodTemplate{Labels: cloneLabels(labels), Containers: containers}
+	return PodTemplate{Labels: cloneLabels(labels), Volumes: volumes, Containers: containers}
 }
 
 func podSpecToResource(template PodTemplate) corev1.PodSpec {
+	volumes := make([]corev1.Volume, 0, len(template.Volumes))
+	for _, volume := range template.Volumes {
+		volumes = append(volumes, volumeToResource(volume))
+	}
+
 	containers := make([]corev1.Container, 0, len(template.Containers))
 	for _, container := range template.Containers {
 		containers = append(containers, containerToResource(container))
 	}
 
-	return corev1.PodSpec{Containers: containers}
+	return corev1.PodSpec{Volumes: volumes, Containers: containers}
 }
 
 func containerToResource(container Container) corev1.Container {
@@ -990,13 +1274,19 @@ func containerToResource(container Container) corev1.Container {
 		resourceEnv = append(resourceEnv, corev1.EnvVar{Name: envVar.Name, Value: envVar.Value})
 	}
 
+	resourceVolumeMounts := make([]corev1.VolumeMount, 0, len(container.VolumeMounts))
+	for _, volumeMount := range container.VolumeMounts {
+		resourceVolumeMounts = append(resourceVolumeMounts, corev1.VolumeMount{Name: volumeMount.Name, MountPath: volumeMount.MountPath})
+	}
+
 	resource := corev1.Container{
-		Name:    container.Name,
-		Image:   container.Image,
-		Command: cloneStrings(container.Command),
-		Args:    cloneStrings(container.Args),
-		Env:     resourceEnv,
-		Ports:   resourcePorts,
+		Name:         container.Name,
+		Image:        container.Image,
+		Command:      cloneStrings(container.Command),
+		Args:         cloneStrings(container.Args),
+		Env:          resourceEnv,
+		Ports:        resourcePorts,
+		VolumeMounts: resourceVolumeMounts,
 	}
 	if container.ReadinessProbe.Path != "" {
 		resource.ReadinessProbe = &corev1.Probe{
@@ -1025,6 +1315,11 @@ func containerFromResource(container corev1.Container) Container {
 		envVars = append(envVars, EnvVar{Name: envVar.Name, Value: envVar.Value})
 	}
 
+	volumeMounts := make([]VolumeMount, 0, len(container.VolumeMounts))
+	for _, volumeMount := range container.VolumeMounts {
+		volumeMounts = append(volumeMounts, VolumeMount{Name: volumeMount.Name, MountPath: volumeMount.MountPath})
+	}
+
 	probe := HttpProbe{}
 	if container.ReadinessProbe != nil && container.ReadinessProbe.HTTPGet != nil {
 		probe = HttpProbe{
@@ -1042,8 +1337,169 @@ func containerFromResource(container corev1.Container) Container {
 		Args:           cloneStrings(container.Args),
 		Env:            envVars,
 		Ports:          ports,
+		VolumeMounts:   volumeMounts,
 		ReadinessProbe: probe,
 	}
+}
+
+func volumeToResource(volume Volume) corev1.Volume {
+	return corev1.Volume{
+		Name: volume.Name,
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: volume.PersistentVolumeClaimName,
+			},
+		},
+	}
+}
+
+func volumeFromResource(volume corev1.Volume) Volume {
+	persistentVolumeClaimName := ""
+	if volume.PersistentVolumeClaim != nil {
+		persistentVolumeClaimName = volume.PersistentVolumeClaim.ClaimName
+	}
+
+	return Volume{
+		Name:                      volume.Name,
+		PersistentVolumeClaimName: persistentVolumeClaimName,
+	}
+}
+
+func accessModesToResource(accessModes []PersistentVolumeAccessMode) []corev1.PersistentVolumeAccessMode {
+	resourceAccessModes := make([]corev1.PersistentVolumeAccessMode, 0, len(accessModes))
+	for _, accessMode := range accessModes {
+		resourceAccessModes = append(resourceAccessModes, corev1.PersistentVolumeAccessMode(accessMode))
+	}
+
+	return resourceAccessModes
+}
+
+func accessModesFromResource(accessModes []corev1.PersistentVolumeAccessMode) []PersistentVolumeAccessMode {
+	resourceAccessModes := make([]PersistentVolumeAccessMode, 0, len(accessModes))
+	for _, accessMode := range accessModes {
+		resourceAccessModes = append(resourceAccessModes, PersistentVolumeAccessMode(accessMode))
+	}
+
+	return resourceAccessModes
+}
+
+func (manager StorageClassManager) applyStorageClass(ctx context.Context, storageClass storagev1.StorageClass) error {
+	data, err := json.Marshal(storageClass)
+	if err != nil {
+		return fmt.Errorf("marshal storage class %q for apply: %w", storageClass.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.StorageV1().StorageClasses().Patch(
+		ctx,
+		storageClass.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if apierrors.IsNotFound(err) {
+		_, err = manager.clientset.StorageV1().StorageClasses().Create(ctx, &storageClass, metav1.CreateOptions{})
+	}
+	if err != nil {
+		return fmt.Errorf("apply storage class %q: %w", storageClass.Name, err)
+	}
+
+	return nil
+}
+
+func (manager StorageClassManager) setDefaultStorageClass(ctx context.Context, name string, isDefault bool) error {
+	manager.logger.Info(
+		"setting storage class default state",
+		logger.String("name", name),
+		logger.Bool("is_default", isDefault),
+	)
+
+	liveStorageClass, err := manager.clientset.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get storage class %q: %w", name, err)
+	}
+
+	liveStorageClass.Annotations = mergeStorageClassAnnotations(liveStorageClass.Annotations, storageClassDefaultAnnotations(isDefault))
+	_, err = manager.clientset.StorageV1().StorageClasses().Update(ctx, liveStorageClass, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("update storage class %q: %w", name, err)
+	}
+
+	return nil
+}
+
+func sourceStorageClassForRetain(storageClasses []storagev1.StorageClass, retainName string) (storagev1.StorageClass, error) {
+	for _, storageClass := range storageClasses {
+		if storageClass.Name == retainName {
+			return storageClass, nil
+		}
+	}
+
+	for _, storageClass := range storageClasses {
+		if isDefaultStorageClass(storageClass) {
+			return storageClass, nil
+		}
+	}
+
+	return storagev1.StorageClass{}, errors.New("no storage class is available to build retain")
+}
+
+func retainStorageClass(sourceStorageClass storagev1.StorageClass, name string) storagev1.StorageClass {
+	retainReclaimPolicy := corev1.PersistentVolumeReclaimRetain
+	retainStorageClass := storagev1.StorageClass{
+		TypeMeta: metav1.TypeMeta{APIVersion: "storage.k8s.io/v1", Kind: "StorageClass"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Annotations: storageClassDefaultAnnotations(true),
+		},
+		Provisioner:   sourceStorageClass.Provisioner,
+		Parameters:    cloneLabels(sourceStorageClass.Parameters),
+		ReclaimPolicy: &retainReclaimPolicy,
+		MountOptions:  cloneStrings(sourceStorageClass.MountOptions),
+	}
+
+	if sourceStorageClass.AllowVolumeExpansion != nil {
+		allowVolumeExpansion := *sourceStorageClass.AllowVolumeExpansion
+		retainStorageClass.AllowVolumeExpansion = &allowVolumeExpansion
+	}
+	if sourceStorageClass.VolumeBindingMode != nil {
+		volumeBindingMode := *sourceStorageClass.VolumeBindingMode
+		retainStorageClass.VolumeBindingMode = &volumeBindingMode
+	}
+	if len(sourceStorageClass.AllowedTopologies) > 0 {
+		retainStorageClass.AllowedTopologies = append([]corev1.TopologySelectorTerm(nil), sourceStorageClass.AllowedTopologies...)
+	}
+
+	return retainStorageClass
+}
+
+func isDefaultStorageClass(storageClass storagev1.StorageClass) bool {
+	return storageClass.Annotations[defaultStorageClassAnnotation] == "true" || storageClass.Annotations[defaultStorageClassBetaAnnotation] == "true"
+}
+
+func storageClassDefaultAnnotations(isDefault bool) map[string]string {
+	defaultValue := "false"
+	if isDefault {
+		defaultValue = "true"
+	}
+
+	return map[string]string{
+		defaultStorageClassAnnotation:     defaultValue,
+		defaultStorageClassBetaAnnotation: defaultValue,
+	}
+}
+
+func mergeStorageClassAnnotations(current map[string]string, desired map[string]string) map[string]string {
+	merged := cloneLabels(current)
+	if merged == nil {
+		merged = map[string]string{}
+	}
+
+	for key, value := range desired {
+		merged[key] = value
+	}
+
+	return merged
 }
 
 func int32ToIntOrString(value int32) intstr.IntOrString {

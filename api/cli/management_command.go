@@ -18,6 +18,7 @@ func newManagementCommand(ctx context.Context, log logger.Logger) *cobra.Command
 	}
 
 	command.AddCommand(newManagementBootstrapCommand(ctx, log))
+	command.AddCommand(newManagementServerCommand(log))
 
 	return command
 }
@@ -29,7 +30,12 @@ func newManagementBootstrapCommand(ctx context.Context, log logger.Logger) *cobr
 		Use:   "bootstrap",
 		Short: "Bootstrap the local borq management cluster.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result, err := managementbootstrap.Execute(ctx, log, request)
+			executionContext := cmd.Context()
+			if executionContext == nil {
+				executionContext = ctx
+			}
+
+			result, err := managementbootstrap.Execute(executionContext, log, request)
 			if err != nil {
 				return err
 			}
