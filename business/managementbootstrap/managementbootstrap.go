@@ -29,7 +29,7 @@ const (
 	defaultFieldOwner           = "borq-management-bootstrap"
 	defaultKindStorageClassName = "retain"
 	defaultStorageSize          = "5Gi"
-	borqImage                   = "ghcr.io/stefanmcshane/borq"
+	borqImage                   = "ghcr.io/stefanmcshane/borq:latest"
 	borqName                    = "borq"
 	borqDataClaimName           = "borq-data"
 	borqDataVolumeName          = "data"

@@ -11,7 +11,15 @@ test-integration: ## Run the management bootstrap integration test.
 
 release-dev: ## Build and publish a dev image tag to GHCR with GoReleaser.
 	@tag="$$(date -u +%Y%m%d-%H%S).dev"; \
-	trap 'git tag -d "$$tag" >/dev/null 2>&1 || true' EXIT; \
+	builder="borq-release-$$(date -u +%Y%m%d%H%M%S)"; \
+	previous_builder="$$(docker buildx ls 2>/dev/null | awk '/\*/ {print $$1; exit}')"; \
+	trap 'status=$$?; \
+		if [ -n "$$previous_builder" ]; then docker buildx use "$$previous_builder" >/dev/null 2>&1 || true; fi; \
+		docker buildx rm -f "$$builder" >/dev/null 2>&1 || true; \
+		git tag -d "$$tag" >/dev/null 2>&1 || true; \
+		exit $$status' EXIT; \
 	echo "releasing $$tag to ghcr.io/stefanmcshane/borq"; \
+	docker buildx create --name "$$builder" --driver docker-container --use >/dev/null; \
+	docker buildx inspect "$$builder" --bootstrap >/dev/null; \
 	git tag "$$tag"; \
-	goreleaser release --clean --config .goreleaser.yaml
+	goreleaser release --clean --config .goreleaser.yaml --skip=validate
