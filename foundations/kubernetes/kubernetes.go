@@ -12,6 +12,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -95,6 +96,59 @@ type PersistentVolumeClaim struct {
 	RequestedStorage string
 }
 
+// ConfigMap is a borq-local config map manifest.
+type ConfigMap struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	Data      map[string]string
+}
+
+// ServiceAccount is a borq-local service account manifest.
+type ServiceAccount struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+}
+
+// Role is a borq-local role manifest.
+type Role struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	Rules     []PolicyRule
+}
+
+// PolicyRule is a borq-local RBAC policy rule.
+type PolicyRule struct {
+	APIGroups []string
+	Resources []string
+	Verbs     []string
+}
+
+// RoleBinding is a borq-local role binding manifest.
+type RoleBinding struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	RoleRef   RoleRef
+	Subjects  []Subject
+}
+
+// RoleRef is a borq-local RBAC role reference.
+type RoleRef struct {
+	APIGroup string
+	Kind     string
+	Name     string
+}
+
+// Subject is a borq-local RBAC subject.
+type Subject struct {
+	Kind      string
+	Name      string
+	Namespace string
+}
+
 // PersistentVolumeAccessMode is a borq-local access mode.
 type PersistentVolumeAccessMode string
 
@@ -134,9 +188,10 @@ type Pod struct {
 
 // PodTemplate is a borq-local pod template.
 type PodTemplate struct {
-	Labels     map[string]string
-	Volumes    []Volume
-	Containers []Container
+	Labels             map[string]string
+	ServiceAccountName string
+	Volumes            []Volume
+	Containers         []Container
 }
 
 // Container is a borq-local container manifest.
@@ -221,6 +276,42 @@ func NewConnection(config Config, log logger.Logger, options ...Option) (Connect
 // Services returns a manager for Service resources.
 func (connection Connection) Services() ServiceManager {
 	return ServiceManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// ConfigMaps returns a manager for ConfigMap resources.
+func (connection Connection) ConfigMaps() ConfigMapManager {
+	return ConfigMapManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// ServiceAccounts returns a manager for ServiceAccount resources.
+func (connection Connection) ServiceAccounts() ServiceAccountManager {
+	return ServiceAccountManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// Roles returns a manager for Role resources.
+func (connection Connection) Roles() RoleManager {
+	return RoleManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// RoleBindings returns a manager for RoleBinding resources.
+func (connection Connection) RoleBindings() RoleBindingManager {
+	return RoleBindingManager{
 		clientset:  connection.clientset,
 		fieldOwner: connection.fieldOwner,
 		logger:     connection.logger,
@@ -378,6 +469,34 @@ type DeploymentManager struct {
 	logger     logger.Logger
 }
 
+// ConfigMapManager manages ConfigMap resources.
+type ConfigMapManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// ServiceAccountManager manages ServiceAccount resources.
+type ServiceAccountManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// RoleManager manages Role resources.
+type RoleManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// RoleBindingManager manages RoleBinding resources.
+type RoleBindingManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
 // PersistentVolumeClaimManager manages PersistentVolumeClaim resources.
 type PersistentVolumeClaimManager struct {
 	clientset  kubernetes.Interface
@@ -390,6 +509,266 @@ type StorageClassManager struct {
 	clientset  kubernetes.Interface
 	fieldOwner string
 	logger     logger.Logger
+}
+
+// Get fetches a ConfigMap by namespace and name.
+func (manager ConfigMapManager) Get(ctx context.Context, namespace string, name string) (ConfigMap, error) {
+	configMap, err := manager.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return ConfigMap{}, fmt.Errorf("get config map %q: %w", name, err)
+	}
+
+	return configMapFromResource(*configMap), nil
+}
+
+// List fetches ConfigMaps in a namespace matching the label selector.
+func (manager ConfigMapManager) List(ctx context.Context, namespace string, selector string) ([]ConfigMap, error) {
+	configMapList, err := manager.clientset.CoreV1().ConfigMaps(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list config maps in namespace %q: %w", namespace, err)
+	}
+
+	configMaps := make([]ConfigMap, 0, len(configMapList.Items))
+	for _, configMap := range configMapList.Items {
+		configMaps = append(configMaps, configMapFromResource(configMap))
+	}
+
+	return configMaps, nil
+}
+
+// Apply creates or updates a ConfigMap with server-side apply.
+func (manager ConfigMapManager) Apply(ctx context.Context, configMap ConfigMap) error {
+	manager.logger.Info("applying config map", logger.String("namespace", configMap.Namespace), logger.String("name", configMap.Name))
+
+	resource := configMapToResource(configMap)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal config map %q for apply: %w", configMap.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.CoreV1().ConfigMaps(configMap.Namespace).Patch(
+		ctx,
+		configMap.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply config map %q: %w", configMap.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a ConfigMap if it exists.
+func (manager ConfigMapManager) Delete(ctx context.Context, namespace string, name string) error {
+	manager.logger.Info("deleting config map", logger.String("namespace", namespace), logger.String("name", name))
+
+	err := manager.clientset.CoreV1().ConfigMaps(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete config map %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// Get fetches a ServiceAccount by namespace and name.
+func (manager ServiceAccountManager) Get(ctx context.Context, namespace string, name string) (ServiceAccount, error) {
+	serviceAccount, err := manager.clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return ServiceAccount{}, fmt.Errorf("get service account %q: %w", name, err)
+	}
+
+	return serviceAccountFromResource(*serviceAccount), nil
+}
+
+// List fetches ServiceAccounts in a namespace matching the label selector.
+func (manager ServiceAccountManager) List(ctx context.Context, namespace string, selector string) ([]ServiceAccount, error) {
+	serviceAccountList, err := manager.clientset.CoreV1().ServiceAccounts(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list service accounts in namespace %q: %w", namespace, err)
+	}
+
+	serviceAccounts := make([]ServiceAccount, 0, len(serviceAccountList.Items))
+	for _, serviceAccount := range serviceAccountList.Items {
+		serviceAccounts = append(serviceAccounts, serviceAccountFromResource(serviceAccount))
+	}
+
+	return serviceAccounts, nil
+}
+
+// Apply creates or updates a ServiceAccount with server-side apply.
+func (manager ServiceAccountManager) Apply(ctx context.Context, serviceAccount ServiceAccount) error {
+	manager.logger.Info("applying service account", logger.String("namespace", serviceAccount.Namespace), logger.String("name", serviceAccount.Name))
+
+	resource := serviceAccountToResource(serviceAccount)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal service account %q for apply: %w", serviceAccount.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.CoreV1().ServiceAccounts(serviceAccount.Namespace).Patch(
+		ctx,
+		serviceAccount.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply service account %q: %w", serviceAccount.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a ServiceAccount if it exists.
+func (manager ServiceAccountManager) Delete(ctx context.Context, namespace string, name string) error {
+	manager.logger.Info("deleting service account", logger.String("namespace", namespace), logger.String("name", name))
+
+	err := manager.clientset.CoreV1().ServiceAccounts(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete service account %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// Get fetches a Role by namespace and name.
+func (manager RoleManager) Get(ctx context.Context, namespace string, name string) (Role, error) {
+	role, err := manager.clientset.RbacV1().Roles(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return Role{}, fmt.Errorf("get role %q: %w", name, err)
+	}
+
+	return roleFromResource(*role), nil
+}
+
+// List fetches Roles in a namespace matching the label selector.
+func (manager RoleManager) List(ctx context.Context, namespace string, selector string) ([]Role, error) {
+	roleList, err := manager.clientset.RbacV1().Roles(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list roles in namespace %q: %w", namespace, err)
+	}
+
+	roles := make([]Role, 0, len(roleList.Items))
+	for _, role := range roleList.Items {
+		roles = append(roles, roleFromResource(role))
+	}
+
+	return roles, nil
+}
+
+// Apply creates or updates a Role with server-side apply.
+func (manager RoleManager) Apply(ctx context.Context, role Role) error {
+	manager.logger.Info("applying role", logger.String("namespace", role.Namespace), logger.String("name", role.Name))
+
+	resource := roleToResource(role)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal role %q for apply: %w", role.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.RbacV1().Roles(role.Namespace).Patch(
+		ctx,
+		role.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply role %q: %w", role.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a Role if it exists.
+func (manager RoleManager) Delete(ctx context.Context, namespace string, name string) error {
+	manager.logger.Info("deleting role", logger.String("namespace", namespace), logger.String("name", name))
+
+	err := manager.clientset.RbacV1().Roles(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete role %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// Get fetches a RoleBinding by namespace and name.
+func (manager RoleBindingManager) Get(ctx context.Context, namespace string, name string) (RoleBinding, error) {
+	roleBinding, err := manager.clientset.RbacV1().RoleBindings(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return RoleBinding{}, fmt.Errorf("get role binding %q: %w", name, err)
+	}
+
+	return roleBindingFromResource(*roleBinding), nil
+}
+
+// List fetches RoleBindings in a namespace matching the label selector.
+func (manager RoleBindingManager) List(ctx context.Context, namespace string, selector string) ([]RoleBinding, error) {
+	roleBindingList, err := manager.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list role bindings in namespace %q: %w", namespace, err)
+	}
+
+	roleBindings := make([]RoleBinding, 0, len(roleBindingList.Items))
+	for _, roleBinding := range roleBindingList.Items {
+		roleBindings = append(roleBindings, roleBindingFromResource(roleBinding))
+	}
+
+	return roleBindings, nil
+}
+
+// Apply creates or updates a RoleBinding with server-side apply.
+func (manager RoleBindingManager) Apply(ctx context.Context, roleBinding RoleBinding) error {
+	manager.logger.Info("applying role binding", logger.String("namespace", roleBinding.Namespace), logger.String("name", roleBinding.Name))
+
+	resource := roleBindingToResource(roleBinding)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal role binding %q for apply: %w", roleBinding.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.RbacV1().RoleBindings(roleBinding.Namespace).Patch(
+		ctx,
+		roleBinding.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply role binding %q: %w", roleBinding.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a RoleBinding if it exists.
+func (manager RoleBindingManager) Delete(ctx context.Context, namespace string, name string) error {
+	manager.logger.Info("deleting role binding", logger.String("namespace", namespace), logger.String("name", name))
+
+	err := manager.clientset.RbacV1().RoleBindings(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete role binding %q: %w", name, err)
+	}
+
+	return nil
 }
 
 // Get fetches a PersistentVolumeClaim by namespace and name.
@@ -1053,6 +1432,134 @@ func namespaceFromResource(namespace corev1.Namespace) Namespace {
 	return Namespace{Name: namespace.Name, Labels: cloneLabels(namespace.Labels)}
 }
 
+func configMapToResource(configMap ConfigMap) corev1.ConfigMap {
+	return corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMap.Name,
+			Namespace: configMap.Namespace,
+			Labels:    cloneLabels(configMap.Labels),
+		},
+		Data: cloneLabels(configMap.Data),
+	}
+}
+
+func configMapFromResource(configMap corev1.ConfigMap) ConfigMap {
+	return ConfigMap{
+		Name:      configMap.Name,
+		Namespace: configMap.Namespace,
+		Labels:    cloneLabels(configMap.Labels),
+		Data:      cloneLabels(configMap.Data),
+	}
+}
+
+func serviceAccountToResource(serviceAccount ServiceAccount) corev1.ServiceAccount {
+	return corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceAccount.Name,
+			Namespace: serviceAccount.Namespace,
+			Labels:    cloneLabels(serviceAccount.Labels),
+		},
+	}
+}
+
+func serviceAccountFromResource(serviceAccount corev1.ServiceAccount) ServiceAccount {
+	return ServiceAccount{
+		Name:      serviceAccount.Name,
+		Namespace: serviceAccount.Namespace,
+		Labels:    cloneLabels(serviceAccount.Labels),
+	}
+}
+
+func roleToResource(role Role) rbacv1.Role {
+	resourceRules := make([]rbacv1.PolicyRule, 0, len(role.Rules))
+	for _, rule := range role.Rules {
+		resourceRules = append(resourceRules, rbacv1.PolicyRule{
+			APIGroups: cloneStrings(rule.APIGroups),
+			Resources: cloneStrings(rule.Resources),
+			Verbs:     cloneStrings(rule.Verbs),
+		})
+	}
+
+	return rbacv1.Role{
+		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      role.Name,
+			Namespace: role.Namespace,
+			Labels:    cloneLabels(role.Labels),
+		},
+		Rules: resourceRules,
+	}
+}
+
+func roleFromResource(role rbacv1.Role) Role {
+	resourceRules := make([]PolicyRule, 0, len(role.Rules))
+	for _, rule := range role.Rules {
+		resourceRules = append(resourceRules, PolicyRule{
+			APIGroups: cloneStrings(rule.APIGroups),
+			Resources: cloneStrings(rule.Resources),
+			Verbs:     cloneStrings(rule.Verbs),
+		})
+	}
+
+	return Role{
+		Name:      role.Name,
+		Namespace: role.Namespace,
+		Labels:    cloneLabels(role.Labels),
+		Rules:     resourceRules,
+	}
+}
+
+func roleBindingToResource(roleBinding RoleBinding) rbacv1.RoleBinding {
+	resourceSubjects := make([]rbacv1.Subject, 0, len(roleBinding.Subjects))
+	for _, subject := range roleBinding.Subjects {
+		resourceSubjects = append(resourceSubjects, rbacv1.Subject{
+			Kind:      subject.Kind,
+			Name:      subject.Name,
+			Namespace: subject.Namespace,
+		})
+	}
+
+	return rbacv1.RoleBinding{
+		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      roleBinding.Name,
+			Namespace: roleBinding.Namespace,
+			Labels:    cloneLabels(roleBinding.Labels),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: roleBinding.RoleRef.APIGroup,
+			Kind:     roleBinding.RoleRef.Kind,
+			Name:     roleBinding.RoleRef.Name,
+		},
+		Subjects: resourceSubjects,
+	}
+}
+
+func roleBindingFromResource(roleBinding rbacv1.RoleBinding) RoleBinding {
+	resourceSubjects := make([]Subject, 0, len(roleBinding.Subjects))
+	for _, subject := range roleBinding.Subjects {
+		resourceSubjects = append(resourceSubjects, Subject{
+			Kind:      subject.Kind,
+			Name:      subject.Name,
+			Namespace: subject.Namespace,
+		})
+	}
+
+	return RoleBinding{
+		Name:      roleBinding.Name,
+		Namespace: roleBinding.Namespace,
+		Labels:    cloneLabels(roleBinding.Labels),
+		RoleRef: RoleRef{
+			APIGroup: roleBinding.RoleRef.APIGroup,
+			Kind:     roleBinding.RoleRef.Kind,
+			Name:     roleBinding.RoleRef.Name,
+		},
+		Subjects: resourceSubjects,
+	}
+}
+
 func serviceToResource(service Service) corev1.Service {
 	servicePorts := make([]corev1.ServicePort, 0, len(service.Ports))
 	for _, port := range service.Ports {
@@ -1246,7 +1753,12 @@ func podTemplateFromPodSpec(spec corev1.PodSpec, labels map[string]string) PodTe
 		containers = append(containers, containerFromResource(container))
 	}
 
-	return PodTemplate{Labels: cloneLabels(labels), Volumes: volumes, Containers: containers}
+	return PodTemplate{
+		Labels:             cloneLabels(labels),
+		ServiceAccountName: spec.ServiceAccountName,
+		Volumes:            volumes,
+		Containers:         containers,
+	}
 }
 
 func podSpecToResource(template PodTemplate) corev1.PodSpec {
@@ -1260,7 +1772,11 @@ func podSpecToResource(template PodTemplate) corev1.PodSpec {
 		containers = append(containers, containerToResource(container))
 	}
 
-	return corev1.PodSpec{Volumes: volumes, Containers: containers}
+	return corev1.PodSpec{
+		ServiceAccountName: template.ServiceAccountName,
+		Volumes:            volumes,
+		Containers:         containers,
+	}
 }
 
 func containerToResource(container Container) corev1.Container {

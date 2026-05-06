@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -241,6 +242,74 @@ func TestNamespaceResourceRoundTrip(t *testing.T) {
 	is.Equal(namespaceFromResource(namespaceToResource(namespace)), namespace)
 }
 
+func TestConfigMapResourceRoundTrip(t *testing.T) {
+	is := is.New(t)
+
+	configMap := ConfigMap{
+		Name:      "borq-config",
+		Namespace: "borq-system",
+		Labels:    map[string]string{"managed-by": "borq"},
+		Data:      map[string]string{"health_path": "/healthz"},
+	}
+
+	is.Equal(configMapFromResource(configMapToResource(configMap)), configMap)
+}
+
+func TestServiceAccountResourceRoundTrip(t *testing.T) {
+	is := is.New(t)
+
+	serviceAccount := ServiceAccount{
+		Name:      "borq",
+		Namespace: "borq-system",
+		Labels:    map[string]string{"managed-by": "borq"},
+	}
+
+	is.Equal(serviceAccountFromResource(serviceAccountToResource(serviceAccount)), serviceAccount)
+}
+
+func TestRoleResourceRoundTrip(t *testing.T) {
+	is := is.New(t)
+
+	role := Role{
+		Name:      "borq",
+		Namespace: "borq-system",
+		Labels:    map[string]string{"managed-by": "borq"},
+		Rules: []PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get", "list"},
+			},
+		},
+	}
+
+	is.Equal(roleFromResource(roleToResource(role)), role)
+}
+
+func TestRoleBindingResourceRoundTrip(t *testing.T) {
+	is := is.New(t)
+
+	roleBinding := RoleBinding{
+		Name:      "borq",
+		Namespace: "borq-system",
+		Labels:    map[string]string{"managed-by": "borq"},
+		RoleRef: RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     "borq",
+		},
+		Subjects: []Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "borq",
+				Namespace: "borq-system",
+			},
+		},
+	}
+
+	is.Equal(roleBindingFromResource(roleBindingToResource(roleBinding)), roleBinding)
+}
+
 func TestPodResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -249,7 +318,8 @@ func TestPodResourceRoundTrip(t *testing.T) {
 		Namespace: "borq-system",
 		Labels:    map[string]string{"app": "debug"},
 		Spec: PodTemplate{
-			Labels: map[string]string{"app": "debug"},
+			Labels:             map[string]string{"app": "debug"},
+			ServiceAccountName: "borq",
 			Volumes: []Volume{
 				{Name: "data", PersistentVolumeClaimName: "debug-data"},
 			},
@@ -269,11 +339,68 @@ func TestPodResourceRoundTrip(t *testing.T) {
 	is.Equal(roundTrip.Namespace, pod.Namespace)
 	is.Equal(roundTrip.Labels, pod.Labels)
 	is.Equal(roundTrip.Spec.Labels, pod.Spec.Labels)
+	is.Equal(roundTrip.Spec.ServiceAccountName, pod.Spec.ServiceAccountName)
 	is.Equal(roundTrip.Spec.Volumes, pod.Spec.Volumes)
 	is.Equal(roundTrip.Spec.Containers[0].Name, pod.Spec.Containers[0].Name)
 	is.Equal(roundTrip.Spec.Containers[0].Image, pod.Spec.Containers[0].Image)
 	is.Equal(roundTrip.Spec.Containers[0].Args, pod.Spec.Containers[0].Args)
 	is.Equal(roundTrip.Spec.Containers[0].VolumeMounts, pod.Spec.Containers[0].VolumeMounts)
+}
+
+func TestRbacAndConfigManagersGetListDelete(t *testing.T) {
+	is := is.New(t)
+
+	clientset := fake.NewSimpleClientset(
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "borq-config", Namespace: "borq-system"},
+		},
+		&corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: "borq", Namespace: "borq-system"},
+		},
+		&rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "borq", Namespace: "borq-system"},
+		},
+		&rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "borq", Namespace: "borq-system"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "borq"},
+		},
+	)
+
+	configMapManager := ConfigMapManager{clientset: clientset}
+	configMap, err := configMapManager.Get(context.Background(), "borq-system", "borq-config")
+	is.NoErr(err)
+	is.Equal(configMap.Name, "borq-config")
+	configMaps, err := configMapManager.List(context.Background(), "borq-system", "")
+	is.NoErr(err)
+	is.Equal(len(configMaps), 1)
+	is.NoErr(configMapManager.Delete(context.Background(), "borq-system", "borq-config"))
+
+	serviceAccountManager := ServiceAccountManager{clientset: clientset}
+	serviceAccount, err := serviceAccountManager.Get(context.Background(), "borq-system", "borq")
+	is.NoErr(err)
+	is.Equal(serviceAccount.Name, "borq")
+	serviceAccounts, err := serviceAccountManager.List(context.Background(), "borq-system", "")
+	is.NoErr(err)
+	is.Equal(len(serviceAccounts), 1)
+	is.NoErr(serviceAccountManager.Delete(context.Background(), "borq-system", "borq"))
+
+	roleManager := RoleManager{clientset: clientset}
+	role, err := roleManager.Get(context.Background(), "borq-system", "borq")
+	is.NoErr(err)
+	is.Equal(role.Name, "borq")
+	roles, err := roleManager.List(context.Background(), "borq-system", "")
+	is.NoErr(err)
+	is.Equal(len(roles), 1)
+	is.NoErr(roleManager.Delete(context.Background(), "borq-system", "borq"))
+
+	roleBindingManager := RoleBindingManager{clientset: clientset}
+	roleBinding, err := roleBindingManager.Get(context.Background(), "borq-system", "borq")
+	is.NoErr(err)
+	is.Equal(roleBinding.Name, "borq")
+	roleBindings, err := roleBindingManager.List(context.Background(), "borq-system", "")
+	is.NoErr(err)
+	is.Equal(len(roleBindings), 1)
+	is.NoErr(roleBindingManager.Delete(context.Background(), "borq-system", "borq"))
 }
 
 func TestDeploymentManagerWaitForAvailable(t *testing.T) {

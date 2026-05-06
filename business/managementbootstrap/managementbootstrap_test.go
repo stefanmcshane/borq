@@ -122,6 +122,18 @@ func TestRenderDefaultKindConfigYAML(t *testing.T) {
 	is.True(strings.Contains(renderedText, "kind.x-k8s.io/v1alpha4"))
 	is.True(strings.Contains(renderedText, "hostPort: 7833"))
 	is.True(strings.Contains(renderedText, "containerPort: 31833"))
+	is.True(!strings.Contains(renderedText, "KubeletInUserNamespace"))
+}
+
+func TestRenderKindConfigYAMLWithLXCUserNamespace(t *testing.T) {
+	is := is.New(t)
+
+	renderedConfig, err := renderKindConfigYAML(defaultHostPort, defaultNodePort, true)
+	is.NoErr(err)
+
+	renderedText := string(renderedConfig)
+	is.True(strings.Contains(renderedText, "kubeadmConfigPatches:"))
+	is.True(strings.Contains(renderedText, "KubeletInUserNamespace: true"))
 }
 
 func TestHasCluster(t *testing.T) {
@@ -137,6 +149,83 @@ func TestKindContextName(t *testing.T) {
 	is := is.New(t)
 
 	is.Equal(kindContextName("borq-management"), "kind-borq-management")
+}
+
+func TestContainsLXCSignal(t *testing.T) {
+	is := is.New(t)
+
+	is.True(containsLXCSignal("lxc"))
+	is.True(containsLXCSignal("LXC"))
+	is.True(containsLXCSignal("container=lxc"))
+	is.True(!containsLXCSignal("docker"))
+	is.True(!containsLXCSignal(""))
+}
+
+func TestRunningInLXCContainerWithSignals(t *testing.T) {
+	testCases := []struct {
+		name                  string
+		containerEnvValue     string
+		systemdContainerValue string
+		initEnviron           []byte
+		initCgroup            []byte
+		want                  bool
+	}{
+		{
+			name:              "container env",
+			containerEnvValue: "lxc",
+			want:              true,
+		},
+		{
+			name:                  "systemd container file",
+			systemdContainerValue: "lxc",
+			want:                  true,
+		},
+		{
+			name:        "proc 1 environ",
+			initEnviron: []byte("PATH=/usr/bin\x00container=lxc\x00HOME=/root"),
+			want:        true,
+		},
+		{
+			name:       "proc 1 cgroup",
+			initCgroup: []byte("12:memory:/lxc/container"),
+			want:       true,
+		},
+		{
+			name:       "proc 1 cgroup exact boundary match",
+			initCgroup: []byte("1:name=systemd:/foo/lxc/bar"),
+			want:       true,
+		},
+		{
+			name:       "proc 1 cgroup liblxc",
+			initCgroup: []byte("12:memory:/liblxc/container"),
+			want:       true,
+		},
+		{
+			name:       "non lxc",
+			initCgroup: []byte("12:memory:/lxc.payload/container"),
+			want:       false,
+		},
+		{
+			name:       "non lxc docker",
+			initCgroup: []byte("12:memory:/docker/container"),
+			want:       false,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			is := is.New(t)
+			is.Equal(
+				runningInLXCContainerWithSignals(
+					testCase.containerEnvValue,
+					testCase.systemdContainerValue,
+					testCase.initEnviron,
+					testCase.initCgroup,
+				),
+				testCase.want,
+			)
+		})
+	}
 }
 
 func TestProbeURLForHostPort(t *testing.T) {
@@ -163,10 +252,19 @@ func TestBorqApp(t *testing.T) {
 	managedApp := borqApp(request)
 
 	is.Equal(managedApp.Workload.Kind, app.DeploymentWorkload)
+	is.Equal(len(managedApp.ConfigMaps), 1)
+	is.Equal(managedApp.ConfigMaps[0].Name, borqConfigName)
+	is.Equal(len(managedApp.ServiceAccounts), 1)
+	is.Equal(managedApp.ServiceAccounts[0].Name, borqServiceAccountName)
+	is.Equal(len(managedApp.Roles), 1)
+	is.Equal(managedApp.Roles[0].Name, borqRoleName)
+	is.Equal(len(managedApp.RoleBindings), 1)
+	is.Equal(managedApp.RoleBindings[0].Name, borqRoleBindingName)
 	is.Equal(len(managedApp.Services), 1)
 	is.Equal(managedApp.Services[0].Name, borqName)
 	is.Equal(managedApp.Services[0].Type, kubernetes.NodePortService)
 	is.Equal(managedApp.Workload.Deployment.Name, borqName)
+	is.Equal(managedApp.Workload.Deployment.Pods.ServiceAccountName, borqServiceAccountName)
 	is.Equal(managedApp.Workload.Deployment.Pods.Containers[0].Image, borqImage)
 	is.Equal(managedApp.Workload.Deployment.Pods.Volumes[0].PersistentVolumeClaimName, borqDataClaimName)
 	is.Equal(managedApp.Workload.Deployment.Pods.Containers[0].VolumeMounts[0].MountPath, borqDataMountPath)

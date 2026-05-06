@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,11 +32,20 @@ const (
 	defaultStorageSize          = "5Gi"
 	borqImage                   = "ghcr.io/stefanmcshane/borq:latest"
 	borqName                    = "borq"
+	borqConfigName              = "borq-config"
+	borqServiceAccountName      = "borq"
+	borqRoleName                = "borq"
+	borqRoleBindingName         = "borq"
 	borqDataClaimName           = "borq-data"
 	borqDataVolumeName          = "data"
 	borqDataMountPath           = "/var/lib/borq"
 	borqContainerPort           = 8080
 	borqHealthPath              = "/healthz"
+	lxcKubeadmConfigPatch       = `kind: KubeletConfiguration
+apiVersion: kubelet.config.k8s.io/v1beta1
+featureGates:
+  KubeletInUserNamespace: true
+`
 )
 
 // Request describes a management bootstrap run.
@@ -98,10 +108,18 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	if clusterExists {
 		log.Info("reusing existing kind management cluster", logger.String("cluster_name", request.ClusterName))
 	} else {
+		if runningInLXCContainer() {
+			log.Info("detected lxc container; enabling kubelet user namespace support for kind")
+		}
+
 		log.Info("creating kind management cluster", logger.String("cluster_name", request.ClusterName))
 		if err := createKindCluster(timeoutContext, request); err != nil {
 			return Result{}, err
 		}
+	}
+
+	if err := loadBorqImageIfLocal(timeoutContext, request.ClusterName, request.BorqImage); err != nil {
+		return Result{}, err
 	}
 
 	connection, err := kubernetes.NewConnection(
@@ -262,7 +280,7 @@ func kindClusterExists(ctx context.Context, clusterName string) (bool, error) {
 }
 
 func createKindCluster(ctx context.Context, request Request) error {
-	renderedConfig, err := RenderDefaultKindConfigYAML(request.HostPort, request.NodePort)
+	renderedConfig, err := renderKindConfigYAML(request.HostPort, request.NodePort, runningInLXCContainer())
 	if err != nil {
 		return err
 	}
@@ -293,17 +311,13 @@ func createKindCluster(ctx context.Context, request Request) error {
 	return nil
 }
 
-func probeURLForHostPort(hostPort int32) string {
-	return fmt.Sprintf("http://localhost:%d%s", hostPort, borqHealthPath)
-}
-
-func kindContextName(clusterName string) string {
-	return fmt.Sprintf("kind-%s", clusterName)
-}
-
 // DefaultKindClusterConfig returns the borq default management cluster config.
 func DefaultKindClusterConfig(hostPortValue int32, nodePortValue int32) kindconfig.Cluster {
-	return kindconfig.Cluster{
+	return defaultKindClusterConfig(hostPortValue, nodePortValue, false)
+}
+
+func defaultKindClusterConfig(hostPortValue int32, nodePortValue int32, enableLXCUserNamespace bool) kindconfig.Cluster {
+	cluster := kindconfig.Cluster{
 		TypeMeta: kindconfig.TypeMeta{
 			Kind:       "Cluster",
 			APIVersion: "kind.x-k8s.io/v1alpha4",
@@ -322,17 +336,35 @@ func DefaultKindClusterConfig(hostPortValue int32, nodePortValue int32) kindconf
 			},
 		},
 	}
+
+	if enableLXCUserNamespace {
+		cluster.KubeadmConfigPatches = []string{lxcKubeadmConfigPatch}
+	}
+
+	return cluster
 }
 
 // RenderDefaultKindConfigYAML renders the default management cluster config as YAML.
 func RenderDefaultKindConfigYAML(hostPortValue int32, nodePortValue int32) ([]byte, error) {
-	cluster := DefaultKindClusterConfig(hostPortValue, nodePortValue)
+	return renderKindConfigYAML(hostPortValue, nodePortValue, false)
+}
+
+func renderKindConfigYAML(hostPortValue int32, nodePortValue int32, enableLXCUserNamespace bool) ([]byte, error) {
+	cluster := defaultKindClusterConfig(hostPortValue, nodePortValue, enableLXCUserNamespace)
 	renderedConfig, err := yaml.Marshal(cluster)
 	if err != nil {
 		return nil, fmt.Errorf("render default kind config: %w", err)
 	}
 
 	return renderedConfig, nil
+}
+
+func probeURLForHostPort(hostPort int32) string {
+	return fmt.Sprintf("http://localhost:%d%s", hostPort, borqHealthPath)
+}
+
+func kindContextName(clusterName string) string {
+	return fmt.Sprintf("kind-%s", clusterName)
 }
 
 func bootstrapApps(request Request) []app.App {
@@ -369,6 +401,57 @@ func borqApp(request Request) app.App {
 		Name:      borqName,
 		Namespace: request.Namespace,
 		Labels:    labels,
+		ConfigMaps: []kubernetes.ConfigMap{
+			{
+				Name:      borqConfigName,
+				Namespace: request.Namespace,
+				Labels:    appLabels(borqName, "config"),
+				Data: map[string]string{
+					"health_path": borqHealthPath,
+					"data_dir":    borqDataMountPath,
+				},
+			},
+		},
+		ServiceAccounts: []kubernetes.ServiceAccount{
+			{
+				Name:      borqServiceAccountName,
+				Namespace: request.Namespace,
+				Labels:    appLabels(borqName, "rbac"),
+			},
+		},
+		Roles: []kubernetes.Role{
+			{
+				Name:      borqRoleName,
+				Namespace: request.Namespace,
+				Labels:    appLabels(borqName, "rbac"),
+				Rules: []kubernetes.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods", "services", "configmaps"},
+						Verbs:     []string{"get", "list", "watch"},
+					},
+				},
+			},
+		},
+		RoleBindings: []kubernetes.RoleBinding{
+			{
+				Name:      borqRoleBindingName,
+				Namespace: request.Namespace,
+				Labels:    appLabels(borqName, "rbac"),
+				RoleRef: kubernetes.RoleRef{
+					APIGroup: "rbac.authorization.k8s.io",
+					Kind:     "Role",
+					Name:     borqRoleName,
+				},
+				Subjects: []kubernetes.Subject{
+					{
+						Kind:      "ServiceAccount",
+						Name:      borqServiceAccountName,
+						Namespace: request.Namespace,
+					},
+				},
+			},
+		},
 		Services: []kubernetes.Service{
 			{
 				Name:      borqName,
@@ -390,7 +473,8 @@ func borqApp(request Request) app.App {
 				Selector:  selector,
 				Replicas:  1,
 				Pods: kubernetes.PodTemplate{
-					Labels: podLabels(labels, borqName),
+					Labels:             podLabels(labels, borqName),
+					ServiceAccountName: borqServiceAccountName,
 					Volumes: []kubernetes.Volume{
 						{Name: borqDataVolumeName, PersistentVolumeClaimName: borqDataClaimName},
 					},
@@ -501,4 +585,64 @@ func hasCluster(output string, clusterName string) bool {
 	}
 
 	return false
+}
+
+func loadBorqImageIfLocal(ctx context.Context, clusterName string, image string) error {
+	if _, err := runCommand(ctx, "docker", "image", "inspect", image); err != nil {
+		return nil
+	}
+
+	if _, err := runCommand(ctx, "kind", "load", "docker-image", "--name", clusterName, image); err != nil {
+		return fmt.Errorf("load borq image %q into kind cluster %q: %w", image, clusterName, err)
+	}
+
+	return nil
+}
+
+func runningInLXCContainer() bool {
+	if output, err := runCommand(context.Background(), "systemd-detect-virt", "--container"); err == nil {
+		if strings.EqualFold(strings.TrimSpace(output), "lxc") {
+			return true
+		}
+	}
+
+	return runningInLXCContainerWithSignals(
+		os.Getenv("container"),
+		string(readFileIfPresent("/run/systemd/container")),
+		readFileIfPresent("/proc/1/environ"),
+		readFileIfPresent("/proc/1/cgroup"),
+	)
+}
+
+func runningInLXCContainerWithSignals(containerEnvValue string, systemdContainerValue string, initEnviron []byte, initCgroup []byte) bool {
+	if containsLXCSignal(containerEnvValue) {
+		return true
+	}
+	if containsLXCSignal(systemdContainerValue) {
+		return true
+	}
+	if bytes.Contains(bytes.ToLower(initEnviron), []byte("container=lxc")) {
+		return true
+	}
+	if lxcCgroupPattern.Match(initCgroup) {
+		return true
+	}
+
+	return false
+}
+
+var lxcCgroupPattern = regexp.MustCompile(`(^|/)(lxc|liblxc)(/|$)`)
+
+func containsLXCSignal(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(normalized, "lxc")
+}
+
+func readFileIfPresent(path string) []byte {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	return contents
 }

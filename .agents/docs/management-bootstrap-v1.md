@@ -24,22 +24,16 @@ Implemented behavior:
 
 ## Files Added Or Changed
 
-- `cmd/borq/main.go`
-  - Starts the CLI.
-- `api/cli/root.go`
-  - Defines the root command and registers the management command group.
-- `api/cli/management_command.go`
-  - Defines `borq management bootstrap` and its flags.
+- `api/server/integration_test.go`
+  - Server integration tests against a running borq server URL.
+- `business/managementbootstrap/integration_test.go`
+  - Live bootstrap integration test using a real kind cluster and Docker.
 - `business/managementbootstrap/managementbootstrap.go`
   - Owns the management bootstrap workflow: kind orchestration, kubeconfig lookup, apply, readiness, probe.
 - `business/managementbootstrap/managementbootstrap_test.go`
   - Unit tests for request defaults, validation, kind config rendering, and cluster detection helpers.
-- `business/managementbootstrap/integration_test.go`
-  - Live integration test using a real kind cluster and Docker.
-- `foundations/kubernetes/kubernetes.go`
-  - Borq-owned Kubernetes apply helpers using typed apply configs and server-side apply.
-- `README.md`
-  - Updated to match the current command shape and first-slice behavior.
+- `Makefile`
+  - Defines `test-integration-server` and `test-integration-bootstrap` targets.
 
 ## Why It Was Built This Way
 
@@ -105,22 +99,30 @@ That proves:
 
 These are fast tests that validate the command’s defaulting and config-shaping logic.
 
-### Integration test
+### Server integration test
 
-`business/managementbootstrap/integration_test.go` is a real end-to-end bootstrap test.
+`api/server/integration_test.go` validates a running server URL.
 
 It:
 
-- Skips cleanly if `kind` is missing.
-- Skips cleanly if `docker` is missing or the Docker daemon is unavailable.
-- Creates a disposable kind cluster named `borq-management-it`.
-- Runs `Execute(...)`.
-- Verifies that bootstrap succeeds.
-- Runs `Execute(...)` a second time.
-- Verifies that the second run succeeds and reports `Reused == true`.
-- Deletes the disposable cluster during cleanup.
+- Uses `BORQ_INTEGRATION_SERVER_URL` (default `http://localhost:7833`).
+- Verifies `GET /healthz` returns `200`.
+- Verifies `GET /` returns `200` with expected body content.
+- Verifies invalid method handling for `/healthz`.
 
-This test proves the real workflow instead of only mocking it.
+### Bootstrap integration test
+
+`business/managementbootstrap/integration_test.go` validates bootstrap installation behavior.
+
+It:
+
+- Creates a disposable kind cluster.
+- Runs `borq management bootstrap` via CLI.
+- Verifies namespace/PVC/RBAC/deployment/service resources.
+- Waits for deployment readiness.
+- Verifies health endpoint behavior.
+- Verifies persistence across pod restart.
+- Deletes the disposable cluster during cleanup unless keep-cluster is enabled.
 
 ## What Is Not Implemented Yet
 
@@ -136,6 +138,8 @@ Still deferred:
 
 The current implementation has been verified with:
 
-- `go test ./...`
+- `make test-unit`
+- `make test-integration-server`
+- `make test-integration-bootstrap`
 - `go run ./cmd/borq --help`
 - `go run ./cmd/borq management bootstrap --help`

@@ -9,21 +9,32 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
-const integrationBorqImageEnvVar = "BORQ_INTEGRATION_IMAGE"
+const (
+	integrationBootstrapImageEnvVar   = "BORQ_INTEGRATION_BOOTSTRAP_IMAGE"
+	integrationKeepClusterEnvVar      = "BORQ_INTEGRATION_KEEP_CLUSTER"
+	integrationBootstrapClusterPrefix = "borq-bootstrap-it"
+	integrationNamespace              = "borq-system"
+)
 
-func TestExecuteIntegration(t *testing.T) {
+func TestBootstrapIntegration(t *testing.T) {
 	requireIntegrationBinary(t, "kind")
 	requireIntegrationBinary(t, "docker")
-	if err := exec.Command("docker", "info").Run(); err != nil {
-		t.Skip("docker daemon is required for the integration test")
+	requireIntegrationBinary(t, "git")
+	requireIntegrationBinary(t, "kubectl")
+	requireDockerDaemon(t)
+
+	repoRoot, err := repositoryRoot(context.Background())
+	if err != nil {
+		t.Fatalf("find repository root: %v", err)
 	}
 
 	hostPort, err := freeTCPPort()
@@ -31,104 +42,199 @@ func TestExecuteIntegration(t *testing.T) {
 		t.Fatalf("find free tcp port: %v", err)
 	}
 
-	clusterName := "borq-management-it"
-	borqRemoteImage := integrationBorqImage()
+	clusterName := fmt.Sprintf("%s-%d", integrationBootstrapClusterPrefix, time.Now().Unix())
+	borqImage := integrationBootstrapImage()
 
-	kindConfigPath, err := writeIntegrationKindConfig(hostPort)
-	if err != nil {
-		t.Fatalf("write integration kind config: %v", err)
-	}
-
-	t.Cleanup(func() {
-		cleanupContext := context.Background()
-		_, _ = runCommand(cleanupContext, "kind", "delete", "cluster", "--name", clusterName)
-		_ = os.Remove(kindConfigPath)
-	})
-
-	testContext, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	testContext, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	if err := pullRemoteImage(testContext, borqRemoteImage); err != nil {
-		t.Fatalf("pull borq image: %v", err)
+	if !keepClusterForDebug() {
+		t.Cleanup(func() {
+			cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cleanupCancel()
+			_, _ = runCommand(cleanupContext, "kind", "delete", "cluster", "--name", clusterName)
+		})
 	}
-	if err := createIntegrationCluster(testContext, clusterName, kindConfigPath); err != nil {
-		t.Fatalf("create integration cluster: %v", err)
+
+	if _, err := runBootstrapCLI(testContext, repoRoot, clusterName, hostPort, borqImage); err != nil {
+		t.Fatalf("bootstrap command failed: %v", err)
 	}
 
-	request := DefaultRequest()
-	request.ClusterName = clusterName
-	request.HostPort = hostPort
-	request.ProbeURL = ""
-	request.Timeout = 5 * time.Minute
-	request.BorqImage = borqRemoteImage
+	connection, err := kindConnection(clusterName)
+	if err != nil {
+		t.Fatalf("build kubernetes connection: %v", err)
+	}
 
-	is := is.New(t)
-
-	result, err := Execute(testContext, logger.Logger{}, request)
-	is.NoErr(err)
-	is.Equal(result.ClusterName, clusterName)
-	is.Equal(result.ProbeURL, probeURLForHostPort(hostPort))
-
-	result, err = Execute(testContext, logger.Logger{}, request)
-	is.NoErr(err)
-	is.True(result.Reused)
-}
-
-func requireIntegrationBinary(t *testing.T, binary string) {
-	t.Helper()
-	if _, err := exec.LookPath(binary); err != nil {
-		t.Skipf("%s is required for the integration test", binary)
+	if err := assertBootstrapResources(testContext, connection); err != nil {
+		t.Fatalf("assert bootstrap resources: %v", err)
+	}
+	if err := connection.Deployments().WaitForAvailable(testContext, integrationNamespace, borqName); err != nil {
+		t.Fatalf("wait for borq deployment readiness: %v", err)
+	}
+	if err := probeBorq(testContext, probeURLForHostPort(hostPort)); err != nil {
+		t.Fatalf("probe borq health endpoint: %v", err)
+	}
+	if err := assertPersistenceAcrossRestart(testContext, clusterName, integrationNamespace); err != nil {
+		t.Fatalf("assert persistence across restart: %v", err)
 	}
 }
 
-func integrationBorqImage() string {
-	if image := strings.TrimSpace(os.Getenv(integrationBorqImageEnvVar)); image != "" {
-		return image
+func assertBootstrapResources(ctx context.Context, connection kubernetes.Connection) error {
+	if _, err := connection.Namespaces().Get(ctx, integrationNamespace); err != nil {
+		return fmt.Errorf("namespace: %w", err)
 	}
-
-	return borqImage
+	if _, err := connection.PersistentVolumeClaims().Get(ctx, integrationNamespace, borqDataClaimName); err != nil {
+		return fmt.Errorf("persistent volume claim: %w", err)
+	}
+	if _, err := connection.ConfigMaps().Get(ctx, integrationNamespace, borqConfigName); err != nil {
+		return fmt.Errorf("config map: %w", err)
+	}
+	if _, err := connection.ServiceAccounts().Get(ctx, integrationNamespace, borqServiceAccountName); err != nil {
+		return fmt.Errorf("service account: %w", err)
+	}
+	if _, err := connection.Roles().Get(ctx, integrationNamespace, borqRoleName); err != nil {
+		return fmt.Errorf("role: %w", err)
+	}
+	if _, err := connection.RoleBindings().Get(ctx, integrationNamespace, borqRoleBindingName); err != nil {
+		return fmt.Errorf("role binding: %w", err)
+	}
+	if _, err := connection.Deployments().Get(ctx, integrationNamespace, borqName); err != nil {
+		return fmt.Errorf("deployment: %w", err)
+	}
+	if _, err := connection.Services().Get(ctx, integrationNamespace, borqName); err != nil {
+		return fmt.Errorf("service: %w", err)
+	}
+	return nil
 }
 
-func pullRemoteImage(ctx context.Context, image string) error {
-	if _, err := runCommand(ctx, "docker", "pull", image); err != nil {
-		return fmt.Errorf("docker pull %q: %w", image, err)
+func assertPersistenceAcrossRestart(ctx context.Context, clusterName string, namespace string) error {
+	podName, err := borqPodName(ctx, clusterName, namespace)
+	if err != nil {
+		return err
+	}
+
+	marker := fmt.Sprintf("integration-%d", time.Now().UnixNano())
+	if _, err := runCommand(
+		ctx,
+		"kubectl",
+		"--context",
+		kindContextName(clusterName),
+		"-n",
+		namespace,
+		"exec",
+		podName,
+		"--",
+		"sh",
+		"-c",
+		fmt.Sprintf("echo %s > %s/persistence-check", marker, borqDataMountPath),
+	); err != nil {
+		return fmt.Errorf("write persistence marker: %w", err)
+	}
+
+	if _, err := runCommand(
+		ctx,
+		"kubectl",
+		"--context",
+		kindContextName(clusterName),
+		"-n",
+		namespace,
+		"delete",
+		"pod",
+		podName,
+	); err != nil {
+		return fmt.Errorf("delete pod %q: %w", podName, err)
+	}
+
+	connection, err := kindConnection(clusterName)
+	if err != nil {
+		return err
+	}
+	if err := connection.Deployments().WaitForAvailable(ctx, namespace, borqName); err != nil {
+		return fmt.Errorf("wait for deployment after pod restart: %w", err)
+	}
+
+	newPodName, err := borqPodName(ctx, clusterName, namespace)
+	if err != nil {
+		return err
+	}
+
+	output, err := runCommand(
+		ctx,
+		"kubectl",
+		"--context",
+		kindContextName(clusterName),
+		"-n",
+		namespace,
+		"exec",
+		newPodName,
+		"--",
+		"cat",
+		borqDataMountPath+"/persistence-check",
+	)
+	if err != nil {
+		return fmt.Errorf("read persistence marker: %w", err)
+	}
+	if strings.TrimSpace(output) != marker {
+		return fmt.Errorf("persistence marker mismatch: got %q want %q", strings.TrimSpace(output), marker)
 	}
 
 	return nil
 }
 
-func createIntegrationCluster(ctx context.Context, clusterName string, configPath string) error {
-	_, err := runCommand(ctx, "kind", "create", "cluster", "--name", clusterName, "--config", configPath)
+func borqPodName(ctx context.Context, clusterName string, namespace string) (string, error) {
+	output, err := runCommand(
+		ctx,
+		"kubectl",
+		"--context",
+		kindContextName(clusterName),
+		"-n",
+		namespace,
+		"get",
+		"pods",
+		"-l",
+		"app.kubernetes.io/name="+borqName,
+		"-o",
+		"jsonpath={.items[0].metadata.name}",
+	)
 	if err != nil {
-		return fmt.Errorf("kind create cluster: %w", err)
+		return "", fmt.Errorf("get borq pod name: %w", err)
 	}
 
-	return nil
+	podName := strings.TrimSpace(output)
+	if podName == "" {
+		return "", fmt.Errorf("borq pod name not found")
+	}
+
+	return podName, nil
 }
 
-func writeIntegrationKindConfig(hostPort int32) (string, error) {
-	temporaryFile, err := os.CreateTemp("", "borq-kind-integration-*.yaml")
+func kindConnection(clusterName string) (kubernetes.Connection, error) {
+	return kubernetes.NewConnection(
+		kubernetes.Config{ContextName: kindContextName(clusterName)},
+		logger.Logger{},
+	)
+}
+
+func repositoryRoot(ctx context.Context) (string, error) {
+	output, err := runCommand(ctx, "git", "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", err
-	}
-	defer temporaryFile.Close()
-
-	config := fmt.Sprintf(`kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-  extraPortMappings:
-  - containerPort: %d
-    hostPort: %d
-    listenAddress: "0.0.0.0"
-    protocol: TCP
-`, defaultNodePort, hostPort)
-
-	if _, err := temporaryFile.WriteString(config); err != nil {
-		return "", err
+		return "", fmt.Errorf("find repository root: %w", err)
 	}
 
-	return temporaryFile.Name(), nil
+	return strings.TrimSpace(output), nil
+}
+
+func runCommandInDir(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Dir = dir
+
+	output, err := command.CombinedOutput()
+	if err != nil {
+		commandLine := strings.TrimSpace(strings.Join(append([]string{name}, args...), " "))
+		return "", fmt.Errorf("%s failed: %w: %s", commandLine, err, strings.TrimSpace(string(output)))
+	}
+
+	return string(output), nil
 }
 
 func freeTCPPort() (int32, error) {
@@ -144,4 +250,70 @@ func freeTCPPort() (int32, error) {
 	}
 
 	return int32(address.Port), nil
+}
+
+func runBootstrapCLI(ctx context.Context, repoRoot string, clusterName string, hostPort int32, image string) (string, error) {
+	return runCommandInDir(
+		ctx,
+		repoRoot,
+		"go",
+		"run",
+		"./cmd/borq",
+		"management",
+		"bootstrap",
+		"--cluster-name",
+		clusterName,
+		"--host-port",
+		strconv.Itoa(int(hostPort)),
+		"--timeout",
+		"8m",
+		"--server-image",
+		image,
+	)
+}
+
+func requireIntegrationBinary(t *testing.T, binary string) {
+	t.Helper()
+	if _, err := exec.LookPath(binary); err != nil {
+		t.Fatalf("%s is required for the integration test: %v", binary, err)
+	}
+}
+
+func requireDockerDaemon(t *testing.T) {
+	t.Helper()
+
+	output, err := exec.Command("docker", "info").CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker daemon is required for the integration test: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+}
+
+func integrationBootstrapImage() string {
+	if image := strings.TrimSpace(os.Getenv(integrationBootstrapImageEnvVar)); image != "" {
+		return image
+	}
+	return borqImage
+}
+
+func keepClusterForDebug() bool {
+	return parseBoolEnv(integrationKeepClusterEnvVar)
+}
+
+func parseBoolEnv(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return false
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err == nil {
+		return parsed
+	}
+
+	switch strings.ToLower(value) {
+	case "1", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }

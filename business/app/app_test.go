@@ -44,6 +44,64 @@ func TestApplyOrdersServicesBeforeDeployment(t *testing.T) {
 	is.Equal(operations, []string{"service:first", "service:second", "deployment:whoami"})
 }
 
+func TestApplyOrdersBootstrapResourcesBeforeWorkload(t *testing.T) {
+	is := is.New(t)
+
+	operations := []string{}
+	managedApp := App{
+		Namespace:       "borq-system",
+		ConfigMaps:      []kubernetes.ConfigMap{{Name: "borq-config", Namespace: "borq-system"}},
+		ServiceAccounts: []kubernetes.ServiceAccount{{Name: "borq", Namespace: "borq-system"}},
+		Roles:           []kubernetes.Role{{Name: "borq", Namespace: "borq-system"}},
+		RoleBindings:    []kubernetes.RoleBinding{{Name: "borq", Namespace: "borq-system"}},
+		Services:        []kubernetes.Service{{Name: "borq", Namespace: "borq-system"}},
+		Workload: Workload{
+			Kind: DeploymentWorkload,
+			Deployment: kubernetes.Deployment{
+				Name:      "borq",
+				Namespace: "borq-system",
+			},
+		},
+	}
+
+	err := managedApp.apply(context.Background(), applyFuncs{
+		configMap: func(_ context.Context, configMap kubernetes.ConfigMap) error {
+			operations = append(operations, "configmap:"+configMap.Name)
+			return nil
+		},
+		serviceAccount: func(_ context.Context, serviceAccount kubernetes.ServiceAccount) error {
+			operations = append(operations, "serviceaccount:"+serviceAccount.Name)
+			return nil
+		},
+		role: func(_ context.Context, role kubernetes.Role) error {
+			operations = append(operations, "role:"+role.Name)
+			return nil
+		},
+		roleBinding: func(_ context.Context, roleBinding kubernetes.RoleBinding) error {
+			operations = append(operations, "rolebinding:"+roleBinding.Name)
+			return nil
+		},
+		service: func(_ context.Context, service kubernetes.Service) error {
+			operations = append(operations, "service:"+service.Name)
+			return nil
+		},
+		deployment: func(_ context.Context, deployment kubernetes.Deployment) error {
+			operations = append(operations, "deployment:"+deployment.Name)
+			return nil
+		},
+	})
+
+	is.NoErr(err)
+	is.Equal(operations, []string{
+		"configmap:borq-config",
+		"serviceaccount:borq",
+		"role:borq",
+		"rolebinding:borq",
+		"service:borq",
+		"deployment:borq",
+	})
+}
+
 func TestApplyReturnsServiceError(t *testing.T) {
 	is := is.New(t)
 
