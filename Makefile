@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration-server test-integration-local test-integration-bootstrap promote-release release-dev
+.PHONY: help test-unit test-integration-server test-integration-local test-integration-bootstrap promote-release release-dev
 
 GO_TEST_ENV := GOCACHE=/tmp/borq-go-build GOMODCACHE=/tmp/borq-go-mod
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
