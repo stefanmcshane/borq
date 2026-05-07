@@ -158,6 +158,21 @@ type Subject struct {
 	Namespace string
 }
 
+// ClusterRole is a borq-local cluster role manifest.
+type ClusterRole struct {
+	Name   string
+	Labels map[string]string
+	Rules  []PolicyRule
+}
+
+// ClusterRoleBinding is a borq-local cluster role binding manifest.
+type ClusterRoleBinding struct {
+	Name     string
+	Labels   map[string]string
+	RoleRef  RoleRef
+	Subjects []Subject
+}
+
 // PersistentVolumeAccessMode is a borq-local access mode.
 type PersistentVolumeAccessMode string
 
@@ -377,6 +392,24 @@ func (connection Connection) Pods() PodManager {
 	}
 }
 
+// ClusterRoles returns a manager for ClusterRole resources.
+func (connection Connection) ClusterRoles() ClusterRoleManager {
+	return ClusterRoleManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// ClusterRoleBindings returns a manager for ClusterRoleBinding resources.
+func (connection Connection) ClusterRoleBindings() ClusterRoleBindingManager {
+	return ClusterRoleBindingManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
 // CanAdminNamespace reports whether the current credentials can administer namespaced resources.
 func (connection Connection) CanAdminNamespace(ctx context.Context, namespace string) error {
 	return connection.SelfSubjectAccessReview(ctx, SelfSubjectAccessReviewInput{
@@ -582,6 +615,20 @@ type StorageClassManager struct {
 	logger     logger.Logger
 }
 
+// ClusterRoleManager manages ClusterRole resources.
+type ClusterRoleManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// ClusterRoleBindingManager manages ClusterRoleBinding resources.
+type ClusterRoleBindingManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
 // Get fetches a ConfigMap by namespace and name.
 func (manager ConfigMapManager) Get(ctx context.Context, namespace string, name string) (ConfigMap, error) {
 	configMap, err := manager.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -651,6 +698,24 @@ func (manager ConfigMapManager) Delete(ctx context.Context, namespace string, na
 	}
 
 	return nil
+}
+
+// Diff compares a desired ConfigMap against the live cluster object.
+func (manager ConfigMapManager) Diff(ctx context.Context, configMap ConfigMap) (DiffResult, error) {
+	live, err := manager.Get(ctx, configMap.Namespace, configMap.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(configMap)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, configMap)
 }
 
 // Get fetches a ServiceAccount by namespace and name.
@@ -724,6 +789,24 @@ func (manager ServiceAccountManager) Delete(ctx context.Context, namespace strin
 	return nil
 }
 
+// Diff compares a desired ServiceAccount against the live cluster object.
+func (manager ServiceAccountManager) Diff(ctx context.Context, serviceAccount ServiceAccount) (DiffResult, error) {
+	live, err := manager.Get(ctx, serviceAccount.Namespace, serviceAccount.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(serviceAccount)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, serviceAccount)
+}
+
 // Get fetches a Role by namespace and name.
 func (manager RoleManager) Get(ctx context.Context, namespace string, name string) (Role, error) {
 	role, err := manager.clientset.RbacV1().Roles(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -795,6 +878,24 @@ func (manager RoleManager) Delete(ctx context.Context, namespace string, name st
 	return nil
 }
 
+// Diff compares a desired Role against the live cluster object.
+func (manager RoleManager) Diff(ctx context.Context, role Role) (DiffResult, error) {
+	live, err := manager.Get(ctx, role.Namespace, role.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(role)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, role)
+}
+
 // Get fetches a RoleBinding by namespace and name.
 func (manager RoleBindingManager) Get(ctx context.Context, namespace string, name string) (RoleBinding, error) {
 	roleBinding, err := manager.clientset.RbacV1().RoleBindings(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -864,6 +965,24 @@ func (manager RoleBindingManager) Delete(ctx context.Context, namespace string, 
 	}
 
 	return nil
+}
+
+// Diff compares a desired RoleBinding against the live cluster object.
+func (manager RoleBindingManager) Diff(ctx context.Context, roleBinding RoleBinding) (DiffResult, error) {
+	live, err := manager.Get(ctx, roleBinding.Namespace, roleBinding.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(roleBinding)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, roleBinding)
 }
 
 // Get fetches a PersistentVolumeClaim by namespace and name.
@@ -2186,6 +2305,264 @@ func deploymentAvailable(deployment appsv1.Deployment) bool {
 	}
 
 	return false
+}
+
+// Get fetches a ClusterRole by name.
+func (manager ClusterRoleManager) Get(ctx context.Context, name string) (ClusterRole, error) {
+	clusterRole, err := manager.clientset.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return ClusterRole{}, fmt.Errorf("get cluster role %q: %w", name, err)
+	}
+
+	return clusterRoleFromResource(*clusterRole), nil
+}
+
+// List fetches ClusterRoles matching the label selector.
+func (manager ClusterRoleManager) List(ctx context.Context, selector string) ([]ClusterRole, error) {
+	clusterRoleList, err := manager.clientset.RbacV1().ClusterRoles().List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list cluster roles: %w", err)
+	}
+
+	clusterRoles := make([]ClusterRole, 0, len(clusterRoleList.Items))
+	for _, clusterRole := range clusterRoleList.Items {
+		clusterRoles = append(clusterRoles, clusterRoleFromResource(clusterRole))
+	}
+
+	return clusterRoles, nil
+}
+
+// Apply creates or updates a ClusterRole with server-side apply.
+func (manager ClusterRoleManager) Apply(ctx context.Context, clusterRole ClusterRole) error {
+	manager.logger.Debug("applying_cluster_role", logger.WithFields(
+		logger.String("name", clusterRole.Name),
+	))
+
+	resource := clusterRoleToResource(clusterRole)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal cluster role %q for apply: %w", clusterRole.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.RbacV1().ClusterRoles().Patch(
+		ctx,
+		clusterRole.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply cluster role %q: %w", clusterRole.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a ClusterRole if it exists.
+func (manager ClusterRoleManager) Delete(ctx context.Context, name string) error {
+	manager.logger.Debug("deleting_cluster_role", logger.WithFields(
+		logger.String("name", name),
+	))
+
+	err := manager.clientset.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete cluster role %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// Diff compares a desired ClusterRole against the live cluster object.
+func (manager ClusterRoleManager) Diff(ctx context.Context, clusterRole ClusterRole) (DiffResult, error) {
+	live, err := manager.Get(ctx, clusterRole.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(clusterRole)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, clusterRole)
+}
+
+// Get fetches a ClusterRoleBinding by name.
+func (manager ClusterRoleBindingManager) Get(ctx context.Context, name string) (ClusterRoleBinding, error) {
+	clusterRoleBinding, err := manager.clientset.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return ClusterRoleBinding{}, fmt.Errorf("get cluster role binding %q: %w", name, err)
+	}
+
+	return clusterRoleBindingFromResource(*clusterRoleBinding), nil
+}
+
+// List fetches ClusterRoleBindings matching the label selector.
+func (manager ClusterRoleBindingManager) List(ctx context.Context, selector string) ([]ClusterRoleBinding, error) {
+	clusterRoleBindingList, err := manager.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list cluster role bindings: %w", err)
+	}
+
+	clusterRoleBindings := make([]ClusterRoleBinding, 0, len(clusterRoleBindingList.Items))
+	for _, clusterRoleBinding := range clusterRoleBindingList.Items {
+		clusterRoleBindings = append(clusterRoleBindings, clusterRoleBindingFromResource(clusterRoleBinding))
+	}
+
+	return clusterRoleBindings, nil
+}
+
+// Apply creates or updates a ClusterRoleBinding with server-side apply.
+func (manager ClusterRoleBindingManager) Apply(ctx context.Context, clusterRoleBinding ClusterRoleBinding) error {
+	manager.logger.Debug("applying_cluster_role_binding", logger.WithFields(
+		logger.String("name", clusterRoleBinding.Name),
+	))
+
+	resource := clusterRoleBindingToResource(clusterRoleBinding)
+	data, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("marshal cluster role binding %q for apply: %w", clusterRoleBinding.Name, err)
+	}
+
+	force := true
+	_, err = manager.clientset.RbacV1().ClusterRoleBindings().Patch(
+		ctx,
+		clusterRoleBinding.Name,
+		types.ApplyPatchType,
+		data,
+		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
+	)
+	if err != nil {
+		return fmt.Errorf("apply cluster role binding %q: %w", clusterRoleBinding.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a ClusterRoleBinding if it exists.
+func (manager ClusterRoleBindingManager) Delete(ctx context.Context, name string) error {
+	manager.logger.Debug("deleting_cluster_role_binding", logger.WithFields(
+		logger.String("name", name),
+	))
+
+	err := manager.clientset.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete cluster role binding %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// Diff compares a desired ClusterRoleBinding against the live cluster object.
+func (manager ClusterRoleBindingManager) Diff(ctx context.Context, clusterRoleBinding ClusterRoleBinding) (DiffResult, error) {
+	live, err := manager.Get(ctx, clusterRoleBinding.Name)
+	if apierrors.IsNotFound(err) {
+		desiredText, marshalErr := marshalYAML(clusterRoleBinding)
+		if marshalErr != nil {
+			return DiffResult{}, marshalErr
+		}
+
+		return DiffResult{Changed: true, Desired: desiredText}, nil
+	}
+	if err != nil {
+		return DiffResult{}, err
+	}
+
+	return diffNormalized(live, clusterRoleBinding)
+}
+
+func clusterRoleToResource(clusterRole ClusterRole) rbacv1.ClusterRole {
+	resourceRules := make([]rbacv1.PolicyRule, 0, len(clusterRole.Rules))
+	for _, rule := range clusterRole.Rules {
+		resourceRules = append(resourceRules, rbacv1.PolicyRule{
+			APIGroups: cloneStrings(rule.APIGroups),
+			Resources: cloneStrings(rule.Resources),
+			Verbs:     cloneStrings(rule.Verbs),
+		})
+	}
+
+	return rbacv1.ClusterRole{
+		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRole"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   clusterRole.Name,
+			Labels: cloneLabels(clusterRole.Labels),
+		},
+		Rules: resourceRules,
+	}
+}
+
+func clusterRoleFromResource(clusterRole rbacv1.ClusterRole) ClusterRole {
+	resourceRules := make([]PolicyRule, 0, len(clusterRole.Rules))
+	for _, rule := range clusterRole.Rules {
+		resourceRules = append(resourceRules, PolicyRule{
+			APIGroups: cloneStrings(rule.APIGroups),
+			Resources: cloneStrings(rule.Resources),
+			Verbs:     cloneStrings(rule.Verbs),
+		})
+	}
+
+	return ClusterRole{
+		Name:   clusterRole.Name,
+		Labels: cloneLabels(clusterRole.Labels),
+		Rules:  resourceRules,
+	}
+}
+
+func clusterRoleBindingToResource(clusterRoleBinding ClusterRoleBinding) rbacv1.ClusterRoleBinding {
+	resourceSubjects := make([]rbacv1.Subject, 0, len(clusterRoleBinding.Subjects))
+	for _, subject := range clusterRoleBinding.Subjects {
+		resourceSubjects = append(resourceSubjects, rbacv1.Subject{
+			Kind:      subject.Kind,
+			Name:      subject.Name,
+			Namespace: subject.Namespace,
+		})
+	}
+
+	return rbacv1.ClusterRoleBinding{
+		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "ClusterRoleBinding"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   clusterRoleBinding.Name,
+			Labels: cloneLabels(clusterRoleBinding.Labels),
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: clusterRoleBinding.RoleRef.APIGroup,
+			Kind:     clusterRoleBinding.RoleRef.Kind,
+			Name:     clusterRoleBinding.RoleRef.Name,
+		},
+		Subjects: resourceSubjects,
+	}
+}
+
+func clusterRoleBindingFromResource(clusterRoleBinding rbacv1.ClusterRoleBinding) ClusterRoleBinding {
+	resourceSubjects := make([]Subject, 0, len(clusterRoleBinding.Subjects))
+	for _, subject := range clusterRoleBinding.Subjects {
+		resourceSubjects = append(resourceSubjects, Subject{
+			Kind:      subject.Kind,
+			Name:      subject.Name,
+			Namespace: subject.Namespace,
+		})
+	}
+
+	return ClusterRoleBinding{
+		Name:   clusterRoleBinding.Name,
+		Labels: cloneLabels(clusterRoleBinding.Labels),
+		RoleRef: RoleRef{
+			APIGroup: clusterRoleBinding.RoleRef.APIGroup,
+			Kind:     clusterRoleBinding.RoleRef.Kind,
+			Name:     clusterRoleBinding.RoleRef.Name,
+		},
+		Subjects: resourceSubjects,
+	}
 }
 
 // WithFieldOwner sets the field manager used for server-side apply.

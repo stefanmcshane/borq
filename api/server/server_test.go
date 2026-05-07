@@ -10,15 +10,20 @@ import (
 	"time"
 
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
+// TestBuildServer verifies that a server is constructed successfully when
+// startup health checks pass.
 func TestBuildServer(t *testing.T) {
 	is := is.New(t)
 
+	conn := testConnection()
 	server, err := buildServer(
 		context.Background(),
 		NewServerInput{Port: 7833, DataDir: t.TempDir(), Log: logger.Logger{}},
+		conn,
 		[]HealthCheck{
 			{
 				Name: kubernetesAuthCheckName,
@@ -27,6 +32,7 @@ func TestBuildServer(t *testing.T) {
 				},
 			},
 		},
+		nil,
 		time.Second,
 		time.Millisecond,
 	)
@@ -34,12 +40,16 @@ func TestBuildServer(t *testing.T) {
 	is.Equal(server.address, ":7833")
 }
 
+// TestBuildServerFailsWhenStartupHealthcheckFails verifies that NewServer
+// returns an error when startup health checks never succeed.
 func TestBuildServerFailsWhenStartupHealthcheckFails(t *testing.T) {
 	is := is.New(t)
 
+	conn := testConnection()
 	_, err := buildServer(
 		context.Background(),
 		NewServerInput{Port: 7833, DataDir: t.TempDir(), Log: logger.Logger{}},
+		conn,
 		[]HealthCheck{
 			{
 				Name: kubernetesAuthCheckName,
@@ -48,6 +58,7 @@ func TestBuildServerFailsWhenStartupHealthcheckFails(t *testing.T) {
 				},
 			},
 		},
+		nil,
 		5*time.Millisecond,
 		time.Millisecond,
 	)
@@ -56,19 +67,24 @@ func TestBuildServerFailsWhenStartupHealthcheckFails(t *testing.T) {
 	is.Equal(err.Error(), `server startup healthcheck failed: kubernetes-auth: denied`)
 }
 
+// TestBuildServerRetriesStartupHealthcheckUntilSuccess verifies that
+// buildServer retries health checks and succeeds once they pass.
 func TestBuildServerRetriesStartupHealthcheckUntilSuccess(t *testing.T) {
 	is := is.New(t)
 
+	conn := testConnection()
 	checker := &flakyHealthCheck{failures: 2}
 	_, err := buildServer(
 		context.Background(),
 		NewServerInput{Port: 7833, DataDir: t.TempDir(), Log: logger.Logger{}},
+		conn,
 		[]HealthCheck{
 			{
 				Name: kubernetesAuthCheckName,
 				Run:  checker.run,
 			},
 		},
+		nil,
 		50*time.Millisecond,
 		time.Millisecond,
 	)
@@ -77,6 +93,8 @@ func TestBuildServerRetriesStartupHealthcheckUntilSuccess(t *testing.T) {
 	is.Equal(checker.calls(), 3)
 }
 
+// TestNewServerRejectsInvalidConfig verifies that NewServer validates its
+// input and returns descriptive errors for each invalid field.
 func TestNewServerRejectsInvalidConfig(t *testing.T) {
 	testCases := []struct {
 		name    string
@@ -105,6 +123,8 @@ func TestNewServerRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+// TestHandlerServesHealthAndRoot verifies that the HTTP handler serves the
+// root and healthz endpoints with correct status codes and response bodies.
 func TestHandlerServesHealthAndRoot(t *testing.T) {
 	is := is.New(t)
 
@@ -115,7 +135,7 @@ func TestHandlerServesHealthAndRoot(t *testing.T) {
 				return HealthResult{Name: "test-check", Status: healthStatusSuccess, Description: "ok"}
 			},
 		},
-	})
+	}, kubernetes.Connection{}, logger.Logger{}, nil)
 
 	rootRequest := httptest.NewRequest("GET", "/", nil)
 	rootRecorder := httptest.NewRecorder()
@@ -159,4 +179,8 @@ func (checker *flakyHealthCheck) calls() int {
 	checker.mu.Lock()
 	defer checker.mu.Unlock()
 	return checker.callCount
+}
+
+func testConnection() kubernetes.Connection {
+	return kubernetes.Connection{}
 }

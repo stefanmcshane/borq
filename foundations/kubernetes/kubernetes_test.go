@@ -20,6 +20,8 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
+// TestBuildConnectionConfig verifies that buildConnectionConfig applies
+// options and falls back to the default field owner.
 func TestBuildConnectionConfig(t *testing.T) {
 	is := is.New(t)
 
@@ -35,6 +37,8 @@ func TestBuildConnectionConfig(t *testing.T) {
 	is.Equal(err.Error(), "field owner must not be empty")
 }
 
+// TestRestConfigForConfigLoadsKubeconfigPath verifies that a valid kubeconfig
+// path is loaded into a rest.Config with the expected host.
 func TestRestConfigForConfigLoadsKubeconfigPath(t *testing.T) {
 	is := is.New(t)
 
@@ -44,6 +48,8 @@ func TestRestConfigForConfigLoadsKubeconfigPath(t *testing.T) {
 	is.Equal(restConfig.Host, "https://127.0.0.1:6443")
 }
 
+// TestRestConfigForConfigRejectsInvalidKubeconfigPath verifies that a
+// non-existent kubeconfig path returns a descriptive error.
 func TestRestConfigForConfigRejectsInvalidKubeconfigPath(t *testing.T) {
 	is := is.New(t)
 
@@ -52,6 +58,8 @@ func TestRestConfigForConfigRejectsInvalidKubeconfigPath(t *testing.T) {
 	is.True(strings.Contains(err.Error(), `load kubeconfig "/does/not/exist"`))
 }
 
+// TestRestConfigForConfigDefaultsToInCluster verifies that an empty config
+// tries to load the in-cluster config (which fails outside a cluster).
 func TestRestConfigForConfigDefaultsToInCluster(t *testing.T) {
 	is := is.New(t)
 
@@ -60,6 +68,8 @@ func TestRestConfigForConfigDefaultsToInCluster(t *testing.T) {
 	is.True(strings.Contains(err.Error(), "load in-cluster kubernetes config"))
 }
 
+// TestCanAdminNamespace verifies that CanAdminNamespace returns nil when the
+// fake client reports the SSAR as allowed.
 func TestCanAdminNamespace(t *testing.T) {
 	is := is.New(t)
 
@@ -75,6 +85,8 @@ func TestCanAdminNamespace(t *testing.T) {
 	is.NoErr(err)
 }
 
+// TestSelfSubjectAccessReviewUsesProvidedRule verifies that the SSAR request
+// includes the correct namespace, verb, group, and resource from the input.
 func TestSelfSubjectAccessReviewUsesProvidedRule(t *testing.T) {
 	is := is.New(t)
 
@@ -106,6 +118,8 @@ func TestSelfSubjectAccessReviewUsesProvidedRule(t *testing.T) {
 	is.Equal(err.Error(), `namespace access denied for "borq-system": missing permission`)
 }
 
+// TestSelfSubjectAccessReviewRejectsInvalidInput verifies that an SSAR with
+// missing verbs is rejected before reaching the API.
 func TestSelfSubjectAccessReviewRejectsInvalidInput(t *testing.T) {
 	is := is.New(t)
 
@@ -150,6 +164,8 @@ users:
 	return kubeconfigPath
 }
 
+// TestServiceManagerDiffIgnoresClusterAssignedFields verifies that
+// cluster-assigned fields (ClusterIP, NodePort) are excluded from the diff.
 func TestServiceManagerDiffIgnoresClusterAssignedFields(t *testing.T) {
 	is := is.New(t)
 
@@ -199,6 +215,8 @@ func TestServiceManagerDiffIgnoresClusterAssignedFields(t *testing.T) {
 	is.True(!diff.Changed)
 }
 
+// TestServiceManagerDiffMissingResource verifies that Diff returns Changed
+// when the resource does not exist in the cluster.
 func TestServiceManagerDiffMissingResource(t *testing.T) {
 	is := is.New(t)
 
@@ -215,6 +233,8 @@ func TestServiceManagerDiffMissingResource(t *testing.T) {
 	is.Equal(diff.Live, "")
 }
 
+// TestServiceManagerGetListDelete verifies the CRUD cycle for ServiceManager
+// using a fake clientset.
 func TestServiceManagerGetListDelete(t *testing.T) {
 	is := is.New(t)
 
@@ -242,6 +262,8 @@ func TestServiceManagerGetListDelete(t *testing.T) {
 	is.True(err != nil)
 }
 
+// TestServiceResourceRoundTrip verifies that serviceToResource and
+// serviceFromResource are inverses.
 func TestServiceResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -260,6 +282,9 @@ func TestServiceResourceRoundTrip(t *testing.T) {
 	is.Equal(serviceFromResource(serviceToResource(service)), service)
 }
 
+// TestPersistentVolumeClaimResourceRoundTrip verifies that
+// persistentVolumeClaimToResource and persistentVolumeClaimFromResource are
+// inverses.
 func TestPersistentVolumeClaimResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -274,6 +299,8 @@ func TestPersistentVolumeClaimResourceRoundTrip(t *testing.T) {
 	is.Equal(persistentVolumeClaimFromResource(persistentVolumeClaimToResource(persistentVolumeClaim)), persistentVolumeClaim)
 }
 
+// TestDeploymentResourceRoundTrip verifies that deploymentToResource and
+// deploymentFromResource are inverses.
 func TestDeploymentResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -311,6 +338,8 @@ func TestDeploymentResourceRoundTrip(t *testing.T) {
 	is.Equal(deploymentFromResource(deploymentToResource(deployment)), deployment)
 }
 
+// TestStatefulSetResourceRoundTrip verifies that statefulSetToResource and
+// statefulSetFromResource are inverses for key fields.
 func TestStatefulSetResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -343,6 +372,8 @@ func TestStatefulSetResourceRoundTrip(t *testing.T) {
 	is.Equal(roundTrip.Pods.Containers[0].Ports[0], statefulSet.Pods.Containers[0].Ports[0])
 }
 
+// TestNamespaceResourceRoundTrip verifies that namespaceToResource and
+// namespaceFromResource are inverses.
 func TestNamespaceResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -354,6 +385,8 @@ func TestNamespaceResourceRoundTrip(t *testing.T) {
 	is.Equal(namespaceFromResource(namespaceToResource(namespace)), namespace)
 }
 
+// TestConfigMapResourceRoundTrip verifies that configMapToResource and
+// configMapFromResource are inverses.
 func TestConfigMapResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -367,6 +400,8 @@ func TestConfigMapResourceRoundTrip(t *testing.T) {
 	is.Equal(configMapFromResource(configMapToResource(configMap)), configMap)
 }
 
+// TestServiceAccountResourceRoundTrip verifies that serviceAccountToResource
+// and serviceAccountFromResource are inverses.
 func TestServiceAccountResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -379,6 +414,8 @@ func TestServiceAccountResourceRoundTrip(t *testing.T) {
 	is.Equal(serviceAccountFromResource(serviceAccountToResource(serviceAccount)), serviceAccount)
 }
 
+// TestRoleResourceRoundTrip verifies that roleToResource and
+// roleFromResource are inverses.
 func TestRoleResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -398,6 +435,8 @@ func TestRoleResourceRoundTrip(t *testing.T) {
 	is.Equal(roleFromResource(roleToResource(role)), role)
 }
 
+// TestRoleBindingResourceRoundTrip verifies that roleBindingToResource and
+// roleBindingFromResource are inverses.
 func TestRoleBindingResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -422,6 +461,8 @@ func TestRoleBindingResourceRoundTrip(t *testing.T) {
 	is.Equal(roleBindingFromResource(roleBindingToResource(roleBinding)), roleBinding)
 }
 
+// TestPodResourceRoundTrip verifies that podToResource and podFromResource
+// are inverses for key fields.
 func TestPodResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
@@ -459,6 +500,8 @@ func TestPodResourceRoundTrip(t *testing.T) {
 	is.Equal(roundTrip.Spec.Containers[0].VolumeMounts, pod.Spec.Containers[0].VolumeMounts)
 }
 
+// TestRbacAndConfigManagersGetListDelete verifies the Get/List/Delete cycle
+// for ConfigMap, ServiceAccount, Role, and RoleBinding managers.
 func TestRbacAndConfigManagersGetListDelete(t *testing.T) {
 	is := is.New(t)
 
@@ -515,6 +558,8 @@ func TestRbacAndConfigManagersGetListDelete(t *testing.T) {
 	is.NoErr(roleBindingManager.Delete(context.Background(), "borq-system", "borq"))
 }
 
+// TestDeploymentManagerWaitForAvailable verifies that WaitForAvailable
+// returns nil when the deployment has available replicas.
 func TestDeploymentManagerWaitForAvailable(t *testing.T) {
 	is := is.New(t)
 
@@ -543,6 +588,8 @@ func TestDeploymentManagerWaitForAvailable(t *testing.T) {
 	is.NoErr(err)
 }
 
+// TestDeploymentManagerGetListDeleteAndDiff verifies the full CRUD + Diff
+// cycle for DeploymentManager.
 func TestDeploymentManagerGetListDeleteAndDiff(t *testing.T) {
 	is := is.New(t)
 
@@ -577,6 +624,8 @@ func TestDeploymentManagerGetListDeleteAndDiff(t *testing.T) {
 	is.NoErr(manager.Delete(context.Background(), "borq-system", "whoami"))
 }
 
+// TestPersistentVolumeClaimManagerGetListDeleteAndDiff verifies the full
+// CRUD + Diff cycle for PersistentVolumeClaimManager.
 func TestPersistentVolumeClaimManagerGetListDeleteAndDiff(t *testing.T) {
 	is := is.New(t)
 
@@ -606,6 +655,8 @@ func TestPersistentVolumeClaimManagerGetListDeleteAndDiff(t *testing.T) {
 	is.NoErr(manager.Delete(context.Background(), "borq-system", "borq-data"))
 }
 
+// TestPersistentVolumeClaimManagerWaitForBound verifies that WaitForBound
+// returns nil once the PVC transitions to Bound.
 func TestPersistentVolumeClaimManagerWaitForBound(t *testing.T) {
 	is := is.New(t)
 
@@ -628,6 +679,8 @@ func TestPersistentVolumeClaimManagerWaitForBound(t *testing.T) {
 	is.NoErr(err)
 }
 
+// TestPersistentVolumeClaimManagerWaitForBoundTimeout verifies that
+// WaitForBound returns an error when the PVC never binds before the timeout.
 func TestPersistentVolumeClaimManagerWaitForBoundTimeout(t *testing.T) {
 	is := is.New(t)
 
@@ -647,6 +700,9 @@ func TestPersistentVolumeClaimManagerWaitForBoundTimeout(t *testing.T) {
 	is.True(err != nil)
 }
 
+// TestStorageClassManagerEnsureRetainDefault verifies that
+// EnsureRetainDefault copies a source StorageClass, sets Retain reclaim
+// policy, marks it as default, and unmarks the previous default.
 func TestStorageClassManagerEnsureRetainDefault(t *testing.T) {
 	is := is.New(t)
 
@@ -689,6 +745,8 @@ func TestStorageClassManagerEnsureRetainDefault(t *testing.T) {
 	is.Equal(standardStorageClass.Annotations[defaultStorageClassAnnotation], "false")
 }
 
+// TestStorageClassManagerEnsureRetainDefaultRequiresSource verifies that
+// EnsureRetainDefault returns an error when no source StorageClass exists.
 func TestStorageClassManagerEnsureRetainDefaultRequiresSource(t *testing.T) {
 	is := is.New(t)
 
@@ -700,6 +758,9 @@ func TestStorageClassManagerEnsureRetainDefaultRequiresSource(t *testing.T) {
 	is.Equal(err.Error(), "no storage class is available to build retain")
 }
 
+// TestDeploymentManagerWaitForAvailableTimeout verifies that
+// WaitForAvailable returns an error when the deployment never becomes
+// available before the timeout.
 func TestDeploymentManagerWaitForAvailableTimeout(t *testing.T) {
 	is := is.New(t)
 
@@ -719,6 +780,8 @@ func TestDeploymentManagerWaitForAvailableTimeout(t *testing.T) {
 	is.True(err != nil)
 }
 
+// TestStatefulSetManagerWaitForReady verifies that WaitForReady returns nil
+// when the StatefulSet has ready replicas.
 func TestStatefulSetManagerWaitForReady(t *testing.T) {
 	is := is.New(t)
 
@@ -741,6 +804,8 @@ func TestStatefulSetManagerWaitForReady(t *testing.T) {
 	is.NoErr(err)
 }
 
+// TestStatefulSetManagerGetListDeleteAndDiff verifies the full CRUD + Diff
+// cycle for StatefulSetManager.
 func TestStatefulSetManagerGetListDeleteAndDiff(t *testing.T) {
 	is := is.New(t)
 
@@ -775,6 +840,9 @@ func TestStatefulSetManagerGetListDeleteAndDiff(t *testing.T) {
 	is.NoErr(manager.Delete(context.Background(), "borq-system", "vault"))
 }
 
+// TestStatefulSetManagerWaitForReadyTimeout verifies that WaitForReady
+// returns an error when the StatefulSet never becomes ready before the
+// timeout.
 func TestStatefulSetManagerWaitForReadyTimeout(t *testing.T) {
 	is := is.New(t)
 
@@ -794,6 +862,8 @@ func TestStatefulSetManagerWaitForReadyTimeout(t *testing.T) {
 	is.True(err != nil)
 }
 
+// TestNamespaceManagerGetListDeleteAndDiff verifies the full CRUD + Diff
+// cycle for NamespaceManager.
 func TestNamespaceManagerGetListDeleteAndDiff(t *testing.T) {
 	is := is.New(t)
 
@@ -820,6 +890,8 @@ func TestNamespaceManagerGetListDeleteAndDiff(t *testing.T) {
 	is.NoErr(manager.Delete(context.Background(), "borq-system"))
 }
 
+// TestPodManagerGetListDeleteAndDiff verifies the full CRUD + Diff cycle for
+// PodManager.
 func TestPodManagerGetListDeleteAndDiff(t *testing.T) {
 	is := is.New(t)
 
@@ -849,6 +921,8 @@ func TestPodManagerGetListDeleteAndDiff(t *testing.T) {
 	is.NoErr(manager.Delete(context.Background(), "borq-system", "debug"))
 }
 
+// TestMarshalYAMLFailure verifies that marshalYAML returns an error when
+// given an unserializable value.
 func TestMarshalYAMLFailure(t *testing.T) {
 	is := is.New(t)
 
@@ -856,6 +930,8 @@ func TestMarshalYAMLFailure(t *testing.T) {
 	is.True(err != nil)
 }
 
+// TestDiffNormalizedFailure verifies that diffNormalized returns an error
+// when either input cannot be marshaled.
 func TestDiffNormalizedFailure(t *testing.T) {
 	is := is.New(t)
 

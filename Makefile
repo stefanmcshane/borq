@@ -20,7 +20,7 @@ test-unit: ## Run unit tests.
 	$(GO_TEST_ENV) go test ./... -count=1
 
 test-integration-server: ## Run server integration tests against a running borq server.
-	BORQ_INTEGRATION_SERVER_URL="$(BORQ_INTEGRATION_SERVER_URL)" $(GO_TEST_ENV) go test -tags=integration ./api/server -run TestServerIntegration -v -count=1
+	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_INTEGRATION_SERVER_URL="$(BORQ_INTEGRATION_SERVER_URL)" $(GO_TEST_ENV) go test -tags=integration ./api/server -run 'TestServerIntegration|TestReconcileIntegration' -v -count=1
 
 test-integration-bootstrap: ## Run bootstrap integration tests on a fresh kind cluster. 
 	# NOTE: Requires Docker daemon access (docker.sock) because kind runs in Docker.

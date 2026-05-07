@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stefanmcshane/borq/business/managementreconcile"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
@@ -27,14 +28,10 @@ const (
 
 // NewServerInput describes the borq server runtime inputs.
 type NewServerInput struct {
-	// Port is the HTTP listen port.
-	Port int
-	// DataDir is the persistent server data directory.
-	DataDir string
-	// KubeconfigPath is the optional kubeconfig path for the managed cluster.
+	Port           int
+	DataDir        string
 	KubeconfigPath string
-	// Log is the server logger.
-	Log logger.Logger
+	Log            logger.Logger
 }
 
 // Server serves the borq management API.
@@ -66,13 +63,20 @@ func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
 	health := []HealthCheck{
 		newKubernetesAuthHealthCheck(kubernetesConnection, managedNamespace),
 	}
-	return buildServer(ctx, inp, health, startupHealthTimeout, startupHealthInterval)
+
+	handlers := map[string]managementreconcile.ComponentHandler{
+		"vault": managementreconcile.VaultHandler{},
+	}
+
+	return buildServer(ctx, inp, kubernetesConnection, health, handlers, startupHealthTimeout, startupHealthInterval)
 }
 
 func buildServer(
 	ctx context.Context,
 	inp NewServerInput,
+	conn kubernetes.Connection,
 	health []HealthCheck,
+	handlers map[string]managementreconcile.ComponentHandler,
 	healthTimeout time.Duration,
 	healthInterval time.Duration,
 ) (Server, error) {
@@ -88,7 +92,7 @@ func buildServer(
 		log:     inp.Log,
 		httpServer: &http.Server{
 			Addr:              address,
-			Handler:           newHandler(health),
+			Handler:           newHandler(health, conn, inp.Log, handlers),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}, nil
@@ -136,7 +140,7 @@ func (server Server) Serve(ctx context.Context) error {
 	return nil
 }
 
-func newHandler(health []HealthCheck) http.Handler {
+func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Logger, handlers map[string]managementreconcile.ComponentHandler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
@@ -165,6 +169,46 @@ func newHandler(health []HealthCheck) http.Handler {
 
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("borq\n"))
+	})
+	mux.HandleFunc("/reconcile", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		componentName := request.URL.Query().Get("component")
+		handler, ok := handlers[componentName]
+		if !ok {
+			http.Error(writer, "unknown component: "+componentName, http.StatusBadRequest)
+			return
+		}
+
+		cfg := handler.DefaultConfig()
+		if err := json.NewDecoder(request.Body).Decode(&cfg); err != nil {
+			http.Error(writer, "bad request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		dryRun := request.URL.Query().Get("dry-run") == "true"
+		reconciler := managementreconcile.NewReconciler(conn, log)
+
+		plan := handler.Plan(cfg)
+		actual, err := reconciler.GetActual(request.Context(), plan)
+		if err != nil {
+			log.Error("reconcile_get_actual_error", logger.WithFields(logger.String("error", err.Error())))
+			http.Error(writer, "reconcile audit failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_, result, err := reconciler.Reconcile(request.Context(), actual, plan, handler, dryRun)
+		if err != nil {
+			log.Error("reconcile_error", logger.WithFields(logger.String("error", err.Error())))
+			http.Error(writer, "reconcile failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(result)
 	})
 	return mux
 }

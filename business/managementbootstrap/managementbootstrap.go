@@ -18,7 +18,6 @@ import (
 	"github.com/stefanmcshane/borq/foundations/logger"
 
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/tools/clientcmd"
 	kindconfig "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/yaml"
 )
@@ -52,14 +51,15 @@ featureGates:
 
 // Request describes a management bootstrap run.
 type Request struct {
-	ClusterName string
-	HostPort    int32
-	Namespace   string
-	NodePort    int32
-	ProbeURL    string
-	Timeout     time.Duration
-	BorqImage   string
-	StorageSize string
+	ClusterName    string
+	HostPort       int32
+	Namespace      string
+	NodePort       int32
+	ProbeURL       string
+	Timeout        time.Duration
+	BorqImage      string
+	StorageSize    string
+	KubeconfigPath string
 }
 
 // Result captures the outcome of a management bootstrap run.
@@ -123,7 +123,7 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	}
 
 	connection, err := kubernetes.NewConnection(
-		kubernetes.Config{KubeconfigPath: defaultKubeconfigPath()},
+		kubernetes.Config{KubeconfigPath: kubeconfigPath(request)},
 		log,
 		kubernetes.WithFieldOwner(defaultFieldOwner),
 	)
@@ -364,15 +364,12 @@ func probeURLForHostPort(hostPort int32) string {
 	return fmt.Sprintf("http://localhost:%d%s", hostPort, borqHealthPath)
 }
 
-func defaultKubeconfigPath() string {
-	for _, path := range filepath.SplitList(os.Getenv("KUBECONFIG")) {
-		path = strings.TrimSpace(path)
-		if path != "" {
-			return path
-		}
+func kubeconfigPath(request Request) string {
+	if request.KubeconfigPath != "" {
+		return request.KubeconfigPath
 	}
-
-	return clientcmd.RecommendedHomeFile
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".kube", "config")
 }
 
 func kindContextName(clusterName string) string {

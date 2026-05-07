@@ -7,6 +7,8 @@ import (
 	"github.com/matryer/is"
 )
 
+// TestHealthChecksRunAllChecks verifies that runHealthChecks runs every
+// check in the slice and returns an overall fail status when any check fails.
 func TestHealthChecksRunAllChecks(t *testing.T) {
 	is := is.New(t)
 
@@ -41,6 +43,8 @@ func TestHealthChecksRunAllChecks(t *testing.T) {
 	is.Equal(report.Checks[1].Description, "passed")
 }
 
+// TestHealthChecksSucceedWhenAllChecksSucceed verifies that the overall
+// status is success when every individual check passes.
 func TestHealthChecksSucceedWhenAllChecksSucceed(t *testing.T) {
 	is := is.New(t)
 
@@ -59,6 +63,8 @@ func TestHealthChecksSucceedWhenAllChecksSucceed(t *testing.T) {
 	is.Equal(len(report.Checks), 1)
 }
 
+// TestHealthReportFailureDescription verifies that failureDescription
+// concatenates failing check names with their descriptions.
 func TestHealthReportFailureDescription(t *testing.T) {
 	is := is.New(t)
 

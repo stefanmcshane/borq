@@ -3,22 +3,26 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stefanmcshane/borq/api/config"
 	"github.com/stefanmcshane/borq/business/managementbootstrap"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
-func newManagementCommand(ctx context.Context, log logger.Logger) *cobra.Command {
+func newManagementCommand(ctx context.Context, log logger.Logger, cfg config.Config) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "management",
 		Short: "Operate the borq management cluster.",
 	}
 
 	command.AddCommand(newManagementBootstrapCommand(ctx, log))
-	command.AddCommand(newManagementServerCommand(log))
+	command.AddCommand(newManagementServerCommand(log, cfg))
 
 	return command
 }
@@ -26,6 +30,18 @@ func newManagementCommand(ctx context.Context, log logger.Logger) *cobra.Command
 func newManagementBootstrapCommand(ctx context.Context, log logger.Logger) *cobra.Command {
 	request := managementbootstrap.DefaultRequest()
 	request.ProbeURL = ""
+
+	kubeconfigPaths := filepath.SplitList(os.Getenv("KUBECONFIG"))
+	for _, p := range kubeconfigPaths {
+		if strings.TrimSpace(p) != "" {
+			request.KubeconfigPath = p
+			break
+		}
+	}
+	if request.KubeconfigPath == "" {
+		home, _ := os.UserHomeDir()
+		request.KubeconfigPath = filepath.Join(home, ".kube", "config")
+	}
 
 	command := &cobra.Command{
 		Use:   "bootstrap",

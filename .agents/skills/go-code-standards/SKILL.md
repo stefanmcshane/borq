@@ -166,7 +166,6 @@ newly added code should include tests that keep coverage at or above 75% for tha
   - Do not create placeholder business interfaces for simple pass-through commands.
   - Use OpenTelemetry for logs, traces, and metrics.
   - Command result data is written to `stdout` only.
-  - Operational telemetry (including logs) is written to `stderr` via OTel logging exporter and may also be exported remotely.
   - Include correlation fields in telemetry (`trace_id`, `span_id`, command name, request id where applicable).
   - Default visible telemetry level is `info` and `error`.
   - `--verbose` enables `debug` telemetry.

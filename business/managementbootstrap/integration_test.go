@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -210,9 +211,20 @@ func borqPodName(ctx context.Context, clusterName string, namespace string) (str
 
 func kindConnection(_ string) (kubernetes.Connection, error) {
 	return kubernetes.NewConnection(
-		kubernetes.Config{KubeconfigPath: defaultKubeconfigPath()},
+		kubernetes.Config{KubeconfigPath: defaultKubeconfig()},
 		logger.Logger{},
 	)
+}
+
+func defaultKubeconfig() string {
+	paths := filepath.SplitList(os.Getenv("KUBECONFIG"))
+	for _, p := range paths {
+		if strings.TrimSpace(p) != "" {
+			return p
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".kube", "config")
 }
 
 func repositoryRoot(ctx context.Context) (string, error) {

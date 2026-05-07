@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/stefanmcshane/borq/api/cli"
+	"github.com/stefanmcshane/borq/api/config"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
@@ -23,7 +24,13 @@ func main() {
 		_ = log.Sync()
 	}()
 
-	command := cli.NewRootCommand(ctx, log)
+	cfg, err := config.Load()
+	if err != nil {
+		_, _ = os.Stderr.WriteString(err.Error() + "\n")
+		os.Exit(1)
+	}
+
+	command := cli.NewRootCommand(ctx, log, cfg)
 	if err := command.Execute(); err != nil {
 		_, _ = os.Stderr.WriteString(err.Error() + "\n")
 		os.Exit(1)

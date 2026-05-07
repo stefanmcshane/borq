@@ -1,24 +1,17 @@
 package cli
 
 import (
-	"os"
-	"strings"
-
 	"github.com/spf13/cobra"
+	"github.com/stefanmcshane/borq/api/config"
 	"github.com/stefanmcshane/borq/api/server"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
-const (
-	defaultServerDataDir = "/var/lib/borq"
-	kubeconfigEnvVar     = "BORQ_KUBECONFIG"
-)
-
-func newManagementServerCommand(log logger.Logger) *cobra.Command {
+func newManagementServerCommand(log logger.Logger, cfg config.Config) *cobra.Command {
 	input := server.NewServerInput{
-		Port:           7833,
-		DataDir:        defaultServerDataDir,
-		KubeconfigPath: strings.TrimSpace(os.Getenv(kubeconfigEnvVar)),
+		Port:           cfg.Port,
+		DataDir:        cfg.DataDir,
+		KubeconfigPath: cfg.KubeconfigPath,
 		Log:            log,
 	}
 
