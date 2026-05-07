@@ -1,4 +1,4 @@
-.PHONY: help test-unit test-integration-server test-integration-local test-integration-bootstrap promote-release release-dev
+.PHONY: help test-unit test-integration-server test-integration-local test-integration-bootstrap promote-release release-dev dev
 
 GO_TEST_ENV := GOCACHE=/tmp/borq-go-build GOMODCACHE=/tmp/borq-go-mod
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
@@ -44,4 +44,13 @@ release-dev: ## Build and publish a dev image tag to GHCR with GoReleaser (witho
 	docker buildx create --name "$$builder" --driver docker-container --use >/dev/null; \
 	docker buildx inspect "$$builder" --bootstrap >/dev/null; \
 	git tag "$$tag"; \
-	goreleaser release --clean --config zarf/.goreleaser.dev.yaml --skip=validate --auto-snapshot
+	goreleaser release --clean --config zarf/dev/.goreleaser.dev.yaml --skip=validate --auto-snapshot
+
+dev: ## Ensure dev-borq exists, bootstrap borq, then run local borq with air via mirrord.
+	@command -v mirrord >/dev/null || { echo "mirrord not found on PATH (install: brew install metalbear-co/mirrord/mirrord)"; exit 1; }
+	@command -v air >/dev/null || { echo "air not found on PATH (install: go install github.com/air-verse/air@latest)"; exit 1; }
+	@command -v kind >/dev/null || { echo "kind not found on PATH (install: https://kind.sigs.k8s.io/)"; exit 1; }
+	@mkdir -p "$(CURDIR)/tmp/dev"
+	@go run ./cmd/borq management bootstrap --cluster-name "dev-borq" --host-port 7833
+	@BORQ_INTEGRATION_SERVER_URL="http://localhost:7833" $(MAKE) test-integration-local || echo "warning: integration check failed; continuing dev loop"
+	@mirrord exec -f zarf/dev/mirrord.json -- air -c zarf/dev/.air.toml

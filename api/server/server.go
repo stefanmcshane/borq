@@ -15,6 +15,7 @@ import (
 const (
 	healthPath = "/healthz"
 	rootPath   = "/"
+	healthBody = "ok-reload-v1\n"
 )
 
 // Config describes the borq server runtime configuration.
@@ -98,7 +99,7 @@ func newHandler() http.Handler {
 		}
 
 		writer.WriteHeader(http.StatusOK)
-		_, _ = writer.Write([]byte("ok\n"))
+		_, _ = writer.Write([]byte(healthBody))
 	})
 	mux.HandleFunc(rootPath, func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
@@ -113,6 +114,5 @@ func newHandler() http.Handler {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("borq\n"))
 	})
-
 	return mux
 }

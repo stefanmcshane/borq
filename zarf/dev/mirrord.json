@@ -1,0 +1,21 @@
+{
+  "target": {
+    "path": "deployment/borq",
+    "namespace": "borq-system"
+  },
+  "feature": {
+    "network": {
+      "incoming": {
+        "mode": "steal",
+        "ports": [7833],
+        "port_mapping": [[27833, 7833]]
+      }
+    }
+  },
+  "agent": {
+    "namespace": "borq-system",
+    "privileged": true,
+    "ttl": 120,
+    "startup_timeout": 120
+  }
+}

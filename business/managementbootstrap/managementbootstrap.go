@@ -118,10 +118,6 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 		}
 	}
 
-	if err := loadBorqImageIfLocal(timeoutContext, request.ClusterName, request.BorqImage); err != nil {
-		return Result{}, err
-	}
-
 	connection, err := kubernetes.NewConnection(
 		kubernetes.Config{ContextName: kindContextName(request.ClusterName)},
 		log.Named("kubernetes"),
@@ -585,18 +581,6 @@ func hasCluster(output string, clusterName string) bool {
 	}
 
 	return false
-}
-
-func loadBorqImageIfLocal(ctx context.Context, clusterName string, image string) error {
-	if _, err := runCommand(ctx, "docker", "image", "inspect", image); err != nil {
-		return nil
-	}
-
-	if _, err := runCommand(ctx, "kind", "load", "docker-image", "--name", clusterName, image); err != nil {
-		return fmt.Errorf("load borq image %q into kind cluster %q: %w", image, clusterName, err)
-	}
-
-	return nil
 }
 
 func runningInLXCContainer() bool {
