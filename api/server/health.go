@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 )
@@ -86,5 +87,26 @@ func newKubernetesAuthHealthCheck(connection kubernetes.Connection, namespace st
 				Description: fmt.Sprintf("credentials can manage resources in namespace %q", namespace),
 			}
 		},
+	}
+}
+
+func waitForStartupHealth(ctx context.Context, checks []HealthCheck, timeout time.Duration, interval time.Duration) error {
+	timeoutContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		report := runHealthChecks(timeoutContext, checks)
+		if report.Status == healthStatusSuccess {
+			return nil
+		}
+
+		select {
+		case <-timeoutContext.Done():
+			return fmt.Errorf("server startup healthcheck failed: %s", report.failureDescription())
+		case <-ticker.C:
+		}
 	}
 }

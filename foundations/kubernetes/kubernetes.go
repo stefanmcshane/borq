@@ -471,7 +471,10 @@ func (manager ServiceManager) List(ctx context.Context, namespace string, select
 
 // Apply creates or updates a Service with server-side apply.
 func (manager ServiceManager) Apply(ctx context.Context, service Service) error {
-	manager.logger.Info("applying service", logger.String("namespace", service.Namespace), logger.String("name", service.Name))
+	manager.logger.Debug("applying_service", logger.WithFields(
+		logger.String("namespace", service.Namespace),
+		logger.String("name", service.Name),
+	))
 
 	resource := serviceToResource(service)
 	data, err := json.Marshal(resource)
@@ -496,7 +499,10 @@ func (manager ServiceManager) Apply(ctx context.Context, service Service) error 
 
 // Delete removes a Service if it exists.
 func (manager ServiceManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting service", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_service", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.CoreV1().Services(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -603,7 +609,10 @@ func (manager ConfigMapManager) List(ctx context.Context, namespace string, sele
 
 // Apply creates or updates a ConfigMap with server-side apply.
 func (manager ConfigMapManager) Apply(ctx context.Context, configMap ConfigMap) error {
-	manager.logger.Info("applying config map", logger.String("namespace", configMap.Namespace), logger.String("name", configMap.Name))
+	manager.logger.Debug("applying_config_map", logger.WithFields(
+		logger.String("namespace", configMap.Namespace),
+		logger.String("name", configMap.Name),
+	))
 
 	resource := configMapToResource(configMap)
 	data, err := json.Marshal(resource)
@@ -628,7 +637,10 @@ func (manager ConfigMapManager) Apply(ctx context.Context, configMap ConfigMap) 
 
 // Delete removes a ConfigMap if it exists.
 func (manager ConfigMapManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting config map", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_config_map", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.CoreV1().ConfigMaps(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -668,7 +680,10 @@ func (manager ServiceAccountManager) List(ctx context.Context, namespace string,
 
 // Apply creates or updates a ServiceAccount with server-side apply.
 func (manager ServiceAccountManager) Apply(ctx context.Context, serviceAccount ServiceAccount) error {
-	manager.logger.Info("applying service account", logger.String("namespace", serviceAccount.Namespace), logger.String("name", serviceAccount.Name))
+	manager.logger.Debug("applying_service_account", logger.WithFields(
+		logger.String("namespace", serviceAccount.Namespace),
+		logger.String("name", serviceAccount.Name),
+	))
 
 	resource := serviceAccountToResource(serviceAccount)
 	data, err := json.Marshal(resource)
@@ -693,7 +708,10 @@ func (manager ServiceAccountManager) Apply(ctx context.Context, serviceAccount S
 
 // Delete removes a ServiceAccount if it exists.
 func (manager ServiceAccountManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting service account", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_service_account", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.CoreV1().ServiceAccounts(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -733,7 +751,10 @@ func (manager RoleManager) List(ctx context.Context, namespace string, selector 
 
 // Apply creates or updates a Role with server-side apply.
 func (manager RoleManager) Apply(ctx context.Context, role Role) error {
-	manager.logger.Info("applying role", logger.String("namespace", role.Namespace), logger.String("name", role.Name))
+	manager.logger.Debug("applying_role", logger.WithFields(
+		logger.String("namespace", role.Namespace),
+		logger.String("name", role.Name),
+	))
 
 	resource := roleToResource(role)
 	data, err := json.Marshal(resource)
@@ -758,7 +779,10 @@ func (manager RoleManager) Apply(ctx context.Context, role Role) error {
 
 // Delete removes a Role if it exists.
 func (manager RoleManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting role", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_role", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.RbacV1().Roles(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -798,7 +822,10 @@ func (manager RoleBindingManager) List(ctx context.Context, namespace string, se
 
 // Apply creates or updates a RoleBinding with server-side apply.
 func (manager RoleBindingManager) Apply(ctx context.Context, roleBinding RoleBinding) error {
-	manager.logger.Info("applying role binding", logger.String("namespace", roleBinding.Namespace), logger.String("name", roleBinding.Name))
+	manager.logger.Debug("applying_role_binding", logger.WithFields(
+		logger.String("namespace", roleBinding.Namespace),
+		logger.String("name", roleBinding.Name),
+	))
 
 	resource := roleBindingToResource(roleBinding)
 	data, err := json.Marshal(resource)
@@ -823,7 +850,10 @@ func (manager RoleBindingManager) Apply(ctx context.Context, roleBinding RoleBin
 
 // Delete removes a RoleBinding if it exists.
 func (manager RoleBindingManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting role binding", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_role_binding", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.RbacV1().RoleBindings(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -863,7 +893,10 @@ func (manager PersistentVolumeClaimManager) List(ctx context.Context, namespace 
 
 // Apply creates or updates a PersistentVolumeClaim with server-side apply.
 func (manager PersistentVolumeClaimManager) Apply(ctx context.Context, persistentVolumeClaim PersistentVolumeClaim) error {
-	manager.logger.Info("applying persistent volume claim", logger.String("namespace", persistentVolumeClaim.Namespace), logger.String("name", persistentVolumeClaim.Name))
+	manager.logger.Debug("applying_persistent_volume_claim", logger.WithFields(
+		logger.String("namespace", persistentVolumeClaim.Namespace),
+		logger.String("name", persistentVolumeClaim.Name),
+	))
 
 	resource := persistentVolumeClaimToResource(persistentVolumeClaim)
 	data, err := json.Marshal(resource)
@@ -888,7 +921,10 @@ func (manager PersistentVolumeClaimManager) Apply(ctx context.Context, persisten
 
 // Delete removes a PersistentVolumeClaim if it exists.
 func (manager PersistentVolumeClaimManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting persistent volume claim", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_persistent_volume_claim", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.CoreV1().PersistentVolumeClaims(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -921,7 +957,10 @@ func (manager PersistentVolumeClaimManager) Diff(ctx context.Context, persistent
 
 // WaitForBound waits until the PersistentVolumeClaim is bound.
 func (manager PersistentVolumeClaimManager) WaitForBound(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("waiting for persistent volume claim binding", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("waiting_for_persistent_volume_claim_binding", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -968,11 +1007,10 @@ func (manager StorageClassManager) EnsureRetainDefault(ctx context.Context, name
 		return err
 	}
 
-	manager.logger.Info(
-		"ensuring retain storage class is default",
+	manager.logger.Debug("ensuring_retain_storage_class_is_default", logger.WithFields(
 		logger.String("name", name),
 		logger.String("source_name", sourceStorageClass.Name),
-	)
+	))
 
 	if err := manager.applyStorageClass(ctx, retainStorageClass(sourceStorageClass, name)); err != nil {
 		return err
@@ -1024,7 +1062,10 @@ func (manager DeploymentManager) List(ctx context.Context, namespace string, sel
 
 // Apply creates or updates a Deployment with server-side apply.
 func (manager DeploymentManager) Apply(ctx context.Context, deployment Deployment) error {
-	manager.logger.Info("applying deployment", logger.String("namespace", deployment.Namespace), logger.String("name", deployment.Name))
+	manager.logger.Debug("applying_deployment", logger.WithFields(
+		logger.String("namespace", deployment.Namespace),
+		logger.String("name", deployment.Name),
+	))
 
 	resource := deploymentToResource(deployment)
 	data, err := json.Marshal(resource)
@@ -1049,7 +1090,10 @@ func (manager DeploymentManager) Apply(ctx context.Context, deployment Deploymen
 
 // Delete removes a Deployment if it exists.
 func (manager DeploymentManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting deployment", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_deployment", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.AppsV1().Deployments(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1082,7 +1126,10 @@ func (manager DeploymentManager) Diff(ctx context.Context, deployment Deployment
 
 // WaitForAvailable waits until the Deployment has at least one available replica.
 func (manager DeploymentManager) WaitForAvailable(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("waiting for deployment availability", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("waiting_for_deployment_availability", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -1147,7 +1194,10 @@ func (manager StatefulSetManager) List(ctx context.Context, namespace string, se
 
 // Apply creates or updates a StatefulSet with server-side apply.
 func (manager StatefulSetManager) Apply(ctx context.Context, statefulSet StatefulSet) error {
-	manager.logger.Info("applying statefulset", logger.String("namespace", statefulSet.Namespace), logger.String("name", statefulSet.Name))
+	manager.logger.Debug("applying_statefulset", logger.WithFields(
+		logger.String("namespace", statefulSet.Namespace),
+		logger.String("name", statefulSet.Name),
+	))
 
 	resource := statefulSetToResource(statefulSet)
 	data, err := json.Marshal(resource)
@@ -1172,7 +1222,10 @@ func (manager StatefulSetManager) Apply(ctx context.Context, statefulSet Statefu
 
 // Delete removes a StatefulSet if it exists.
 func (manager StatefulSetManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting statefulset", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_statefulset", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.AppsV1().StatefulSets(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1205,7 +1258,10 @@ func (manager StatefulSetManager) Diff(ctx context.Context, statefulSet Stateful
 
 // WaitForReady waits until the StatefulSet has at least one ready replica.
 func (manager StatefulSetManager) WaitForReady(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("waiting for statefulset readiness", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("waiting_for_statefulset_readiness", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -1270,7 +1326,9 @@ func (manager NamespaceManager) List(ctx context.Context, selector string) ([]Na
 
 // Apply creates or updates a Namespace with server-side apply.
 func (manager NamespaceManager) Apply(ctx context.Context, namespace Namespace) error {
-	manager.logger.Info("applying namespace", logger.String("namespace", namespace.Name))
+	manager.logger.Debug("applying_namespace", logger.WithFields(
+		logger.String("namespace", namespace.Name),
+	))
 
 	resource := namespaceToResource(namespace)
 	data, err := json.Marshal(resource)
@@ -1295,7 +1353,9 @@ func (manager NamespaceManager) Apply(ctx context.Context, namespace Namespace) 
 
 // Delete removes a Namespace if it exists.
 func (manager NamespaceManager) Delete(ctx context.Context, name string) error {
-	manager.logger.Info("deleting namespace", logger.String("namespace", name))
+	manager.logger.Debug("deleting_namespace", logger.WithFields(
+		logger.String("namespace", name),
+	))
 
 	err := manager.clientset.CoreV1().Namespaces().Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1360,7 +1420,10 @@ func (manager PodManager) List(ctx context.Context, namespace string, selector s
 
 // Apply creates or updates a Pod with server-side apply.
 func (manager PodManager) Apply(ctx context.Context, pod Pod) error {
-	manager.logger.Info("applying pod", logger.String("namespace", pod.Namespace), logger.String("name", pod.Name))
+	manager.logger.Debug("applying_pod", logger.WithFields(
+		logger.String("namespace", pod.Namespace),
+		logger.String("name", pod.Name),
+	))
 
 	resource := podToResource(pod)
 	data, err := json.Marshal(resource)
@@ -1385,7 +1448,10 @@ func (manager PodManager) Apply(ctx context.Context, pod Pod) error {
 
 // Delete removes a Pod if it exists.
 func (manager PodManager) Delete(ctx context.Context, namespace string, name string) error {
-	manager.logger.Info("deleting pod", logger.String("namespace", namespace), logger.String("name", name))
+	manager.logger.Debug("deleting_pod", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
 
 	err := manager.clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1988,11 +2054,10 @@ func (manager StorageClassManager) applyStorageClass(ctx context.Context, storag
 }
 
 func (manager StorageClassManager) setDefaultStorageClass(ctx context.Context, name string, isDefault bool) error {
-	manager.logger.Info(
-		"setting storage class default state",
+	manager.logger.Debug("setting_storage_class_default_state", logger.WithFields(
 		logger.String("name", name),
 		logger.Bool("is_default", isDefault),
-	)
+	))
 
 	liveStorageClass, err := manager.clientset.StorageV1().StorageClasses().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {

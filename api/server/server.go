@@ -57,7 +57,7 @@ func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
 
 	kubernetesConnection, err := kubernetes.NewConnection(
 		kubernetes.Config{KubeconfigPath: inp.KubeconfigPath},
-		inp.Log.Named("kubernetes"),
+		inp.Log,
 	)
 	if err != nil {
 		return Server{}, fmt.Errorf("create kubernetes connection: %w", err)
@@ -77,6 +77,9 @@ func buildServer(
 	healthInterval time.Duration,
 ) (Server, error) {
 	address := fmt.Sprintf(":%d", inp.Port)
+	if err := waitForStartupHealth(ctx, health, healthTimeout, healthInterval); err != nil {
+		return Server{}, err
+	}
 
 	return Server{
 		address: address,
@@ -117,11 +120,10 @@ func (server Server) Serve(ctx context.Context) error {
 		}
 	}()
 
-	server.log.Info(
-		"starting borq server",
+	server.log.Info("starting_borq_server", logger.WithFields(
 		logger.String("address", server.address),
 		logger.String("data_dir", server.dataDir),
-	)
+	))
 
 	err := server.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {

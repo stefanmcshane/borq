@@ -90,14 +90,12 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 		return Result{}, err
 	}
 
-	log = log.Named("management-bootstrap")
-	log.Info(
-		"starting management bootstrap",
+	log.Info("starting_management_bootstrap", logger.WithFields(
 		logger.String("cluster_name", request.ClusterName),
 		logger.String("namespace", request.Namespace),
 		logger.String("probe_url", request.ProbeURL),
 		logger.Duration("timeout", request.Timeout),
-	)
+	))
 
 	timeoutContext, cancel := context.WithTimeout(ctx, request.Timeout)
 	defer cancel()
@@ -108,13 +106,17 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	}
 
 	if clusterExists {
-		log.Info("reusing existing kind management cluster", logger.String("cluster_name", request.ClusterName))
+		log.Info("reusing_existing_kind_management_cluster", logger.WithFields(
+			logger.String("cluster_name", request.ClusterName),
+		))
 	} else {
 		if runningInLXCContainer() {
-			log.Info("detected lxc container; enabling kubelet user namespace support for kind")
+			log.Info("enabling_kind_kubelet_user_namespace_support")
 		}
 
-		log.Info("creating kind management cluster", logger.String("cluster_name", request.ClusterName))
+		log.Info("creating_kind_management_cluster", logger.WithFields(
+			logger.String("cluster_name", request.ClusterName),
+		))
 		if err := createKindCluster(timeoutContext, request); err != nil {
 			return Result{}, err
 		}
@@ -122,7 +124,7 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 
 	connection, err := kubernetes.NewConnection(
 		kubernetes.Config{KubeconfigPath: defaultKubeconfigPath()},
-		log.Named("kubernetes"),
+		log,
 		kubernetes.WithFieldOwner(defaultFieldOwner),
 	)
 	if err != nil {
@@ -153,18 +155,19 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 		return Result{}, err
 	}
 
-	log.Info("management apps are ready")
-	log.Info("probing management liveness endpoint", logger.String("probe_url", request.ProbeURL))
+	log.Info("management_apps_ready")
+	log.Info("probing_management_liveness_endpoint", logger.WithFields(
+		logger.String("probe_url", request.ProbeURL),
+	))
 	if err := probeBorq(timeoutContext, request.ProbeURL); err != nil {
 		return Result{}, err
 	}
 
-	log.Info(
-		"management bootstrap completed",
+	log.Info("management_bootstrap_completed", logger.WithFields(
 		logger.String("cluster_name", request.ClusterName),
 		logger.String("probe_url", request.ProbeURL),
 		logger.Bool("reused", clusterExists),
-	)
+	))
 
 	return Result{ClusterName: request.ClusterName, ProbeURL: request.ProbeURL, Reused: clusterExists}, nil
 }

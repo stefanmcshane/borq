@@ -131,6 +131,7 @@ newly added code should include tests that keep coverage at or above 75% for tha
 - foundations must not own env-specific config. No `.env` loading, no `os.Getenv`, and no env-var-name constants in foundations packages.
 - foundations layers should be self contained and not leak any 3rd party types. Foundations layer should not contain business logic or abstractions. It should use terminology that is familiar to a user of the 3rd party service or database. If we wrapped the AWS EC2 SDK, we would use createEC2Instance to refer to the instance, we would not abstract this into createVM
 - foundations packages should have a file of the same name which should serve as the entry point when browsing. This would contain the NewXXX() for example
+- foundations level packages should only log at a debug level unless specified otherwise
 - "business" layer contains the business-specific logic and workflows. All terminology should be business-specific terminology that any person within the company could understand the general idea of the flows. Any non-technical person should be able to read the exported business level function and understand approximately how the code works.
 - business layers contain service level abstractions. These often become interfaces over time, but we should not prematurely create interfaces for business level abstractions.
 - api is the entry point for everything. This handles starting up and connecting to all required services through dependency injection and must always "ask for" the variables and config it needs. 
