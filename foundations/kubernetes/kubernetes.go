@@ -11,6 +11,7 @@ import (
 	"github.com/stefanmcshane/borq/foundations/logger"
 
 	appsv1 "k8s.io/api/apps/v1"
+	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -40,7 +41,7 @@ type connectionConfig struct {
 
 // Config describes how to connect to Kubernetes.
 type Config struct {
-	ContextName string
+	KubeconfigPath string
 }
 
 // DiffResult describes how a desired resource differs from the live cluster object.
@@ -124,6 +125,14 @@ type PolicyRule struct {
 	APIGroups []string
 	Resources []string
 	Verbs     []string
+}
+
+// SelfSubjectAccessReviewInput describes a namespace-scoped SSAR request.
+type SelfSubjectAccessReviewInput struct {
+	// Namespace is the namespace to check.
+	Namespace string
+	// Rule is the namespace-scoped RBAC rule to review.
+	Rule PolicyRule
 }
 
 // RoleBinding is a borq-local role binding manifest.
@@ -247,16 +256,12 @@ type Connection struct {
 
 // NewConnection creates a Kubernetes connection.
 func NewConnection(config Config, log logger.Logger, options ...Option) (Connection, error) {
-	if strings.TrimSpace(config.ContextName) == "" {
-		return Connection{}, errors.New("context name must not be empty")
-	}
-
 	connectionConfig, err := buildConnectionConfig(options)
 	if err != nil {
 		return Connection{}, err
 	}
 
-	restConfig, err := restConfigForContext(config.ContextName)
+	restConfig, err := restConfigForConfig(config)
 	if err != nil {
 		return Connection{}, err
 	}
@@ -370,6 +375,66 @@ func (connection Connection) Pods() PodManager {
 		fieldOwner: connection.fieldOwner,
 		logger:     connection.logger,
 	}
+}
+
+// CanAdminNamespace reports whether the current credentials can administer namespaced resources.
+func (connection Connection) CanAdminNamespace(ctx context.Context, namespace string) error {
+	return connection.SelfSubjectAccessReview(ctx, SelfSubjectAccessReviewInput{
+		Namespace: namespace,
+		Rule: PolicyRule{
+			APIGroups: []string{"*"},
+			Resources: []string{"*"},
+			Verbs:     []string{"*"},
+		},
+	})
+}
+
+// SelfSubjectAccessReview reports whether the provided credentials can perform the requested namespace-scoped rule.
+func (connection Connection) SelfSubjectAccessReview(ctx context.Context, input SelfSubjectAccessReviewInput) error {
+	namespace := strings.TrimSpace(input.Namespace)
+	if namespace == "" {
+		return errors.New("namespace must not be empty")
+	}
+	if len(input.Rule.Verbs) != 1 {
+		return errors.New("self subject access review requires exactly one verb")
+	}
+	if len(input.Rule.Resources) != 1 {
+		return errors.New("self subject access review requires exactly one resource")
+	}
+	if len(input.Rule.APIGroups) > 1 {
+		return errors.New("self subject access review requires at most one api group")
+	}
+
+	apiGroup := ""
+	if len(input.Rule.APIGroups) == 1 {
+		apiGroup = input.Rule.APIGroups[0]
+	}
+
+	review, err := connection.clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(
+		ctx,
+		&authv1.SelfSubjectAccessReview{
+			Spec: authv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authv1.ResourceAttributes{
+					Namespace: namespace,
+					Verb:      input.Rule.Verbs[0],
+					Group:     apiGroup,
+					Resource:  input.Rule.Resources[0],
+				},
+			},
+		},
+		metav1.CreateOptions{},
+	)
+	if err != nil {
+		return fmt.Errorf("check namespace access for %q: %w", namespace, err)
+	}
+	if review.Status.Allowed {
+		return nil
+	}
+	if strings.TrimSpace(review.Status.Reason) != "" {
+		return fmt.Errorf("namespace access denied for %q: %s", namespace, review.Status.Reason)
+	}
+
+	return fmt.Errorf("namespace access denied for %q", namespace)
 }
 
 // ServiceManager manages Service resources.
@@ -1362,22 +1427,21 @@ func buildConnectionConfig(options []Option) (connectionConfig, error) {
 	return config, nil
 }
 
-func restConfigForContext(contextName string) (rest.Config, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
-	config := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
-
-	rawConfig, err := config.RawConfig()
-	if err != nil {
-		return rest.Config{}, fmt.Errorf("load kubeconfig: %w", err)
-	}
-	if _, ok := rawConfig.Contexts[contextName]; !ok {
-		return rest.Config{}, fmt.Errorf("kubeconfig context %q not found", contextName)
+func restConfigForConfig(config Config) (rest.Config, error) {
+	kubeconfigPath := strings.TrimSpace(config.KubeconfigPath)
+	if kubeconfigPath == "" {
+		restConfig, err := rest.InClusterConfig()
+		if err != nil {
+			return rest.Config{}, fmt.Errorf("load in-cluster kubernetes config: %w", err)
+		}
+		return *restConfig, nil
 	}
 
-	restConfig, err := config.ClientConfig()
+	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
+	restConfig, err := clientConfig.ClientConfig()
 	if err != nil {
-		return rest.Config{}, fmt.Errorf("build rest config for context %q: %w", contextName, err)
+		return rest.Config{}, fmt.Errorf("load kubeconfig %q: %w", kubeconfigPath, err)
 	}
 
 	return *restConfig, nil

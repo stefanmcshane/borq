@@ -7,10 +7,10 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestNewCliLogger(t *testing.T) {
+func TestNewLogger(t *testing.T) {
 	is := is.New(t)
 
-	log, err := NewCliLogger()
+	log, err := NewLogger()
 	is.NoErr(err)
 	_ = log.Sync()
 }

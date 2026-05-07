@@ -18,8 +18,8 @@ type Logger struct {
 	zapLogger *zap.Logger
 }
 
-// NewCliLogger creates the default borq CLI logger.
-func NewCliLogger() (Logger, error) {
+// NewLogger creates the default borq CLI logger.
+func NewLogger() (Logger, error) {
 	config := zap.NewProductionConfig()
 	config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	config.Encoding = "console"

@@ -208,9 +208,9 @@ func borqPodName(ctx context.Context, clusterName string, namespace string) (str
 	return podName, nil
 }
 
-func kindConnection(clusterName string) (kubernetes.Connection, error) {
+func kindConnection(_ string) (kubernetes.Connection, error) {
 	return kubernetes.NewConnection(
-		kubernetes.Config{ContextName: kindContextName(clusterName)},
+		kubernetes.Config{KubeconfigPath: defaultKubeconfigPath()},
 		logger.Logger{},
 	)
 }

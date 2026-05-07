@@ -30,7 +30,7 @@ workload cluster:
 
 borq itself is a server with a cli. All commands are offered as restful commands with a cli which calls those restful commands. If the current kubecontext does not have a borq server running, then borq management bootstrap must be run
 
-borq management bootstrap bootstraps a management cluster. The first slice creates the local management kind cluster and proves it is alive before the borq server is added later.
+`borq management bootstrap` bootstraps a management cluster. The first slice creates the local management kind cluster and proves it is alive before the borq server is added later.
 
 If the cluster was not made with cluster api hetzner, it should go ahead and install the required workload cluster items anyway. Keep them all in the borq-system namespace unless directed otherwise. We should just need a storage class name if its not capih as capih manages the CSI for the storage classes
 
@@ -70,11 +70,11 @@ This means we should have a `borq plan` which effectively returns that diff
 
 
 commands:
-`borq plan` - `checks for diffs that will be changed
 `borq deploy` - builds and deploys images
 `borq secret XXX` - crud for secret management
 `borq management bootstrap` - bootstrap the management cluster
-`borq management server` - operates the server which runs in the management cluster
+`borq management server start` - operates the server which runs in the management cluster
+`borq management server reconcile` - reconciles the differences in the management cluster's expected state, and its actual state. This would be used for upgrading components like vault, keycloak, etc. If a `--dry-run` is passed in, it would not make any changes and instead output the diff for the cluster components that need updated, in the order they would be run.
 `borq management XXX` - operations updating the management cluster
 
 

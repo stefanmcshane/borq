@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/stefanmcshane/borq/foundations/logger"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/tools/clientcmd"
 	kindconfig "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/yaml"
 )
@@ -119,7 +121,7 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	}
 
 	connection, err := kubernetes.NewConnection(
-		kubernetes.Config{ContextName: kindContextName(request.ClusterName)},
+		kubernetes.Config{KubeconfigPath: defaultKubeconfigPath()},
 		log.Named("kubernetes"),
 		kubernetes.WithFieldOwner(defaultFieldOwner),
 	)
@@ -359,6 +361,17 @@ func probeURLForHostPort(hostPort int32) string {
 	return fmt.Sprintf("http://localhost:%d%s", hostPort, borqHealthPath)
 }
 
+func defaultKubeconfigPath() string {
+	for _, path := range filepath.SplitList(os.Getenv("KUBECONFIG")) {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			return path
+		}
+	}
+
+	return clientcmd.RecommendedHomeFile
+}
+
 func kindContextName(clusterName string) string {
 	return fmt.Sprintf("kind-%s", clusterName)
 }
@@ -422,9 +435,9 @@ func borqApp(request Request) app.App {
 				Labels:    appLabels(borqName, "rbac"),
 				Rules: []kubernetes.PolicyRule{
 					{
-						APIGroups: []string{""},
-						Resources: []string{"pods", "services", "configmaps"},
-						Verbs:     []string{"get", "list", "watch"},
+						APIGroups: []string{"*"},
+						Resources: []string{"*"},
+						Verbs:     []string{"*"},
 					},
 				},
 			},

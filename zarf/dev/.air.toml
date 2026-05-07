@@ -4,7 +4,7 @@ tmp_dir = "tmp/air"
 [build]
 cmd = "go build -o ./tmp/air/borq ./cmd/borq"
 bin = "./tmp/air/borq"
-entrypoint = ["./tmp/air/borq", "management", "server", "--port=27833", "--data-dir=./tmp/dev/data"]
+entrypoint = ["./tmp/air/borq", "management", "server", "--port=27833", "--data-dir=./tmp/dev/data", "--kubeconfig=./tmp/dev/kubeconfig"]
 include_ext = ["go", "toml", "yaml", "yml", "json"]
 include_dir = ["api", "business", "cmd", "foundations"]
 include_file = ["go.mod", "go.sum"]

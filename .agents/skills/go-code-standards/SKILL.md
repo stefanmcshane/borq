@@ -4,7 +4,8 @@ description: Standard Go conventions for go/golang code. Use this skill to archi
 ---
 
 - keep implementations simple. Do not add extra complexity unless it is needed. [Code simplifier](https://github.com/anthropics/claude-plugins-official/blob/main/plugins/code-simplifier/agents/code-simplifier.md?plain=1) has more detail on this
-- never use pointers unless necessary
+- never use pointers unless necessary. If a pointer is deemed necessary, the use of it should be documented in a comment.
+- performance is never an excuse to use pointers unless explicitly told otherwise.
 - never use init functions or globally defined variables unless necessary. if a global is necessary, it MUST have a meaningful comment explaining why package-global scope is required, even when unexported.
 - do not create interfaces until they have at least 3 usecases. You can design with the idea of interfaces in future
 - read environment variables once on startup and hold them in memory. Do not read from the environment ad hoc after this.
@@ -32,6 +33,70 @@ func provisionVmWithSoftware() err {
 - follow `accept interfaces, return structs`.
 - do not expose protocol/domain payload builders as `string`/`[]byte` APIs unless the function is an explicit I/O boundary (HTTP/file/CLI output). Prefer typed request/response structs.
 - for XML/JSON protocols, keep typed message models in the owning foundations package and marshal/unmarshal only at transport boundaries.
+- Do not use named returns.
+- Be explicit. Pass concrete values. Add seams only when the code has earned them.
+- Prefer boring, direct construction. Do not add factories, constructor callbacks, provider functions, registries, or dependency-injection plumbing just to make code look flexible. Prefer function signatures like this when there are multiple inputs:
+```go
+func doSomething(ctx context.Context, inp doSomethingInput) (doSomethingOutput, error)
+```
+
+Construct the thing directly where it is used. The follow example is considered good code:
+```go
+type NewServerInput struct {
+	Config Config
+	Log    logger.Logger
+}
+func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
+	kubernetesConnection, err := kubernetes.NewConnection(inp.Config.Kubernetes, inp.Log)
+	if err != nil {
+		return Server{}, fmt.Errorf("create kubernetes connection: %w", err)
+	}
+	server := Server{
+		Config: inp.Config,
+		Log:    inp.Log,
+		HealthChecks: []HealthCheck{
+			newKubernetesAuthHealthCheck(kubernetesConnection, inp.Config.Namespace),
+		},
+	}
+	return server, nil
+}
+```
+Do not hide simple construction behind callbacks or factories. The following example is considered bad code when not explictly required:
+```go
+type kubernetesConnectionFactory func(kubernetes.Config, logger.Logger) (kubernetes.Connection, error)
+type healthCheckFactory func(kubernetes.Connection, string) HealthCheck
+func NewServer(config Config, log logger.Logger) (Server, error) {
+	return newServer(
+		config,
+		log,
+		func(config kubernetes.Config, log logger.Logger) (kubernetes.Connection, error) {
+			return kubernetes.NewConnection(config, log)
+		},
+		newKubernetesAuthHealthCheck,
+	)
+}
+```
+This is worse because the reader has to chase callbacks to understand what is being created. It adds indirection without buying anything useful.
+
+- You may use a factory only when there is a real runtime choice between multiple implementations.
+```go
+type NewStorageClientInput struct {
+	Provider  string
+	S3Config  s3.Config
+	GCSConfig gcs.Config
+}
+func NewStorageClient(ctx context.Context, inp newStorageClientInput) (StorageClient, error) {
+	switch inp.Provider {
+	case "s3":
+		return s3.NewClient(ctx, inp.S3Config)
+	case "gcs":
+		return gcs.NewClient(ctx, inp.GCSConfig)
+	default:
+		return nil, fmt.Errorf("unknown storage provider %q", inp.Provider)
+	}
+}
+```
+Do not use factories for ordinary construction.
 
 ## Testing
 - use matryer/is for testing unless told otherwise.
@@ -44,6 +109,7 @@ newly added code should include tests that keep coverage at or above 75% for tha
 - XML Gateway monthly accounts fixtures and XSD fixture data live in `foundations/xmlgw/testdata`.
 - if a file is test-only and used by automated tests, it belongs in package-local `testdata`, not in `zarf`.
 - if an XSD is needed as test fixture data, store it in `foundations/xmlgw/testdata/xsd`. If an XSD is kept as archival/reference artifact not loaded by tests/runtime, it may live under `zarf`.
+- every test should have a godoc comment when explains what the test does, and why it needs to be there. This should be keep up to date.
 
 ## Folder structures
 ```

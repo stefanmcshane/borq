@@ -2,18 +2,22 @@ package kubernetes
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/matryer/is"
-	"github.com/stefanmcshane/borq/foundations/logger"
 
 	appsv1 "k8s.io/api/apps/v1"
+	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestBuildConnectionConfig(t *testing.T) {
@@ -31,11 +35,119 @@ func TestBuildConnectionConfig(t *testing.T) {
 	is.Equal(err.Error(), "field owner must not be empty")
 }
 
-func TestNewConnectionRequiresContextName(t *testing.T) {
+func TestRestConfigForConfigLoadsKubeconfigPath(t *testing.T) {
 	is := is.New(t)
 
-	_, err := NewConnection(Config{}, logger.Logger{})
-	is.Equal(err.Error(), "context name must not be empty")
+	kubeconfigPath := writeTestKubeconfig(t)
+	restConfig, err := restConfigForConfig(Config{KubeconfigPath: kubeconfigPath})
+	is.NoErr(err)
+	is.Equal(restConfig.Host, "https://127.0.0.1:6443")
+}
+
+func TestRestConfigForConfigRejectsInvalidKubeconfigPath(t *testing.T) {
+	is := is.New(t)
+
+	_, err := restConfigForConfig(Config{KubeconfigPath: "/does/not/exist"})
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), `load kubeconfig "/does/not/exist"`))
+}
+
+func TestRestConfigForConfigDefaultsToInCluster(t *testing.T) {
+	is := is.New(t)
+
+	_, err := restConfigForConfig(Config{})
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), "load in-cluster kubernetes config"))
+}
+
+func TestCanAdminNamespace(t *testing.T) {
+	is := is.New(t)
+
+	clientset := fake.NewSimpleClientset()
+	clientset.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, &authv1.SelfSubjectAccessReview{
+			Status: authv1.SubjectAccessReviewStatus{Allowed: true},
+		}, nil
+	})
+
+	connection := Connection{clientset: clientset}
+	err := connection.CanAdminNamespace(context.Background(), "borq-system")
+	is.NoErr(err)
+}
+
+func TestSelfSubjectAccessReviewUsesProvidedRule(t *testing.T) {
+	is := is.New(t)
+
+	clientset := fake.NewSimpleClientset()
+	clientset.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(k8stesting.CreateAction)
+		is.True(ok)
+		review, ok := createAction.GetObject().(*authv1.SelfSubjectAccessReview)
+		is.True(ok)
+		is.Equal(review.Spec.ResourceAttributes.Namespace, "borq-system")
+		is.Equal(review.Spec.ResourceAttributes.Verb, "get")
+		is.Equal(review.Spec.ResourceAttributes.Group, "")
+		is.Equal(review.Spec.ResourceAttributes.Resource, "pods")
+		return true, &authv1.SelfSubjectAccessReview{
+			Status: authv1.SubjectAccessReviewStatus{Allowed: false, Reason: "missing permission"},
+		}, nil
+	})
+
+	connection := Connection{clientset: clientset}
+	err := connection.SelfSubjectAccessReview(context.Background(), SelfSubjectAccessReviewInput{
+		Namespace: "borq-system",
+		Rule: PolicyRule{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"get"},
+		},
+	})
+	is.True(err != nil)
+	is.Equal(err.Error(), `namespace access denied for "borq-system": missing permission`)
+}
+
+func TestSelfSubjectAccessReviewRejectsInvalidInput(t *testing.T) {
+	is := is.New(t)
+
+	connection := Connection{clientset: fake.NewSimpleClientset()}
+	err := connection.SelfSubjectAccessReview(context.Background(), SelfSubjectAccessReviewInput{
+		Namespace: "borq-system",
+		Rule: PolicyRule{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+		},
+	})
+
+	is.True(err != nil)
+	is.Equal(err.Error(), "self subject access review requires exactly one verb")
+}
+
+func writeTestKubeconfig(t *testing.T) string {
+	t.Helper()
+
+	kubeconfigPath := t.TempDir() + "/kubeconfig"
+	err := os.WriteFile(kubeconfigPath, []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: test
+  cluster:
+    server: https://127.0.0.1:6443
+contexts:
+- name: test
+  context:
+    cluster: test
+    user: test
+current-context: test
+users:
+- name: test
+  user:
+    token: test-token
+`), 0o600)
+	if err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	return kubeconfigPath
 }
 
 func TestServiceManagerDiffIgnoresClusterAssignedFields(t *testing.T) {

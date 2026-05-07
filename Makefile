@@ -1,7 +1,9 @@
-.PHONY: help test-unit test-integration-server test-integration-local test-integration-bootstrap promote-release release-dev dev
+.PHONY: help test-unit test-integration-server test-integration-bootstrap promote-release release-dev dev fmt
 
 GO_TEST_ENV := GOCACHE=/tmp/borq-go-build GOMODCACHE=/tmp/borq-go-mod
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
+DEV_KIND_CLUSTER_NAME ?= dev-borq
+DEV_KUBECONFIG_PATH ?= $(CURDIR)/tmp/dev/kubeconfig
 
 help: ## Show available make targets.
 	@awk '\
@@ -20,11 +22,7 @@ test-unit: ## Run unit tests.
 test-integration-server: ## Run server integration tests against a running borq server.
 	BORQ_INTEGRATION_SERVER_URL="$(BORQ_INTEGRATION_SERVER_URL)" $(GO_TEST_ENV) go test -tags=integration ./api/server -run TestServerIntegration -v -count=1
 
-# Legacy alias. Prefer test-integration-server.
-test-integration-local:
-	@$(MAKE) test-integration-server
-
-test-integration-bootstrap: ## Run bootstrap integration tests on a fresh kind cluster.
+test-integration-bootstrap: ## Run bootstrap integration tests on a fresh kind cluster. 
 	# NOTE: Requires Docker daemon access (docker.sock) because kind runs in Docker.
 	$(GO_TEST_ENV) go test -tags=integration ./business/managementbootstrap -run TestBootstrapIntegration -v -count=1
 
@@ -50,7 +48,21 @@ dev: ## Ensure dev-borq exists, bootstrap borq, then run local borq with air via
 	@command -v mirrord >/dev/null || { echo "mirrord not found on PATH (install: brew install metalbear-co/mirrord/mirrord)"; exit 1; }
 	@command -v air >/dev/null || { echo "air not found on PATH (install: go install github.com/air-verse/air@latest)"; exit 1; }
 	@command -v kind >/dev/null || { echo "kind not found on PATH (install: https://kind.sigs.k8s.io/)"; exit 1; }
-	@mkdir -p "$(CURDIR)/tmp/dev"
-	@go run ./cmd/borq management bootstrap --cluster-name "dev-borq" --host-port 7833
-	@BORQ_INTEGRATION_SERVER_URL="http://localhost:7833" $(MAKE) test-integration-local || echo "warning: integration check failed; continuing dev loop"
-	@mirrord exec -f zarf/dev/mirrord.json -- air -c zarf/dev/.air.toml
+	@command -v kubectl >/dev/null || { echo "kubectl not found on PATH (install: https://kubernetes.io/docs/tasks/tools/)"; exit 1; }
+	@mkdir -p "$(dir $(DEV_KUBECONFIG_PATH))"
+	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" go run ./cmd/borq management bootstrap --cluster-name "$(DEV_KIND_CLUSTER_NAME)" --host-port 7833
+	@kind get kubeconfig --name "$(DEV_KIND_CLUSTER_NAME)" > "$(DEV_KUBECONFIG_PATH)"
+	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" kubectl -n borq-system wait --for=condition=Available deployment/borq --timeout=120s || { \
+		echo "borq deployment did not become available in time"; \
+		KUBECONFIG="$(DEV_KUBECONFIG_PATH)" kubectl -n borq-system get deploy,pods -o wide; \
+		pod="$$(KUBECONFIG="$(DEV_KUBECONFIG_PATH)" kubectl -n borq-system get pods -l app.kubernetes.io/name=borq -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"; \
+		if [ -n "$$pod" ]; then \
+			KUBECONFIG="$(DEV_KUBECONFIG_PATH)" kubectl -n borq-system describe pod "$$pod"; \
+		fi; \
+		exit 1; \
+	}
+	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" mirrord exec -f zarf/dev/mirrord.json -- air -c zarf/dev/.air.toml
+
+fmt:
+	go fmt ./...
+	go vet ./...
