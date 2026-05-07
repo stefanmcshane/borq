@@ -10,7 +10,7 @@ const defaultServerDataDir = "/var/lib/borq"
 
 func newManagementServerCommand(log logger.Logger) *cobra.Command {
 	config := server.Config{
-		Port:    8080,
+		Port:    7833,
 		DataDir: defaultServerDataDir,
 	}
 

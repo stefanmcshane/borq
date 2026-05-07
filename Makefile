@@ -31,7 +31,7 @@ test-integration-bootstrap: ## Run bootstrap integration tests on a fresh kind c
 promote-release: ## Promote a tested RC digest to the release and latest tags without rebuilding.
 	./zarf/scripts/promote_release.sh
 
-release-dev: ## Build and publish a dev image tag to GHCR with GoReleaser.
+release-dev: ## Build and publish a dev image tag to GHCR with GoReleaser (without updating latest).
 	@tag="$$(date -u +%Y%m%d-%H%S).dev"; \
 	builder="borq-release-$$(date -u +%Y%m%d%H%M%S)"; \
 	previous_builder="$$(docker buildx ls 2>/dev/null | awk '/\*/ {print $$1; exit}')"; \
@@ -44,4 +44,4 @@ release-dev: ## Build and publish a dev image tag to GHCR with GoReleaser.
 	docker buildx create --name "$$builder" --driver docker-container --use >/dev/null; \
 	docker buildx inspect "$$builder" --bootstrap >/dev/null; \
 	git tag "$$tag"; \
-	goreleaser release --clean --config .goreleaser.yaml --skip=validate
+	goreleaser release --clean --config zarf/.goreleaser.dev.yaml --skip=validate --auto-snapshot

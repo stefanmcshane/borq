@@ -14,9 +14,9 @@ func TestNewServer(t *testing.T) {
 	is := is.New(t)
 
 	dataDir := filepath.Join(t.TempDir(), "data")
-	server, err := NewServer(Config{Port: 8080, DataDir: dataDir}, logger.Logger{})
+	server, err := NewServer(Config{Port: 7833, DataDir: dataDir}, logger.Logger{})
 	is.NoErr(err)
-	is.Equal(server.address, ":8080")
+	is.Equal(server.address, ":7833")
 }
 
 func TestNewServerRejectsInvalidConfig(t *testing.T) {
@@ -27,7 +27,7 @@ func TestNewServerRejectsInvalidConfig(t *testing.T) {
 	}{
 		{
 			name:    "empty data dir",
-			config:  Config{Port: 8080},
+			config:  Config{Port: 7833},
 			wantErr: "server data dir must not be empty",
 		},
 		{

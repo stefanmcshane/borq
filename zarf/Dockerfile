@@ -26,7 +26,7 @@ RUN apt-get update && \
 COPY --from=goose-builder /go/bin/goose /usr/local/bin/goose
 COPY ${TARGETOS}/${TARGETARCH}/borq /usr/local/bin/borq
 
-EXPOSE 8080
+EXPOSE 7833
 
 ENTRYPOINT ["/usr/local/bin/borq"]
 CMD ["management", "server"]

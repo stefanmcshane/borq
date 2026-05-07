@@ -39,7 +39,7 @@ const (
 	borqDataClaimName           = "borq-data"
 	borqDataVolumeName          = "data"
 	borqDataMountPath           = "/var/lib/borq"
-	borqContainerPort           = 8080
+	borqContainerPort           = 7833
 	borqHealthPath              = "/healthz"
 	lxcKubeadmConfigPatch       = `kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -482,7 +482,7 @@ func borqApp(request Request) app.App {
 						{
 							Name:         borqName,
 							Image:        request.BorqImage,
-							Args:         []string{"management", "server", "--port=8080", "--data-dir=" + borqDataMountPath},
+							Args:         []string{"management", "server", "--port=7833", "--data-dir=" + borqDataMountPath},
 							Ports:        []kubernetes.ContainerPort{{Name: "http", Port: borqContainerPort}},
 							VolumeMounts: []kubernetes.VolumeMount{{Name: borqDataVolumeName, MountPath: borqDataMountPath}},
 							ReadinessProbe: kubernetes.HttpProbe{
