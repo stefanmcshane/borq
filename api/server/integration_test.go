@@ -68,14 +68,15 @@ func assertHealthResponse(ctx context.Context, url string) error {
 	}
 
 	var report HealthReport
-	if err := json.NewDecoder(response.Body).Decode(&report); err != nil {
-		return fmt.Errorf("decode health response: %w", err)
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("read health response: %w", err)
+	}
+	if err := json.Unmarshal(body, &report); err != nil {
+		return fmt.Errorf("decode health response: %w (body=%q); expected JSON health report from the mirrord-routed local server on localhost:7833", err, strings.TrimSpace(string(body)))
 	}
 	if report.Status != healthStatusSuccess {
 		return fmt.Errorf("unexpected health status: got %q want %q", report.Status, healthStatusSuccess)
-	}
-	if len(report.Checks) == 0 {
-		return fmt.Errorf("health response contained no checks")
 	}
 	for _, check := range report.Checks {
 		if strings.TrimSpace(check.Name) == "" {
@@ -87,6 +88,9 @@ func assertHealthResponse(ctx context.Context, url string) error {
 		if strings.TrimSpace(check.Description) == "" {
 			return fmt.Errorf("health check %q is missing description", check.Name)
 		}
+	}
+	if len(report.Checks) == 0 {
+		return fmt.Errorf("health response contained no checks")
 	}
 
 	return nil
