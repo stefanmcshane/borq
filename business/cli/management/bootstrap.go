@@ -1,4 +1,4 @@
-package managementbootstrap
+package management
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stefanmcshane/borq/business/app"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 
@@ -142,13 +141,13 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 		applyPersistentVolumeClaim: func(ctx context.Context) error {
 			return connection.PersistentVolumeClaims().Apply(ctx, borqDataClaim(request))
 		},
-		applyApp: func(ctx context.Context, managedApp app.App) error {
+		applyApp: func(ctx context.Context, managedApp App) error {
 			return managedApp.Apply(ctx, connection)
 		},
 		waitForPersistentVolumeClaimBound: func(ctx context.Context) error {
 			return connection.PersistentVolumeClaims().WaitForBound(ctx, request.Namespace, borqDataClaimName)
 		},
-		waitForAppReady: func(ctx context.Context, managedApp app.App) error {
+		waitForAppReady: func(ctx context.Context, managedApp App) error {
 			return managedApp.WaitReady(ctx, connection)
 		},
 	}); err != nil {
@@ -175,12 +174,12 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 type bootstrapPhaseRunner struct {
 	applyNamespace                    func(context.Context) error
 	applyPersistentVolumeClaim        func(context.Context) error
-	applyApp                          func(context.Context, app.App) error
+	applyApp                          func(context.Context, App) error
 	waitForPersistentVolumeClaimBound func(context.Context) error
-	waitForAppReady                   func(context.Context, app.App) error
+	waitForAppReady                   func(context.Context, App) error
 }
 
-func runBootstrapPhases(ctx context.Context, bootstrapApps []app.App, runner bootstrapPhaseRunner) error {
+func runBootstrapPhases(ctx context.Context, bootstrapApps []App, runner bootstrapPhaseRunner) error {
 	if err := runner.applyNamespace(ctx); err != nil {
 		return err
 	}
@@ -376,8 +375,8 @@ func kindContextName(clusterName string) string {
 	return fmt.Sprintf("kind-%s", clusterName)
 }
 
-func bootstrapApps(request Request) []app.App {
-	return []app.App{
+func bootstrapApps(request Request) []App {
+	return []App{
 		borqApp(request),
 	}
 }
@@ -402,11 +401,11 @@ func borqDataClaim(request Request) kubernetes.PersistentVolumeClaim {
 	}
 }
 
-func borqApp(request Request) app.App {
+func borqApp(request Request) App {
 	labels := appLabels(borqName, "server")
 	selector := selectorLabels(borqName)
 
-	return app.App{
+	return App{
 		Name:      borqName,
 		Namespace: request.Namespace,
 		Labels:    labels,
@@ -473,8 +472,8 @@ func borqApp(request Request) app.App {
 				},
 			},
 		},
-		Workload: app.Workload{
-			Kind: app.DeploymentWorkload,
+		Workload: Workload{
+			Kind: DeploymentWorkload,
 			Deployment: kubernetes.Deployment{
 				Name:      borqName,
 				Namespace: request.Namespace,

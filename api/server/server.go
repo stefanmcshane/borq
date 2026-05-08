@@ -1,18 +1,22 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/stefanmcshane/borq/business/managementreconcile"
+	"github.com/stefanmcshane/borq/business/server/reconciler"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
+	"github.com/stefanmcshane/borq/foundations/vault"
 )
 
 const (
@@ -31,6 +35,7 @@ type NewServerInput struct {
 	Port           int
 	DataDir        string
 	KubeconfigPath string
+	VaultAddress   string
 	Log            logger.Logger
 }
 
@@ -64,8 +69,20 @@ func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
 		newKubernetesAuthHealthCheck(kubernetesConnection, managedNamespace),
 	}
 
-	handlers := map[string]managementreconcile.ComponentHandler{
-		"vault": managementreconcile.VaultHandler{},
+	vaultAddr := inp.VaultAddress
+	if vaultAddr == "" {
+		vaultAddr = "http://vault-internal.borq-system.svc:8200"
+	}
+	vc, err := vault.NewClient(vault.NewClientInput{
+		Address:        vaultAddr,
+		RequestTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		return Server{}, fmt.Errorf("create vault client: %w", err)
+	}
+
+	handlers := map[string]reconciler.ComponentHandler{
+		"vault": reconciler.VaultHandler{Client: vc, Log: inp.Log},
 	}
 
 	return buildServer(ctx, inp, kubernetesConnection, health, handlers, startupHealthTimeout, startupHealthInterval)
@@ -76,7 +93,7 @@ func buildServer(
 	inp NewServerInput,
 	conn kubernetes.Connection,
 	health []HealthCheck,
-	handlers map[string]managementreconcile.ComponentHandler,
+	handlers map[string]reconciler.ComponentHandler,
 	healthTimeout time.Duration,
 	healthInterval time.Duration,
 ) (Server, error) {
@@ -140,7 +157,7 @@ func (server Server) Serve(ctx context.Context) error {
 	return nil
 }
 
-func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Logger, handlers map[string]managementreconcile.ComponentHandler) http.Handler {
+func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Logger, handlers map[string]reconciler.ComponentHandler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
@@ -176,39 +193,100 @@ func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Log
 			return
 		}
 
-		componentName := request.URL.Query().Get("component")
-		handler, ok := handlers[componentName]
-		if !ok {
-			http.Error(writer, "unknown component: "+componentName, http.StatusBadRequest)
-			return
-		}
-
-		cfg := handler.DefaultConfig()
-		if err := json.NewDecoder(request.Body).Decode(&cfg); err != nil {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
 			http.Error(writer, "bad request: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
+		componentName := strings.TrimSpace(request.URL.Query().Get("component"))
 		dryRun := request.URL.Query().Get("dry-run") == "true"
-		reconciler := managementreconcile.NewReconciler(conn, log)
+		r := reconciler.NewReconciler(conn, log)
 
-		plan := handler.Plan(cfg)
-		actual, err := reconciler.GetActual(request.Context(), plan)
-		if err != nil {
-			log.Error("reconcile_get_actual_error", logger.WithFields(logger.String("error", err.Error())))
-			http.Error(writer, "reconcile audit failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
+		var result reconciler.ReconcileResult
+		if componentName == "" {
+			if len(bytes.TrimSpace(body)) > 0 {
+				http.Error(writer, "bad request: request body must be empty when component is omitted", http.StatusBadRequest)
+				return
+			}
 
-		_, result, err := reconciler.Reconcile(request.Context(), actual, plan, handler, dryRun)
-		if err != nil {
-			log.Error("reconcile_error", logger.WithFields(logger.String("error", err.Error())))
-			http.Error(writer, "reconcile failed: "+err.Error(), http.StatusInternalServerError)
-			return
+			for _, name := range sortedHandlerNames(handlers) {
+				handlerResult, err := reconcileHandler(request.Context(), r, log, handlers[name], nil, dryRun)
+				if err != nil {
+					http.Error(writer, "reconcile failed: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				result.Diffs = append(result.Diffs, handlerResult.Diffs...)
+				result.Applied = result.Applied || handlerResult.Applied
+			}
+		} else {
+			handler, ok := handlers[componentName]
+			if !ok {
+				http.Error(writer, "unknown component: "+componentName, http.StatusBadRequest)
+				return
+			}
+
+			cfg := handler.DefaultConfig()
+			if err := decodeReconcileConfig(body, &cfg); err != nil {
+				http.Error(writer, "bad request: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			result, err = reconcileHandler(request.Context(), r, log, handler, cfg, dryRun)
+			if err != nil {
+				http.Error(writer, "reconcile failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(result)
 	})
 	return mux
+}
+
+func decodeReconcileConfig(body []byte, cfg *any) error {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+
+	return json.Unmarshal(body, cfg)
+}
+
+func reconcileHandler(
+	ctx context.Context,
+	r reconciler.Reconciler,
+	log logger.Logger,
+	handler reconciler.ComponentHandler,
+	cfg any,
+	dryRun bool,
+) (reconciler.ReconcileResult, error) {
+	if cfg == nil {
+		cfg = handler.DefaultConfig()
+	}
+
+	result, err := r.Reconcile(ctx, handler.Plan(cfg), handler, dryRun)
+	if err == nil {
+		return result, nil
+	}
+
+	var recErr *reconciler.ReconcileError
+	if errors.As(err, &recErr) {
+		log.Error("reconcile_error", logger.WithFields(
+			append([]logger.Field{logger.String("error", err.Error())}, recErr.Fields()...)...,
+		))
+	} else {
+		log.Error("reconcile_error", logger.WithFields(logger.String("error", err.Error())))
+	}
+
+	return result, err
+}
+
+func sortedHandlerNames(handlers map[string]reconciler.ComponentHandler) []string {
+	names := make([]string, 0, len(handlers))
+	for name := range handlers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

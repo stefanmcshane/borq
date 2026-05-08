@@ -1,4 +1,4 @@
-package managementbootstrap
+package management
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/matryer/is"
-	"github.com/stefanmcshane/borq/business/app"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 )
 
@@ -251,7 +250,7 @@ func TestBorqApp(t *testing.T) {
 	request := DefaultRequest()
 	managedApp := borqApp(request)
 
-	is.Equal(managedApp.Workload.Kind, app.DeploymentWorkload)
+	is.Equal(managedApp.Workload.Kind, DeploymentWorkload)
 	is.Equal(len(managedApp.ConfigMaps), 1)
 	is.Equal(managedApp.ConfigMaps[0].Name, borqConfigName)
 	is.Equal(len(managedApp.ServiceAccounts), 1)
@@ -293,7 +292,7 @@ func TestRunBootstrapPhasesOrder(t *testing.T) {
 	is := is.New(t)
 
 	events := make([]string, 0, 6)
-	bootstrapApps := []app.App{{Name: "borq"}}
+	bootstrapApps := []App{{Name: "borq"}}
 
 	err := runBootstrapPhases(context.Background(), bootstrapApps, bootstrapPhaseRunner{
 		applyNamespace: func(context.Context) error {
@@ -304,7 +303,7 @@ func TestRunBootstrapPhasesOrder(t *testing.T) {
 			events = append(events, "pvc-apply")
 			return nil
 		},
-		applyApp: func(_ context.Context, managedApp app.App) error {
+		applyApp: func(_ context.Context, managedApp App) error {
 			events = append(events, "app-apply:"+managedApp.Name)
 			return nil
 		},
@@ -312,7 +311,7 @@ func TestRunBootstrapPhasesOrder(t *testing.T) {
 			events = append(events, "pvc-bound")
 			return nil
 		},
-		waitForAppReady: func(_ context.Context, managedApp app.App) error {
+		waitForAppReady: func(_ context.Context, managedApp App) error {
 			events = append(events, "app-ready:"+managedApp.Name)
 			return nil
 		},

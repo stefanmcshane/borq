@@ -2,16 +2,16 @@ package cli
 
 import (
 	"github.com/spf13/cobra"
-	"github.com/stefanmcshane/borq/api/config"
 	"github.com/stefanmcshane/borq/api/server"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
-func newManagementServerCommand(log logger.Logger, cfg config.Config) *cobra.Command {
+func newManagementServerCommand(log logger.Logger, cfg Config) *cobra.Command {
 	input := server.NewServerInput{
 		Port:           cfg.Port,
 		DataDir:        cfg.DataDir,
 		KubeconfigPath: cfg.KubeconfigPath,
+		VaultAddress:   cfg.VaultAddress,
 		Log:            log,
 	}
 

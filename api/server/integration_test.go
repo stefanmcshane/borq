@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/matryer/is"
-	"github.com/stefanmcshane/borq/business/managementreconcile"
+	"github.com/stefanmcshane/borq/business/server/reconciler"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
@@ -93,8 +93,8 @@ func assertHealthResponse(ctx context.Context, url string) error {
 }
 
 // TestReconcileIntegration verifies the full reconcile flow against a real
-// Kubernetes cluster. It starts a server with a test component handler,
-// sends a reconcile request, and verifies the ConfigMap was created.
+// Kubernetes cluster. It tests: initial creation, drift correction, and
+// config-driven updates.
 func TestReconcileIntegration(t *testing.T) {
 	log := logger.Logger{}
 
@@ -110,12 +110,12 @@ func TestReconcileIntegration(t *testing.T) {
 		t.Fatalf("create kubernetes connection: %v", err)
 	}
 
-	handlers := map[string]managementreconcile.ComponentHandler{
+	handlers := map[string]reconciler.ComponentHandler{
 		"test-component": testComponentHandler{},
 	}
 
 	port := findFreePort(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	server, err := buildServer(
@@ -146,53 +146,121 @@ func TestReconcileIntegration(t *testing.T) {
 
 	waitForServer(t, port, 5*time.Second)
 
-	config := testComponentConfig{Name: "test-integration", Namespace: "default"}
-	body, err := json.Marshal(config)
+	cmName := "test-integration"
+	cmNamespace := "default"
+	client := &http.Client{Timeout: 5 * time.Second}
+	reconcileURL := fmt.Sprintf("http://localhost:%d/reconcile?component=test-component", port)
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_ = conn.ConfigMaps().Delete(cleanupCtx, cmNamespace, cmName)
+	})
+
+	t.Run("initial creation", func(t *testing.T) {
+		is := is.New(t)
+		cfg := testComponentConfig{Name: cmName, Namespace: cmNamespace, Data: map[string]string{"test": "integration"}}
+
+		result := reconcileConfig(t, ctx, client, reconcileURL, cfg)
+		is.True(result.Applied)
+		is.True(len(result.Diffs) > 0)
+
+		cm, err := conn.ConfigMaps().Get(ctx, cmNamespace, cmName)
+		is.NoErr(err)
+		is.Equal(cm.Name, cmName)
+		is.Equal(cm.Data["test"], "integration")
+		is.Equal(len(cm.Data), 1)
+	})
+
+	t.Run("drift correction", func(t *testing.T) {
+		is := is.New(t)
+
+		driftLabels := map[string]string{
+			"app.kubernetes.io/managed-by": "borq",
+			"app.kubernetes.io/component":  "test",
+		}
+		err := conn.ConfigMaps().Apply(ctx, kubernetes.ConfigMap{
+			Name: cmName, Namespace: cmNamespace, Labels: driftLabels,
+			Data: map[string]string{"test": "drifted"},
+		})
+		is.NoErr(err)
+
+		cm, err := conn.ConfigMaps().Get(ctx, cmNamespace, cmName)
+		is.NoErr(err)
+		is.Equal(cm.Data["test"], "drifted")
+
+		cfg := testComponentConfig{Name: cmName, Namespace: cmNamespace, Data: map[string]string{"test": "integration"}}
+		result := reconcileConfig(t, ctx, client, reconcileURL, cfg)
+		is.True(result.Applied)
+		is.True(len(result.Diffs) > 0)
+
+		cm, err = conn.ConfigMaps().Get(ctx, cmNamespace, cmName)
+		is.NoErr(err)
+		is.Equal(cm.Data["test"], "integration")
+	})
+
+	t.Run("config change", func(t *testing.T) {
+		is := is.New(t)
+
+		cfg := testComponentConfig{Name: cmName, Namespace: cmNamespace, Data: map[string]string{"test": "updated", "extra": "value"}}
+		result := reconcileConfig(t, ctx, client, reconcileURL, cfg)
+		is.True(result.Applied)
+		is.True(len(result.Diffs) > 0)
+
+		cm, err := conn.ConfigMaps().Get(ctx, cmNamespace, cmName)
+		is.NoErr(err)
+		is.Equal(cm.Data["test"], "updated")
+		is.Equal(cm.Data["extra"], "value")
+		is.Equal(len(cm.Data), 2)
+	})
+
+	t.Run("idempotent reconcile", func(t *testing.T) {
+		is := is.New(t)
+
+		cfg := testComponentConfig{Name: cmName, Namespace: cmNamespace, Data: map[string]string{"test": "updated", "extra": "value"}}
+		result := reconcileConfig(t, ctx, client, reconcileURL, cfg)
+		is.True(!result.Applied)
+		is.Equal(len(result.Diffs), 0)
+	})
+}
+
+func reconcileConfig(t *testing.T, ctx context.Context, client *http.Client, url string, cfg testComponentConfig) reconciler.ReconcileResult {
+	t.Helper()
+	body, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatalf("marshal request body: %v", err)
 	}
-
-	url := fmt.Sprintf("http://localhost:%d/reconcile?component=test-component", port)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("perform request: %v", err)
 	}
 	defer response.Body.Close()
 
-	is := is.New(t)
-	is.Equal(response.StatusCode, http.StatusOK)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d", response.StatusCode, http.StatusOK)
+	}
 
-	var result managementreconcile.ReconcileResult
-	is.NoErr(json.NewDecoder(response.Body).Decode(&result))
-	is.True(result.Applied)
-	is.True(len(result.Diffs) > 0)
-
-	cm, err := conn.ConfigMaps().Get(ctx, "default", "test-integration")
-	is.NoErr(err)
-	is.Equal(cm.Name, "test-integration")
-	is.Equal(cm.Data["test"], "integration")
-
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		_ = conn.ConfigMaps().Delete(cleanupCtx, "default", "test-integration")
-	})
+	var result reconciler.ReconcileResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return result
 }
 
 type testComponentConfig struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
+	Name      string            `json:"name"`
+	Namespace string            `json:"namespace"`
+	Data      map[string]string `json:"data"`
 }
 
 type testComponentHandler struct {
-	managementreconcile.CoreApplier
+	reconciler.CoreApplier
 }
 
 func (testComponentHandler) Name() string { return "test-component" }
@@ -201,7 +269,7 @@ func (testComponentHandler) DefaultConfig() any {
 	return &testComponentConfig{Name: "test-component", Namespace: "default"}
 }
 
-func (testComponentHandler) Plan(config any) managementreconcile.ComponentPlan {
+func (testComponentHandler) Plan(config any) reconciler.Plan {
 	cfg := config.(*testComponentConfig)
 	if cfg.Name == "" {
 		cfg.Name = "test-component"
@@ -209,28 +277,37 @@ func (testComponentHandler) Plan(config any) managementreconcile.ComponentPlan {
 	if cfg.Namespace == "" {
 		cfg.Namespace = "default"
 	}
+	if cfg.Data == nil {
+		cfg.Data = map[string]string{"test": "integration"}
+	}
 
-	return managementreconcile.ComponentPlan{
-		Selector:   "app.kubernetes.io/managed-by=borq,app.kubernetes.io/component=test",
-		Namespaces: []string{cfg.Namespace},
-		NamespaceScopedKinds: []managementreconcile.Kind{
-			managementreconcile.KindConfigMap,
-		},
-		ApplyOrder: []managementreconcile.Kind{
-			managementreconcile.KindConfigMap,
-		},
-		Resources: []managementreconcile.ResourceState{
+	return reconciler.Plan{
+		ApplyOrder: []string{reconciler.TypeConfigMap},
+		Desired: []reconciler.Resource{
 			{
-				Kind:      managementreconcile.KindConfigMap,
+				Type:      reconciler.TypeConfigMap,
 				Namespace: cfg.Namespace,
 				Name:      cfg.Name,
 				Desired: kubernetes.ConfigMap{
 					Name:      cfg.Name,
 					Namespace: cfg.Namespace,
 					Labels:    map[string]string{"app.kubernetes.io/managed-by": "borq", "app.kubernetes.io/component": "test"},
-					Data:      map[string]string{"test": "integration"},
+					Data:      cfg.Data,
 				},
 			},
+		},
+		Current: func(ctx context.Context, conn kubernetes.Connection) ([]reconciler.Resource, error) {
+			cms, err := conn.ConfigMaps().List(ctx, cfg.Namespace, "app.kubernetes.io/managed-by=borq,app.kubernetes.io/component=test")
+			if err != nil {
+				return nil, err
+			}
+			resources := make([]reconciler.Resource, 0, len(cms))
+			for _, cm := range cms {
+				resources = append(resources, reconciler.Resource{
+					Type: reconciler.TypeConfigMap, Namespace: cm.Namespace, Name: cm.Name, Actual: cm,
+				})
+			}
+			return resources, nil
 		},
 	}
 }

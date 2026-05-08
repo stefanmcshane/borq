@@ -1,4 +1,4 @@
-.PHONY: help test-unit test-integration-server test-integration-bootstrap promote-release release-dev dev fmt
+.PHONY: help test-unit test-integration-server test-integration-bootstrap promote-release release-dev dev dev-k9s fmt
 
 GO_TEST_ENV := GOCACHE=/tmp/borq-go-build GOMODCACHE=/tmp/borq-go-mod
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
@@ -24,7 +24,7 @@ test-integration-server: ## Run server integration tests against a running borq 
 
 test-integration-bootstrap: ## Run bootstrap integration tests on a fresh kind cluster. 
 	# NOTE: Requires Docker daemon access (docker.sock) because kind runs in Docker.
-	$(GO_TEST_ENV) go test -tags=integration ./business/managementbootstrap -run TestBootstrapIntegration -v -count=1
+	$(GO_TEST_ENV) go test -tags=integration ./business/cli/management -run TestBootstrapIntegration -v -count=1
 
 promote-release: ## Promote a tested RC digest to the release and latest tags without rebuilding.
 	./zarf/scripts/promote_release.sh
@@ -44,7 +44,7 @@ release-dev: ## Build and publish a dev image tag to GHCR with GoReleaser (witho
 	git tag "$$tag"; \
 	goreleaser release --clean --config zarf/dev/.goreleaser.dev.yaml --skip=validate --auto-snapshot
 
-dev: ## Ensure dev-borq exists, bootstrap borq, then run local borq with air via mirrord.
+dev: ## Ensure dev-borq exists, bootstrap borq, then run local borq with air via mirrord (debug mode).
 	@command -v mirrord >/dev/null || { echo "mirrord not found on PATH (install: brew install metalbear-co/mirrord/mirrord)"; exit 1; }
 	@command -v air >/dev/null || { echo "air not found on PATH (install: go install github.com/air-verse/air@latest)"; exit 1; }
 	@command -v kind >/dev/null || { echo "kind not found on PATH (install: https://kind.sigs.k8s.io/)"; exit 1; }
@@ -61,7 +61,10 @@ dev: ## Ensure dev-borq exists, bootstrap borq, then run local borq with air via
 		fi; \
 		exit 1; \
 	}
-	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" mirrord exec -f zarf/dev/mirrord.json -- air -c zarf/dev/.air.toml
+	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_LOG_LEVEL=debug mirrord exec -f zarf/dev/mirrord.json -- air -c zarf/dev/.air.toml
+
+dev-k9s: ## Run k9s against the dev server running from make dev
+	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" k9s --kubeconfig tmp/dev/kubeconfig
 
 fmt:
 	go fmt ./...

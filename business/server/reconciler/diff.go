@@ -1,4 +1,4 @@
-package managementreconcile
+package reconciler
 
 import (
 	"encoding/json"
@@ -41,6 +41,9 @@ func diffMaps(prefix string, live, desired map[string]any, patches *[]DiffPatch)
 		if !liveOK && desiredOK {
 			addValue(path, desiredVal, patches)
 		} else if liveOK && !desiredOK {
+			if liveStr, ok := liveVal.(string); ok && liveStr != "" {
+				continue
+			}
 			*patches = append(*patches, DiffPatch{Op: "remove", Path: path})
 		} else {
 			diffValues(path, liveVal, desiredVal, patches)
@@ -49,6 +52,26 @@ func diffMaps(prefix string, live, desired map[string]any, patches *[]DiffPatch)
 }
 
 func diffValues(path string, live, desired any, patches *[]DiffPatch) {
+	if desired == nil {
+		if liveList, ok := live.([]any); ok && len(liveList) == 0 {
+			return
+		}
+		if liveStr, ok := live.(string); ok && liveStr != "" {
+			return
+		}
+	}
+	if live == nil {
+		if desiredList, ok := desired.([]any); ok && len(desiredList) == 0 {
+			return
+		}
+	}
+
+	desiredStr, desiredIsStr := desired.(string)
+	liveStr, liveIsStr := live.(string)
+	if desiredIsStr && desiredStr == "" && liveIsStr && liveStr != "" {
+		return
+	}
+
 	liveMap, liveIsMap := live.(map[string]any)
 	desiredMap, desiredIsMap := desired.(map[string]any)
 	if liveIsMap && desiredIsMap {
@@ -165,26 +188,23 @@ func valuesEqual(a, b any) bool {
 	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
-func buildResourceLookup(infra *Infrastructure) map[string]ResourceState {
-	if infra == nil {
-		return nil
-	}
-	lookup := make(map[string]ResourceState, len(infra.Resources))
-	for _, res := range infra.Resources {
-		lookup[resourceKey(res.Kind, res.Name)] = res
+func buildResourceLookup(resources []Resource) map[string]Resource {
+	lookup := make(map[string]Resource, len(resources))
+	for _, res := range resources {
+		lookup[resourceKey(res.Type, res.Name)] = res
 	}
 	return lookup
 }
 
-func resourceKey(kind Kind, name string) string {
-	return string(kind) + "/" + name
+func resourceKey(resType, name string) string {
+	return resType + "/" + name
 }
 
-func resourceInExpected(key string, expected *Infrastructure) (ResourceState, bool) {
-	for _, res := range expected.Resources {
-		if resourceKey(res.Kind, res.Name) == key {
+func resourceInExpected(key string, desired []Resource) (Resource, bool) {
+	for _, res := range desired {
+		if resourceKey(res.Type, res.Name) == key {
 			return res, true
 		}
 	}
-	return ResourceState{}, false
+	return Resource{}, false
 }

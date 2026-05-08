@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/business/server/reconciler"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
@@ -156,6 +158,67 @@ func TestHandlerServesHealthAndRoot(t *testing.T) {
 	is.Equal(report.Checks[0].Description, "ok")
 }
 
+func TestHandlerReconcilesAllComponentsWhenComponentIsOmitted(t *testing.T) {
+	is := is.New(t)
+
+	alpha := &testReconcileHandler{name: "alpha", defaultName: "alpha-default"}
+	zeta := &testReconcileHandler{name: "zeta", defaultName: "zeta-default"}
+
+	handler := newHandler(nil, kubernetes.Connection{}, logger.Logger{}, map[string]reconciler.ComponentHandler{
+		"zeta":  zeta,
+		"alpha": alpha,
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	is.Equal(recorder.Code, http.StatusOK)
+
+	var result reconciler.ReconcileResult
+	is.NoErr(json.Unmarshal(recorder.Body.Bytes(), &result))
+	is.True(!result.Applied)
+	is.Equal(len(result.Diffs), 2)
+	is.Equal(result.Diffs[0].Name, "alpha-default")
+	is.Equal(result.Diffs[1].Name, "zeta-default")
+	is.Equal(alpha.planCalls, 1)
+	is.Equal(zeta.planCalls, 1)
+}
+
+func TestHandlerRejectsBodyWhenReconcilingAllComponents(t *testing.T) {
+	is := is.New(t)
+
+	handler := newHandler(nil, kubernetes.Connection{}, logger.Logger{}, map[string]reconciler.ComponentHandler{
+		"alpha": &testReconcileHandler{name: "alpha", defaultName: "alpha-default"},
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/reconcile", strings.NewReader(`{"name":"override"}`))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	is.Equal(recorder.Code, http.StatusBadRequest)
+	is.True(strings.Contains(recorder.Body.String(), "request body must be empty"))
+}
+
+func TestHandlerReconcileUsesDefaultConfigWhenBodyIsEmpty(t *testing.T) {
+	is := is.New(t)
+
+	handler := newHandler(nil, kubernetes.Connection{}, logger.Logger{}, map[string]reconciler.ComponentHandler{
+		"alpha": &testReconcileHandler{name: "alpha", defaultName: "alpha-default"},
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/reconcile?component=alpha&dry-run=true", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	is.Equal(recorder.Code, http.StatusOK)
+
+	var result reconciler.ReconcileResult
+	is.NoErr(json.Unmarshal(recorder.Body.Bytes(), &result))
+	is.Equal(len(result.Diffs), 1)
+	is.Equal(result.Diffs[0].Name, "alpha-default")
+}
+
 type flakyHealthCheck struct {
 	mu        sync.Mutex
 	failures  int
@@ -183,4 +246,53 @@ func (checker *flakyHealthCheck) calls() int {
 
 func testConnection() kubernetes.Connection {
 	return kubernetes.Connection{}
+}
+
+type testReconcileConfig struct {
+	Name string `json:"name"`
+}
+
+type testReconcileHandler struct {
+	reconciler.CoreApplier
+	name        string
+	defaultName string
+	planCalls   int
+}
+
+func (handler *testReconcileHandler) Name() string {
+	return handler.name
+}
+
+func (handler *testReconcileHandler) DefaultConfig() any {
+	return &testReconcileConfig{Name: handler.defaultName}
+}
+
+func (handler *testReconcileHandler) Plan(config any) reconciler.Plan {
+	handler.planCalls++
+
+	cfg, ok := config.(*testReconcileConfig)
+	if !ok {
+		panic("unexpected config type")
+	}
+
+	name := cfg.Name
+	if name == "" {
+		name = handler.defaultName
+	}
+
+	desired := kubernetes.ConfigMap{Name: name, Namespace: "default"}
+	return reconciler.Plan{
+		ApplyOrder: []string{reconciler.TypeConfigMap},
+		Desired: []reconciler.Resource{
+			{
+				Type:      reconciler.TypeConfigMap,
+				Namespace: desired.Namespace,
+				Name:      desired.Name,
+				Desired:   desired,
+			},
+		},
+		Current: func(context.Context, kubernetes.Connection) ([]reconciler.Resource, error) {
+			return nil, nil
+		},
+	}
 }

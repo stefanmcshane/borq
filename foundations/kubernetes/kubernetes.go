@@ -207,6 +207,7 @@ type Pod struct {
 	Name      string
 	Namespace string
 	Labels    map[string]string
+	PodIP     string
 	Spec      PodTemplate
 }
 
@@ -246,6 +247,7 @@ type ContainerPort struct {
 type Volume struct {
 	Name                      string
 	PersistentVolumeClaimName string
+	ConfigMapName             string
 }
 
 // VolumeMount is a borq-local container volume mount.
@@ -267,6 +269,12 @@ type Connection struct {
 	clientset  kubernetes.Interface
 	fieldOwner string
 	logger     logger.Logger
+}
+
+// NewConnectionForTest creates a Connection backed by the given clientset.
+// This is exported for testing in downstream packages.
+func NewConnectionForTest(clientset kubernetes.Interface) Connection {
+	return Connection{clientset: clientset, fieldOwner: defaultFieldOwner}
 }
 
 // NewConnection creates a Kubernetes connection.
@@ -368,6 +376,15 @@ func (connection Connection) StorageClasses() StorageClassManager {
 // StatefulSets returns a manager for StatefulSet resources.
 func (connection Connection) StatefulSets() StatefulSetManager {
 	return StatefulSetManager{
+		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// Secrets returns a manager for Secret resources.
+func (connection Connection) Secrets() SecretManager {
+	return SecretManager{
 		clientset:  connection.clientset,
 		fieldOwner: connection.fieldOwner,
 		logger:     connection.logger,
@@ -502,29 +519,33 @@ func (manager ServiceManager) List(ctx context.Context, namespace string, select
 	return services, nil
 }
 
-// Apply creates or updates a Service with server-side apply.
+// Apply creates or updates a Service with the exact desired state.
 func (manager ServiceManager) Apply(ctx context.Context, service Service) error {
 	manager.logger.Debug("applying_service", logger.WithFields(
 		logger.String("namespace", service.Namespace),
 		logger.String("name", service.Name),
 	))
 
-	resource := serviceToResource(service)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.CoreV1().Services(service.Namespace).Get(ctx, service.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := serviceToResource(service)
+		_, err = manager.clientset.CoreV1().Services(service.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create service %q: %w", service.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal service %q for apply: %w", service.Name, err)
+		return fmt.Errorf("get service %q for apply: %w", service.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.CoreV1().Services(service.Namespace).Patch(
-		ctx,
-		service.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := serviceToResource(service)
+	existing.Labels = desired.Labels
+	existing.Spec = desired.Spec
+
+	_, err = manager.clientset.CoreV1().Services(service.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply service %q: %w", service.Name, err)
+		return fmt.Errorf("update service %q: %w", service.Name, err)
 	}
 
 	return nil
@@ -654,29 +675,36 @@ func (manager ConfigMapManager) List(ctx context.Context, namespace string, sele
 	return configMaps, nil
 }
 
-// Apply creates or updates a ConfigMap with server-side apply.
+// Apply creates or updates a ConfigMap with the exact desired state.
+// Unlike server-side apply (which only manages declared fields), this
+// uses Get+Update/Get+Create so that any extra keys (e.g. Data keys
+// added by other field managers) are removed — matching the reconciler's
+// goal of making current state match desired state exactly.
 func (manager ConfigMapManager) Apply(ctx context.Context, configMap ConfigMap) error {
 	manager.logger.Debug("applying_config_map", logger.WithFields(
 		logger.String("namespace", configMap.Namespace),
 		logger.String("name", configMap.Name),
 	))
 
-	resource := configMapToResource(configMap)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.CoreV1().ConfigMaps(configMap.Namespace).Get(ctx, configMap.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := configMapToResource(configMap)
+		_, err = manager.clientset.CoreV1().ConfigMaps(configMap.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create config map %q: %w", configMap.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal config map %q for apply: %w", configMap.Name, err)
+		return fmt.Errorf("get config map %q for apply: %w", configMap.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.CoreV1().ConfigMaps(configMap.Namespace).Patch(
-		ctx,
-		configMap.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	existing.Labels = cloneLabels(configMap.Labels)
+	existing.Data = cloneLabels(configMap.Data)
+
+	_, err = manager.clientset.CoreV1().ConfigMaps(configMap.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply config map %q: %w", configMap.Name, err)
+		return fmt.Errorf("update config map %q: %w", configMap.Name, err)
 	}
 
 	return nil
@@ -743,29 +771,31 @@ func (manager ServiceAccountManager) List(ctx context.Context, namespace string,
 	return serviceAccounts, nil
 }
 
-// Apply creates or updates a ServiceAccount with server-side apply.
+// Apply creates or updates a ServiceAccount with the exact desired state.
 func (manager ServiceAccountManager) Apply(ctx context.Context, serviceAccount ServiceAccount) error {
 	manager.logger.Debug("applying_service_account", logger.WithFields(
 		logger.String("namespace", serviceAccount.Namespace),
 		logger.String("name", serviceAccount.Name),
 	))
 
-	resource := serviceAccountToResource(serviceAccount)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.CoreV1().ServiceAccounts(serviceAccount.Namespace).Get(ctx, serviceAccount.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := serviceAccountToResource(serviceAccount)
+		_, err = manager.clientset.CoreV1().ServiceAccounts(serviceAccount.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create service account %q: %w", serviceAccount.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal service account %q for apply: %w", serviceAccount.Name, err)
+		return fmt.Errorf("get service account %q for apply: %w", serviceAccount.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.CoreV1().ServiceAccounts(serviceAccount.Namespace).Patch(
-		ctx,
-		serviceAccount.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	existing.Labels = cloneLabels(serviceAccount.Labels)
+
+	_, err = manager.clientset.CoreV1().ServiceAccounts(serviceAccount.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply service account %q: %w", serviceAccount.Name, err)
+		return fmt.Errorf("update service account %q: %w", serviceAccount.Name, err)
 	}
 
 	return nil
@@ -832,29 +862,33 @@ func (manager RoleManager) List(ctx context.Context, namespace string, selector 
 	return roles, nil
 }
 
-// Apply creates or updates a Role with server-side apply.
+// Apply creates or updates a Role with the exact desired state.
 func (manager RoleManager) Apply(ctx context.Context, role Role) error {
 	manager.logger.Debug("applying_role", logger.WithFields(
 		logger.String("namespace", role.Namespace),
 		logger.String("name", role.Name),
 	))
 
-	resource := roleToResource(role)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.RbacV1().Roles(role.Namespace).Get(ctx, role.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := roleToResource(role)
+		_, err = manager.clientset.RbacV1().Roles(role.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create role %q: %w", role.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal role %q for apply: %w", role.Name, err)
+		return fmt.Errorf("get role %q for apply: %w", role.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.RbacV1().Roles(role.Namespace).Patch(
-		ctx,
-		role.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := roleToResource(role)
+	existing.Labels = desired.Labels
+	existing.Rules = desired.Rules
+
+	_, err = manager.clientset.RbacV1().Roles(role.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply role %q: %w", role.Name, err)
+		return fmt.Errorf("update role %q: %w", role.Name, err)
 	}
 
 	return nil
@@ -921,29 +955,34 @@ func (manager RoleBindingManager) List(ctx context.Context, namespace string, se
 	return roleBindings, nil
 }
 
-// Apply creates or updates a RoleBinding with server-side apply.
+// Apply creates or updates a RoleBinding with the exact desired state.
 func (manager RoleBindingManager) Apply(ctx context.Context, roleBinding RoleBinding) error {
 	manager.logger.Debug("applying_role_binding", logger.WithFields(
 		logger.String("namespace", roleBinding.Namespace),
 		logger.String("name", roleBinding.Name),
 	))
 
-	resource := roleBindingToResource(roleBinding)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.RbacV1().RoleBindings(roleBinding.Namespace).Get(ctx, roleBinding.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := roleBindingToResource(roleBinding)
+		_, err = manager.clientset.RbacV1().RoleBindings(roleBinding.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create role binding %q: %w", roleBinding.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal role binding %q for apply: %w", roleBinding.Name, err)
+		return fmt.Errorf("get role binding %q for apply: %w", roleBinding.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.RbacV1().RoleBindings(roleBinding.Namespace).Patch(
-		ctx,
-		roleBinding.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := roleBindingToResource(roleBinding)
+	existing.Labels = desired.Labels
+	existing.RoleRef = desired.RoleRef
+	existing.Subjects = desired.Subjects
+
+	_, err = manager.clientset.RbacV1().RoleBindings(roleBinding.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply role binding %q: %w", roleBinding.Name, err)
+		return fmt.Errorf("update role binding %q: %w", roleBinding.Name, err)
 	}
 
 	return nil
@@ -1010,29 +1049,33 @@ func (manager PersistentVolumeClaimManager) List(ctx context.Context, namespace 
 	return persistentVolumeClaims, nil
 }
 
-// Apply creates or updates a PersistentVolumeClaim with server-side apply.
+// Apply creates or updates a PersistentVolumeClaim with the exact desired state.
 func (manager PersistentVolumeClaimManager) Apply(ctx context.Context, persistentVolumeClaim PersistentVolumeClaim) error {
 	manager.logger.Debug("applying_persistent_volume_claim", logger.WithFields(
 		logger.String("namespace", persistentVolumeClaim.Namespace),
 		logger.String("name", persistentVolumeClaim.Name),
 	))
 
-	resource := persistentVolumeClaimToResource(persistentVolumeClaim)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.CoreV1().PersistentVolumeClaims(persistentVolumeClaim.Namespace).Get(ctx, persistentVolumeClaim.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := persistentVolumeClaimToResource(persistentVolumeClaim)
+		_, err = manager.clientset.CoreV1().PersistentVolumeClaims(persistentVolumeClaim.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create persistent volume claim %q: %w", persistentVolumeClaim.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal persistent volume claim %q for apply: %w", persistentVolumeClaim.Name, err)
+		return fmt.Errorf("get persistent volume claim %q for apply: %w", persistentVolumeClaim.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.CoreV1().PersistentVolumeClaims(persistentVolumeClaim.Namespace).Patch(
-		ctx,
-		persistentVolumeClaim.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := persistentVolumeClaimToResource(persistentVolumeClaim)
+	existing.Labels = desired.Labels
+	existing.Annotations = desired.Annotations
+
+	_, err = manager.clientset.CoreV1().PersistentVolumeClaims(persistentVolumeClaim.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply persistent volume claim %q: %w", persistentVolumeClaim.Name, err)
+		return fmt.Errorf("update persistent volume claim %q: %w", persistentVolumeClaim.Name, err)
 	}
 
 	return nil
@@ -1179,29 +1222,33 @@ func (manager DeploymentManager) List(ctx context.Context, namespace string, sel
 	return deployments, nil
 }
 
-// Apply creates or updates a Deployment with server-side apply.
+// Apply creates or updates a Deployment with the exact desired state.
 func (manager DeploymentManager) Apply(ctx context.Context, deployment Deployment) error {
 	manager.logger.Debug("applying_deployment", logger.WithFields(
 		logger.String("namespace", deployment.Namespace),
 		logger.String("name", deployment.Name),
 	))
 
-	resource := deploymentToResource(deployment)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.AppsV1().Deployments(deployment.Namespace).Get(ctx, deployment.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := deploymentToResource(deployment)
+		_, err = manager.clientset.AppsV1().Deployments(deployment.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create deployment %q: %w", deployment.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal deployment %q for apply: %w", deployment.Name, err)
+		return fmt.Errorf("get deployment %q for apply: %w", deployment.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.AppsV1().Deployments(deployment.Namespace).Patch(
-		ctx,
-		deployment.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := deploymentToResource(deployment)
+	existing.Labels = desired.Labels
+	existing.Spec = desired.Spec
+
+	_, err = manager.clientset.AppsV1().Deployments(deployment.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply deployment %q: %w", deployment.Name, err)
+		return fmt.Errorf("update deployment %q: %w", deployment.Name, err)
 	}
 
 	return nil
@@ -1311,29 +1358,33 @@ func (manager StatefulSetManager) List(ctx context.Context, namespace string, se
 	return statefulSets, nil
 }
 
-// Apply creates or updates a StatefulSet with server-side apply.
+// Apply creates or updates a StatefulSet with the exact desired state.
 func (manager StatefulSetManager) Apply(ctx context.Context, statefulSet StatefulSet) error {
 	manager.logger.Debug("applying_statefulset", logger.WithFields(
 		logger.String("namespace", statefulSet.Namespace),
 		logger.String("name", statefulSet.Name),
 	))
 
-	resource := statefulSetToResource(statefulSet)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.AppsV1().StatefulSets(statefulSet.Namespace).Get(ctx, statefulSet.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := statefulSetToResource(statefulSet)
+		_, err = manager.clientset.AppsV1().StatefulSets(statefulSet.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create statefulset %q: %w", statefulSet.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal statefulset %q for apply: %w", statefulSet.Name, err)
+		return fmt.Errorf("get statefulset %q for apply: %w", statefulSet.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.AppsV1().StatefulSets(statefulSet.Namespace).Patch(
-		ctx,
-		statefulSet.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := statefulSetToResource(statefulSet)
+	existing.Labels = desired.Labels
+	existing.Spec = desired.Spec
+
+	_, err = manager.clientset.AppsV1().StatefulSets(statefulSet.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply statefulset %q: %w", statefulSet.Name, err)
+		return fmt.Errorf("update statefulset %q: %w", statefulSet.Name, err)
 	}
 
 	return nil
@@ -1411,6 +1462,138 @@ func (manager StatefulSetManager) WaitForReady(ctx context.Context, namespace st
 	}
 }
 
+// Secret is a borq-local Secret manifest.
+type Secret struct {
+	Name      string
+	Namespace string
+	Labels    map[string]string
+	Immutable bool
+	Data      map[string]string
+}
+
+// SecretManager manages Secret resources.
+type SecretManager struct {
+	clientset  kubernetes.Interface
+	fieldOwner string
+	logger     logger.Logger
+}
+
+// Get fetches a Secret by namespace and name.
+func (manager SecretManager) Get(ctx context.Context, namespace string, name string) (Secret, error) {
+	secret, err := manager.clientset.CoreV1().Secrets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return Secret{}, fmt.Errorf("get secret %q: %w", name, err)
+	}
+
+	return secretFromResource(*secret), nil
+}
+
+// List fetches Secrets in a namespace matching the label selector.
+func (manager SecretManager) List(ctx context.Context, namespace string, selector string) ([]Secret, error) {
+	secretList, err := manager.clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("list secrets in namespace %q: %w", namespace, err)
+	}
+
+	secrets := make([]Secret, 0, len(secretList.Items))
+	for _, secret := range secretList.Items {
+		secrets = append(secrets, secretFromResource(secret))
+	}
+
+	return secrets, nil
+}
+
+// Apply creates or updates a Secret with the exact desired state.
+func (manager SecretManager) Apply(ctx context.Context, secret Secret) error {
+	manager.logger.Debug("applying_secret", logger.WithFields(
+		logger.String("namespace", secret.Namespace),
+		logger.String("name", secret.Name),
+	))
+
+	existing, err := manager.clientset.CoreV1().Secrets(secret.Namespace).Get(ctx, secret.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := secretToResource(secret)
+		_, err = manager.clientset.CoreV1().Secrets(secret.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create secret %q: %w", secret.Name, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get secret %q for apply: %w", secret.Name, err)
+	}
+
+	desired := secretToResource(secret)
+	existing.Labels = desired.Labels
+	existing.Immutable = desired.Immutable
+	existing.Data = desired.Data
+	existing.Type = desired.Type
+
+	_, err = manager.clientset.CoreV1().Secrets(secret.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("update secret %q: %w", secret.Name, err)
+	}
+
+	return nil
+}
+
+// Delete removes a Secret if it exists.
+func (manager SecretManager) Delete(ctx context.Context, namespace string, name string) error {
+	manager.logger.Debug("deleting_secret", logger.WithFields(
+		logger.String("namespace", namespace),
+		logger.String("name", name),
+	))
+
+	err := manager.clientset.CoreV1().Secrets(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete secret %q: %w", name, err)
+	}
+
+	return nil
+}
+
+func secretToResource(secret Secret) corev1.Secret {
+	data := make(map[string][]byte, len(secret.Data))
+	for k, v := range secret.Data {
+		data[k] = []byte(v)
+	}
+
+	return corev1.Secret{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secret.Name,
+			Namespace: secret.Namespace,
+			Labels:    cloneLabels(secret.Labels),
+		},
+		Immutable: &secret.Immutable,
+		Data:      data,
+		Type:      corev1.SecretTypeOpaque,
+	}
+}
+
+func secretFromResource(secret corev1.Secret) Secret {
+	data := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		data[k] = string(v)
+	}
+
+	immutable := false
+	if secret.Immutable != nil {
+		immutable = *secret.Immutable
+	}
+
+	return Secret{
+		Name:      secret.Name,
+		Namespace: secret.Namespace,
+		Labels:    cloneLabels(secret.Labels),
+		Immutable: immutable,
+		Data:      data,
+	}
+}
+
 // NamespaceManager manages Namespace resources.
 type NamespaceManager struct {
 	clientset  kubernetes.Interface
@@ -1443,28 +1626,30 @@ func (manager NamespaceManager) List(ctx context.Context, selector string) ([]Na
 	return namespaces, nil
 }
 
-// Apply creates or updates a Namespace with server-side apply.
+// Apply creates or updates a Namespace with the exact desired state.
 func (manager NamespaceManager) Apply(ctx context.Context, namespace Namespace) error {
 	manager.logger.Debug("applying_namespace", logger.WithFields(
 		logger.String("namespace", namespace.Name),
 	))
 
-	resource := namespaceToResource(namespace)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.CoreV1().Namespaces().Get(ctx, namespace.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := namespaceToResource(namespace)
+		_, err = manager.clientset.CoreV1().Namespaces().Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create namespace %q: %w", namespace.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal namespace %q for apply: %w", namespace.Name, err)
+		return fmt.Errorf("get namespace %q for apply: %w", namespace.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.CoreV1().Namespaces().Patch(
-		ctx,
-		namespace.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	existing.Labels = cloneLabels(namespace.Labels)
+
+	_, err = manager.clientset.CoreV1().Namespaces().Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply namespace %q: %w", namespace.Name, err)
+		return fmt.Errorf("update namespace %q: %w", namespace.Name, err)
 	}
 
 	return nil
@@ -1537,29 +1722,33 @@ func (manager PodManager) List(ctx context.Context, namespace string, selector s
 	return pods, nil
 }
 
-// Apply creates or updates a Pod with server-side apply.
+// Apply creates or updates a Pod with the exact desired state.
 func (manager PodManager) Apply(ctx context.Context, pod Pod) error {
 	manager.logger.Debug("applying_pod", logger.WithFields(
 		logger.String("namespace", pod.Namespace),
 		logger.String("name", pod.Name),
 	))
 
-	resource := podToResource(pod)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := podToResource(pod)
+		_, err = manager.clientset.CoreV1().Pods(pod.Namespace).Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create pod %q: %w", pod.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal pod %q for apply: %w", pod.Name, err)
+		return fmt.Errorf("get pod %q for apply: %w", pod.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.CoreV1().Pods(pod.Namespace).Patch(
-		ctx,
-		pod.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := podToResource(pod)
+	existing.Labels = desired.Labels
+	existing.Spec = desired.Spec
+
+	_, err = manager.clientset.CoreV1().Pods(pod.Namespace).Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply pod %q: %w", pod.Name, err)
+		return fmt.Errorf("update pod %q: %w", pod.Name, err)
 	}
 
 	return nil
@@ -1976,6 +2165,7 @@ func podFromResource(pod corev1.Pod) Pod {
 		Name:      pod.Name,
 		Namespace: pod.Namespace,
 		Labels:    cloneLabels(pod.Labels),
+		PodIP:     pod.Status.PodIP,
 		Spec:      podTemplateFromPodSpec(pod.Spec, pod.Labels),
 	}
 }
@@ -2108,14 +2298,21 @@ func containerFromResource(container corev1.Container) Container {
 }
 
 func volumeToResource(volume Volume) corev1.Volume {
-	return corev1.Volume{
-		Name: volume.Name,
-		VolumeSource: corev1.VolumeSource{
+	r := corev1.Volume{Name: volume.Name}
+	if volume.ConfigMapName != "" {
+		r.VolumeSource = corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: volume.ConfigMapName},
+			},
+		}
+	} else {
+		r.VolumeSource = corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 				ClaimName: volume.PersistentVolumeClaimName,
 			},
-		},
+		}
 	}
+	return r
 }
 
 func volumeFromResource(volume corev1.Volume) Volume {
@@ -2124,9 +2321,15 @@ func volumeFromResource(volume corev1.Volume) Volume {
 		persistentVolumeClaimName = volume.PersistentVolumeClaim.ClaimName
 	}
 
+	configMapName := ""
+	if volume.ConfigMap != nil {
+		configMapName = volume.ConfigMap.Name
+	}
+
 	return Volume{
 		Name:                      volume.Name,
 		PersistentVolumeClaimName: persistentVolumeClaimName,
+		ConfigMapName:             configMapName,
 	}
 }
 
@@ -2332,28 +2535,32 @@ func (manager ClusterRoleManager) List(ctx context.Context, selector string) ([]
 	return clusterRoles, nil
 }
 
-// Apply creates or updates a ClusterRole with server-side apply.
+// Apply creates or updates a ClusterRole with the exact desired state.
 func (manager ClusterRoleManager) Apply(ctx context.Context, clusterRole ClusterRole) error {
 	manager.logger.Debug("applying_cluster_role", logger.WithFields(
 		logger.String("name", clusterRole.Name),
 	))
 
-	resource := clusterRoleToResource(clusterRole)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.RbacV1().ClusterRoles().Get(ctx, clusterRole.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := clusterRoleToResource(clusterRole)
+		_, err = manager.clientset.RbacV1().ClusterRoles().Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create cluster role %q: %w", clusterRole.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal cluster role %q for apply: %w", clusterRole.Name, err)
+		return fmt.Errorf("get cluster role %q for apply: %w", clusterRole.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.RbacV1().ClusterRoles().Patch(
-		ctx,
-		clusterRole.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := clusterRoleToResource(clusterRole)
+	existing.Labels = desired.Labels
+	existing.Rules = desired.Rules
+
+	_, err = manager.clientset.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply cluster role %q: %w", clusterRole.Name, err)
+		return fmt.Errorf("update cluster role %q: %w", clusterRole.Name, err)
 	}
 
 	return nil
@@ -2419,28 +2626,33 @@ func (manager ClusterRoleBindingManager) List(ctx context.Context, selector stri
 	return clusterRoleBindings, nil
 }
 
-// Apply creates or updates a ClusterRoleBinding with server-side apply.
+// Apply creates or updates a ClusterRoleBinding with the exact desired state.
 func (manager ClusterRoleBindingManager) Apply(ctx context.Context, clusterRoleBinding ClusterRoleBinding) error {
 	manager.logger.Debug("applying_cluster_role_binding", logger.WithFields(
 		logger.String("name", clusterRoleBinding.Name),
 	))
 
-	resource := clusterRoleBindingToResource(clusterRoleBinding)
-	data, err := json.Marshal(resource)
+	existing, err := manager.clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBinding.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		resource := clusterRoleBindingToResource(clusterRoleBinding)
+		_, err = manager.clientset.RbacV1().ClusterRoleBindings().Create(ctx, &resource, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create cluster role binding %q: %w", clusterRoleBinding.Name, err)
+		}
+		return nil
+	}
 	if err != nil {
-		return fmt.Errorf("marshal cluster role binding %q for apply: %w", clusterRoleBinding.Name, err)
+		return fmt.Errorf("get cluster role binding %q for apply: %w", clusterRoleBinding.Name, err)
 	}
 
-	force := true
-	_, err = manager.clientset.RbacV1().ClusterRoleBindings().Patch(
-		ctx,
-		clusterRoleBinding.Name,
-		types.ApplyPatchType,
-		data,
-		metav1.PatchOptions{FieldManager: manager.fieldOwner, Force: &force},
-	)
+	desired := clusterRoleBindingToResource(clusterRoleBinding)
+	existing.Labels = desired.Labels
+	existing.RoleRef = desired.RoleRef
+	existing.Subjects = desired.Subjects
+
+	_, err = manager.clientset.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("apply cluster role binding %q: %w", clusterRoleBinding.Name, err)
+		return fmt.Errorf("update cluster role binding %q: %w", clusterRoleBinding.Name, err)
 	}
 
 	return nil

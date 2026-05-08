@@ -7,12 +7,20 @@
     "network": {
       "incoming": {
         "mode": "steal",
-        "ports": [7833],
-        "port_mapping": [[27833, 7833]]
+        "ports": [
+          7833
+        ],
+        "port_mapping": [
+          [
+            27833,
+            7833
+          ]
+        ]
       },
       "outgoing": {
         "ignore_localhost": true
-      }
+      },
+      "dns": true
     }
   },
   "agent": {

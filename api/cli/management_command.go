@@ -10,12 +10,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stefanmcshane/borq/api/config"
-	"github.com/stefanmcshane/borq/business/managementbootstrap"
+	"github.com/stefanmcshane/borq/business/cli/management"
 	"github.com/stefanmcshane/borq/foundations/logger"
 )
 
-func newManagementCommand(ctx context.Context, log logger.Logger, cfg config.Config) *cobra.Command {
+func newManagementCommand(ctx context.Context, log logger.Logger, cfg Config) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "management",
 		Short: "Operate the borq management cluster.",
@@ -28,7 +27,7 @@ func newManagementCommand(ctx context.Context, log logger.Logger, cfg config.Con
 }
 
 func newManagementBootstrapCommand(ctx context.Context, log logger.Logger) *cobra.Command {
-	request := managementbootstrap.DefaultRequest()
+	request := management.DefaultRequest()
 	request.ProbeURL = ""
 
 	kubeconfigPaths := filepath.SplitList(os.Getenv("KUBECONFIG"))
@@ -52,7 +51,7 @@ func newManagementBootstrapCommand(ctx context.Context, log logger.Logger) *cobr
 				executionContext = ctx
 			}
 
-			result, err := managementbootstrap.Execute(executionContext, log, request)
+			result, err := management.Execute(executionContext, log, request)
 			if err != nil {
 				return err
 			}

@@ -2,6 +2,8 @@ package logger
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -14,9 +16,12 @@ type Logger struct {
 }
 
 // NewLogger creates the default borq CLI logger.
+// Log level is read from the BORQ_LOG_LEVEL env var (debug, info, warn, error).
 func NewLogger() (Logger, error) {
+	level := parseLogLevel(os.Getenv("BORQ_LOG_LEVEL"))
+
 	config := zap.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	config.Level = zap.NewAtomicLevelAt(level)
 	config.Encoding = "json"
 	config.OutputPaths = []string{"stderr"}
 	config.ErrorOutputPaths = []string{"stderr"}
@@ -38,6 +43,19 @@ func NewLogger() (Logger, error) {
 	}
 
 	return Logger{zapLogger: zapLogger}, nil
+}
+
+func parseLogLevel(raw string) zapcore.Level {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return zapcore.DebugLevel
+	case "warn":
+		return zapcore.WarnLevel
+	case "error":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
 }
 
 // Option is a functional option for configuring a log entry.
