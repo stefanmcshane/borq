@@ -8,13 +8,13 @@ import (
 
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
-	"github.com/stefanmcshane/borq/foundations/vault"
+	"github.com/stefanmcshane/borq/foundations/openbao"
 )
 
-const vaultInitType = "VaultInit"
+const openBaoInitType = "OpenBaoInit"
 
-// VaultConfig describes a vault server to reconcile.
-type VaultConfig struct {
+// OpenBaoConfig describes an OpenBao server to reconcile.
+type OpenBaoConfig struct {
 	Name        string `json:"name"`
 	Namespace   string `json:"namespace"`
 	Image       string `json:"image"`
@@ -22,38 +22,38 @@ type VaultConfig struct {
 	StorageSize string `json:"storageSize"`
 }
 
-// VaultState captures the live operational state of a vault instance.
-type VaultState struct {
+// OpenBaoState captures the live operational state of an OpenBao instance.
+type OpenBaoState struct {
 	Initialized bool
 	Sealed      bool
 }
 
-// VaultHandler implements ComponentHandler for the vault component.
-type VaultHandler struct {
+// OpenBaoHandler implements ComponentHandler for the openbao component.
+type OpenBaoHandler struct {
 	CoreApplier
-	Client *vault.Client
+	Client *openbao.Client
 	Log    logger.Logger
 }
 
-func (VaultHandler) Name() string { return "vault" }
+func (OpenBaoHandler) Name() string { return "openbao" }
 
-func (VaultHandler) DefaultConfig() any {
-	return &VaultConfig{
-		Name: "vault", Namespace: "borq-system",
-		Image: "hashicorp/vault:1.21.2", Replicas: 1, StorageSize: "10Gi",
+func (OpenBaoHandler) DefaultConfig() any {
+	return &OpenBaoConfig{
+		Name: "openbao", Namespace: "borq-system",
+		Image: "ghcr.io/openbao/openbao:2.4.4", Replicas: 1, StorageSize: "10Gi",
 	}
 }
 
-func (vh VaultHandler) Plan(config any) Plan {
-	cfg := config.(*VaultConfig)
+func (handler OpenBaoHandler) Plan(config any) Plan {
+	cfg := config.(*OpenBaoConfig)
 	if cfg.Name == "" {
-		cfg.Name = "vault"
+		cfg.Name = "openbao"
 	}
 	if cfg.Namespace == "" {
 		cfg.Namespace = "borq-system"
 	}
 	if cfg.Image == "" {
-		cfg.Image = "hashicorp/vault:1.21.2"
+		cfg.Image = "ghcr.io/openbao/openbao:2.4.4"
 	}
 	if cfg.Replicas <= 0 {
 		cfg.Replicas = 1
@@ -62,64 +62,64 @@ func (vh VaultHandler) Plan(config any) Plan {
 		cfg.StorageSize = "10Gi"
 	}
 
-	labels := vaultComponentLabels
+	labels := openBaoComponentLabels
 	selector := map[string]string{"app.kubernetes.io/name": cfg.Name}
 	podLabels := map[string]string{
 		"app.kubernetes.io/name":       cfg.Name,
 		"app.kubernetes.io/managed-by": "borq",
-		"app.kubernetes.io/component":  "vault",
+		"app.kubernetes.io/component":  "openbao",
 	}
 
 	plan := Plan{
-		ApplyOrder: vaultApplyOrder,
-		Desired:    vaultResources(*cfg, labels, selector, podLabels),
-		Current:    vaultCurrentFunc(vh.Log, vh.Client, *cfg, labels, selector),
+		ApplyOrder: openBaoApplyOrder,
+		Desired:    openBaoResources(*cfg, labels, selector, podLabels),
+		Current:    openBaoCurrentFunc(handler.Log, handler.Client, *cfg, labels, selector),
 	}
 
 	return plan
 }
 
-func vaultCurrentFunc(log logger.Logger, vc *vault.Client, cfg VaultConfig, componentLabels, selector map[string]string) func(ctx context.Context, conn kubernetes.Connection) ([]Resource, error) {
+func openBaoCurrentFunc(log logger.Logger, client *openbao.Client, cfg OpenBaoConfig, componentLabels, selector map[string]string) func(ctx context.Context, conn kubernetes.Connection) ([]Resource, error) {
 	return func(ctx context.Context, conn kubernetes.Connection) ([]Resource, error) {
 		var resources []Resource
 
-		k8sResources, err := listVaultK8sResources(ctx, conn, cfg.Namespace, componentLabels, selector)
+		k8sResources, err := listOpenBaoK8sResources(ctx, conn, cfg.Namespace, componentLabels, selector)
 		if err != nil {
 			return nil, err
 		}
 		resources = append(resources, k8sResources...)
 
-		log.Debug("vault_current_discover_state")
-		vaultState, err := discoverVaultState(ctx, vc)
+		log.Debug("openbao_current_discover_state")
+		openBaoState, err := discoverOpenBaoState(ctx, client)
 		if err != nil {
-			log.Debug("vault_current_state_unreachable", logger.WithFields(
+			log.Debug("openbao_current_state_unreachable", logger.WithFields(
 				logger.String("error", err.Error()),
 			))
 			resources = append(resources, Resource{
-				Type: vaultInitType, Name: cfg.Name + "-state",
-				Actual: VaultState{Initialized: false, Sealed: true},
+				Type: openBaoInitType, Name: cfg.Name + "-state",
+				Actual: OpenBaoState{Initialized: false, Sealed: true},
 			})
 			return resources, nil
 		}
-		log.Debug("vault_current_state", logger.WithFields(
-			logger.Bool("initialized", vaultState.Initialized),
-			logger.Bool("sealed", vaultState.Sealed),
+		log.Debug("openbao_current_state", logger.WithFields(
+			logger.Bool("initialized", openBaoState.Initialized),
+			logger.Bool("sealed", openBaoState.Sealed),
 		))
 		resources = append(resources, Resource{
-			Type: vaultInitType, Name: cfg.Name + "-state",
-			Actual: vaultState,
+			Type: openBaoInitType, Name: cfg.Name + "-state",
+			Actual: openBaoState,
 		})
 		return resources, nil
 	}
 }
 
-func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, namespace string, componentLabels, selector map[string]string) ([]Resource, error) {
-	labelSelector := "app.kubernetes.io/managed-by=borq,app.kubernetes.io/component=vault"
+func listOpenBaoK8sResources(ctx context.Context, conn kubernetes.Connection, namespace string, componentLabels, selector map[string]string) ([]Resource, error) {
+	labelSelector := "app.kubernetes.io/managed-by=borq,app.kubernetes.io/component=openbao"
 	var resources []Resource
 
 	svcs, err := conn.Services().List(ctx, namespace, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault services: %w", err)
+		return nil, fmt.Errorf("list openbao services: %w", err)
 	}
 	for _, s := range svcs {
 		resources = append(resources, Resource{Type: TypeService, Namespace: namespace, Name: s.Name, Actual: s})
@@ -127,7 +127,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	cms, err := conn.ConfigMaps().List(ctx, namespace, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault configmaps: %w", err)
+		return nil, fmt.Errorf("list openbao configmaps: %w", err)
 	}
 	for _, cm := range cms {
 		resources = append(resources, Resource{Type: TypeConfigMap, Namespace: namespace, Name: cm.Name, Actual: cm})
@@ -135,7 +135,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	sas, err := conn.ServiceAccounts().List(ctx, namespace, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault serviceaccounts: %w", err)
+		return nil, fmt.Errorf("list openbao serviceaccounts: %w", err)
 	}
 	for _, sa := range sas {
 		resources = append(resources, Resource{Type: TypeServiceAccount, Namespace: namespace, Name: sa.Name, Actual: sa})
@@ -143,7 +143,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	pvcs, err := conn.PersistentVolumeClaims().List(ctx, namespace, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault pvcs: %w", err)
+		return nil, fmt.Errorf("list openbao pvcs: %w", err)
 	}
 	for _, pvc := range pvcs {
 		resources = append(resources, Resource{Type: TypePersistentVolumeClaim, Namespace: namespace, Name: pvc.Name, Actual: pvc})
@@ -151,7 +151,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	deploys, err := conn.Deployments().List(ctx, namespace, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault deployments: %w", err)
+		return nil, fmt.Errorf("list openbao deployments: %w", err)
 	}
 	for _, d := range deploys {
 		resources = append(resources, Resource{Type: TypeDeployment, Namespace: namespace, Name: d.Name, Actual: d})
@@ -159,7 +159,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	secrets, err := conn.Secrets().List(ctx, namespace, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault secrets: %w", err)
+		return nil, fmt.Errorf("list openbao secrets: %w", err)
 	}
 	for _, sec := range secrets {
 		resources = append(resources, Resource{Type: TypeSecret, Namespace: namespace, Name: sec.Name, Actual: sec})
@@ -167,7 +167,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	crs, err := conn.ClusterRoles().List(ctx, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault clusterroles: %w", err)
+		return nil, fmt.Errorf("list openbao clusterroles: %w", err)
 	}
 	for _, cr := range crs {
 		resources = append(resources, Resource{Type: TypeClusterRole, Name: cr.Name, Actual: cr})
@@ -175,7 +175,7 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 
 	crbs, err := conn.ClusterRoleBindings().List(ctx, labelSelector)
 	if err != nil {
-		return nil, fmt.Errorf("list vault clusterrolebindings: %w", err)
+		return nil, fmt.Errorf("list openbao clusterrolebindings: %w", err)
 	}
 	for _, crb := range crbs {
 		resources = append(resources, Resource{Type: TypeClusterRoleBinding, Name: crb.Name, Actual: crb})
@@ -184,27 +184,27 @@ func listVaultK8sResources(ctx context.Context, conn kubernetes.Connection, name
 	return resources, nil
 }
 
-func discoverVaultState(ctx context.Context, vc *vault.Client) (VaultState, error) {
-	status, err := vc.Status(ctx)
+func discoverOpenBaoState(ctx context.Context, client *openbao.Client) (OpenBaoState, error) {
+	status, err := client.Status(ctx)
 	if err != nil {
-		return VaultState{}, err
+		return OpenBaoState{}, err
 	}
-	return VaultState{Initialized: status.Initialized, Sealed: status.Sealed}, nil
+	return OpenBaoState{Initialized: status.Initialized, Sealed: status.Sealed}, nil
 }
 
-func vaultResources(cfg VaultConfig, labels, selector, podLabels map[string]string) []Resource {
+func openBaoResources(cfg OpenBaoConfig, labels, selector, podLabels map[string]string) []Resource {
 	return append(
-		vaultK8sResources(cfg, labels, selector, podLabels),
+		openBaoK8sResources(cfg, labels, selector, podLabels),
 		Resource{
-			Type:      vaultInitType,
+			Type:      openBaoInitType,
 			Namespace: cfg.Namespace,
 			Name:      cfg.Name + "-state",
-			Desired:   VaultState{Initialized: true, Sealed: false},
+			Desired:   OpenBaoState{Initialized: true, Sealed: false},
 		},
 	)
 }
 
-func vaultK8sResources(cfg VaultConfig, labels, selector, podLabels map[string]string) []Resource {
+func openBaoK8sResources(cfg OpenBaoConfig, labels, selector, podLabels map[string]string) []Resource {
 	return []Resource{
 		{
 			Type: TypeServiceAccount, Namespace: cfg.Namespace, Name: cfg.Name,
@@ -242,10 +242,10 @@ func vaultK8sResources(cfg VaultConfig, labels, selector, podLabels map[string]s
 			Desired: kubernetes.ConfigMap{
 				Name: cfg.Name + "-config", Namespace: cfg.Namespace, Labels: labels,
 				Data: map[string]string{
-					"vault.hcl": `ui = true
+					"openbao.hcl": `ui = true
 
 disable_mlock = true
-api_addr = "http://vault.borq-system.svc:8200"
+api_addr = "http://openbao.borq-system.svc:8200"
 
 listener "tcp" {
   tls_disable = 1
@@ -254,7 +254,7 @@ listener "tcp" {
 }
 
 storage "file" {
-  path = "/vault/data"
+  path = "/openbao/data"
 }
 `,
 				},
@@ -308,8 +308,8 @@ storage "file" {
 						{
 							Name:    cfg.Name,
 							Image:   cfg.Image,
-							Command: []string{"vault"},
-							Args:    []string{"server", "-config", "/vault/config/vault.hcl"},
+							Command: []string{"bao"},
+							Args:    []string{"server", "-config", "/openbao/config/openbao.hcl"},
 							Env: []kubernetes.EnvVar{
 								{Name: "SKIP_CHOWN", Value: "true"},
 								{Name: "SKIP_SETCAP", Value: "true"},
@@ -319,8 +319,8 @@ storage "file" {
 								{Name: "cluster", Port: 8201},
 							},
 							VolumeMounts: []kubernetes.VolumeMount{
-								{Name: "data", MountPath: "/vault/data"},
-								{Name: "config", MountPath: "/vault/config"},
+								{Name: "data", MountPath: "/openbao/data"},
+								{Name: "config", MountPath: "/openbao/config"},
 							},
 							ReadinessProbe: kubernetes.HttpProbe{
 								Path:                "/v1/sys/health?standbyok=true&sealedcode=200",
@@ -336,64 +336,64 @@ storage "file" {
 	}
 }
 
-var vaultComponentLabels = map[string]string{
+var openBaoComponentLabels = map[string]string{
 	"app.kubernetes.io/managed-by": "borq",
-	"app.kubernetes.io/component":  "vault",
+	"app.kubernetes.io/component":  "openbao",
 }
 
-const vaultUnsealSecretName = "vault-unseal"
+const openBaoUnsealSecretName = "openbao-unseal"
 
 // ApplyResource dispatches on resource type.
-func (vh VaultHandler) ApplyResource(ctx context.Context, conn kubernetes.Connection, res Resource) error {
-	if res.Type == vaultInitType {
-		return vh.reconcileVaultState(ctx, conn, res)
+func (handler OpenBaoHandler) ApplyResource(ctx context.Context, conn kubernetes.Connection, res Resource) error {
+	if res.Type == openBaoInitType {
+		return handler.reconcileOpenBaoState(ctx, conn, res)
 	}
-	return vh.CoreApplier.ApplyResource(ctx, conn, res)
+	return handler.CoreApplier.ApplyResource(ctx, conn, res)
 }
 
 // DeleteResource dispatches on resource type.
-func (vh VaultHandler) DeleteResource(ctx context.Context, conn kubernetes.Connection, res Resource) error {
-	if res.Type == vaultInitType {
+func (handler OpenBaoHandler) DeleteResource(ctx context.Context, conn kubernetes.Connection, res Resource) error {
+	if res.Type == openBaoInitType {
 		return nil
 	}
-	return vh.CoreApplier.DeleteResource(ctx, conn, res)
+	return handler.CoreApplier.DeleteResource(ctx, conn, res)
 }
 
-// reconcileVaultState initializes vault if needed and unseals it.
-func (vh VaultHandler) reconcileVaultState(ctx context.Context, conn kubernetes.Connection, res Resource) error {
-	vh.Log.Debug("vault_reconcile_start", logger.WithFields(
+// reconcileOpenBaoState initializes OpenBao if needed and unseals it.
+func (handler OpenBaoHandler) reconcileOpenBaoState(ctx context.Context, conn kubernetes.Connection, res Resource) error {
+	handler.Log.Debug("openbao_reconcile_start", logger.WithFields(
 		logger.String("resource", res.Type+"/"+res.Name),
 		logger.String("namespace", res.Namespace),
 	))
 
-	if err := vh.Client.WaitForReady(ctx, time.Second, 30*time.Second); err != nil {
-		return fmt.Errorf("vault: wait for ready: %w", err)
+	if err := handler.Client.WaitForReady(ctx, time.Second, 30*time.Second); err != nil {
+		return fmt.Errorf("openbao: wait for ready: %w", err)
 	}
-	vh.Log.Debug("vault_ready")
+	handler.Log.Debug("openbao_ready")
 
-	status, err := vh.Client.Status(ctx)
+	status, err := handler.Client.Status(ctx)
 	if err != nil {
-		return fmt.Errorf("vault: check status: %w", err)
+		return fmt.Errorf("openbao: check status: %w", err)
 	}
-	vh.Log.Debug("vault_status", logger.WithFields(
+	handler.Log.Debug("openbao_status", logger.WithFields(
 		logger.Bool("initialized", status.Initialized),
 		logger.Bool("sealed", status.Sealed),
 	))
 
 	if !status.Initialized {
-		vh.Log.Info("vault_init_start")
-		result, err := vh.Client.Init(ctx)
+		handler.Log.Info("openbao_init_start")
+		result, err := handler.Client.Init(ctx)
 		if err != nil {
-			return fmt.Errorf("vault: init: %w", err)
+			return fmt.Errorf("openbao: init: %w", err)
 		}
-		vh.Log.Info("vault_init_complete")
+		handler.Log.Info("openbao_init_complete")
 
 		keysJSON, _ := json.Marshal(result.UnsealKeysB64)
 
 		secret := kubernetes.Secret{
-			Name:      vaultUnsealSecretName,
+			Name:      openBaoUnsealSecretName,
 			Namespace: res.Namespace,
-			Labels:    vaultComponentLabels,
+			Labels:    openBaoComponentLabels,
 			Data: map[string]string{
 				"root_token":      result.RootToken,
 				"unseal_key":      result.UnsealKeysB64[0],
@@ -401,41 +401,41 @@ func (vh VaultHandler) reconcileVaultState(ctx context.Context, conn kubernetes.
 			},
 		}
 		if err := conn.Secrets().Apply(ctx, secret); err != nil {
-			return fmt.Errorf("vault: store unseal keys: %w", err)
+			return fmt.Errorf("openbao: store unseal keys: %w", err)
 		}
-		vh.Log.Debug("vault_unseal_secret_stored")
+		handler.Log.Debug("openbao_unseal_secret_stored")
 
-		if err := vh.Client.Unseal(ctx, result.UnsealKeysB64[0]); err != nil {
-			return fmt.Errorf("vault: unseal after init: %w", err)
+		if err := handler.Client.Unseal(ctx, result.UnsealKeysB64[0]); err != nil {
+			return fmt.Errorf("openbao: unseal after init: %w", err)
 		}
-		vh.Log.Info("vault_unsealed_after_init")
+		handler.Log.Info("openbao_unsealed_after_init")
 
 		return nil
 	}
 
 	if status.Sealed {
-		vh.Log.Info("vault_unseal_from_stored_key")
-		secret, err := conn.Secrets().Get(ctx, res.Namespace, vaultUnsealSecretName)
+		handler.Log.Info("openbao_unseal_from_stored_key")
+		secret, err := conn.Secrets().Get(ctx, res.Namespace, openBaoUnsealSecretName)
 		if err != nil {
-			return fmt.Errorf("vault: sealed and no stored unseal key found: %w", err)
+			return fmt.Errorf("openbao: sealed and no stored unseal key found: %w", err)
 		}
 
 		unsealKey, ok := secret.Data["unseal_key"]
 		if !ok {
-			return fmt.Errorf("vault: sealed and secret %q has no 'unseal_key' field", vaultUnsealSecretName)
+			return fmt.Errorf("openbao: sealed and secret %q has no 'unseal_key' field", openBaoUnsealSecretName)
 		}
 
-		if err := vh.Client.Unseal(ctx, unsealKey); err != nil {
-			return fmt.Errorf("vault: unseal from stored key: %w", err)
+		if err := handler.Client.Unseal(ctx, unsealKey); err != nil {
+			return fmt.Errorf("openbao: unseal from stored key: %w", err)
 		}
-		vh.Log.Info("vault_unsealed_from_stored_key")
+		handler.Log.Info("openbao_unsealed_from_stored_key")
 	}
 
-	vh.Log.Debug("vault_reconcile_complete")
+	handler.Log.Debug("openbao_reconcile_complete")
 	return nil
 }
 
-var vaultApplyOrder = []string{
+var openBaoApplyOrder = []string{
 	TypeServiceAccount,
 	TypeClusterRole,
 	TypeClusterRoleBinding,
@@ -443,5 +443,5 @@ var vaultApplyOrder = []string{
 	TypeService,
 	TypePersistentVolumeClaim,
 	TypeDeployment,
-	vaultInitType,
+	openBaoInitType,
 }

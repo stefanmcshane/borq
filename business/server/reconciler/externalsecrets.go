@@ -27,10 +27,10 @@ const (
 	externalSecretsVersion        = "v2.4.0"
 	clusterSecretStoreType        = "ClusterSecretStore.external-secrets.io"
 
-	vaultServiceName  = "vault"
-	vaultUnsealSecret = "vault-unseal"
-	vaultTokenKey     = "root_token"
-	vaultSecretPath   = "secret"
+	openBaoServiceName  = "openbao"
+	openBaoUnsealSecret = "openbao-unseal"
+	openBaoTokenKey     = "root_token"
+	openBaoSecretPath   = "secret"
 )
 
 // ExternalSecretsConfig describes the External Secrets Operator install.
@@ -321,7 +321,7 @@ func externalSecretsClusterSecretStore(cfg ExternalSecretsConfig) *unstructured.
 			"apiVersion": "external-secrets.io/v1",
 			"kind":       "ClusterSecretStore",
 			"metadata": map[string]any{
-				"name": "vault-backend",
+				"name": "openbao-backend",
 				"labels": map[string]any{
 					"app.kubernetes.io/name":       "external-secrets",
 					"app.kubernetes.io/managed-by": "borq",
@@ -331,13 +331,13 @@ func externalSecretsClusterSecretStore(cfg ExternalSecretsConfig) *unstructured.
 			"spec": map[string]any{
 				"provider": map[string]any{
 					"vault": map[string]any{
-						"server":  fmt.Sprintf("http://%s.%s.svc:8200", vaultServiceName, cfg.Namespace),
-						"path":    vaultSecretPath,
+						"server":  fmt.Sprintf("http://%s.%s.svc:8200", openBaoServiceName, cfg.Namespace),
+						"path":    openBaoSecretPath,
 						"version": "v2",
 						"auth": map[string]any{
 							"tokenSecretRef": map[string]any{
-								"name": vaultUnsealSecret,
-								"key":  vaultTokenKey,
+								"name": openBaoUnsealSecret,
+								"key":  openBaoTokenKey,
 							},
 						},
 					},

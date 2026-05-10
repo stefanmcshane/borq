@@ -284,20 +284,20 @@ func TestHandlerReconcileUsesDefaultConfigWhenBodyIsEmpty(t *testing.T) {
 }
 
 // TestSortedHandlerNamesPrioritizesDependencies verifies the reconcile-all
-// order respects component dependencies: cert-manager must run before vault
+// order respects component dependencies: cert-manager must run before openbao
 // before cloudnativepg-operator before borq-postgres.
 func TestSortedHandlerNamesPrioritizesDependencies(t *testing.T) {
 	is := is.New(t)
 
 	names := sortedHandlerNames(map[string]reconciler.ComponentHandler{
-		"vault":                  &testReconcileHandler{name: "vault", defaultName: "vault-default"},
+		"openbao":                &testReconcileHandler{name: "openbao", defaultName: "openbao-default"},
 		"borq-postgres":          &testReconcileHandler{name: "borq-postgres", defaultName: "postgres-default"},
 		"cloudnativepg-operator": &testReconcileHandler{name: "cloudnativepg-operator", defaultName: "operator-default"},
 		"cert-manager":           &testReconcileHandler{name: "cert-manager", defaultName: "cert-default"},
 	})
 
 	is.Equal(names[0], "cert-manager")
-	is.Equal(names[1], "vault")
+	is.Equal(names[1], "openbao")
 	is.Equal(names[2], "cloudnativepg-operator")
 	is.Equal(names[3], "borq-postgres")
 }

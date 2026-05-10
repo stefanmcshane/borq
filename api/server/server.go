@@ -16,7 +16,7 @@ import (
 	"github.com/stefanmcshane/borq/business/server/reconciler"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
-	"github.com/stefanmcshane/borq/foundations/vault"
+	"github.com/stefanmcshane/borq/foundations/openbao"
 )
 
 const (
@@ -35,7 +35,7 @@ type NewServerInput struct {
 	Port           int
 	DataDir        string
 	KubeconfigPath string
-	VaultAddress   string
+	OpenBaoAddress string
 	Log            logger.Logger
 }
 
@@ -69,16 +69,16 @@ func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
 		newKubernetesAuthHealthCheck(kubernetesConnection, managedNamespace),
 	}
 
-	vaultAddr := inp.VaultAddress
-	if vaultAddr == "" {
-		vaultAddr = "http://vault-internal.borq-system.svc:8200"
+	openBaoAddress := inp.OpenBaoAddress
+	if openBaoAddress == "" {
+		openBaoAddress = "http://openbao-internal.borq-system.svc:8200"
 	}
-	vc, err := vault.NewClient(vault.NewClientInput{
-		Address:        vaultAddr,
+	openBaoClient, err := openbao.NewClient(openbao.NewClientInput{
+		Address:        openBaoAddress,
 		RequestTimeout: 10 * time.Second,
 	})
 	if err != nil {
-		return Server{}, fmt.Errorf("create vault client: %w", err)
+		return Server{}, fmt.Errorf("create openbao client: %w", err)
 	}
 
 	handlers := map[string]reconciler.ComponentHandler{
@@ -86,7 +86,7 @@ func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
 		"external-secrets":       reconciler.ExternalSecretsHandler{},
 		"borq-postgres":          reconciler.BorqPostgresHandler{},
 		"cloudnativepg-operator": reconciler.CloudNativePGOperatorHandler{},
-		"vault":                  reconciler.VaultHandler{Client: vc, Log: inp.Log},
+		"openbao":                reconciler.OpenBaoHandler{Client: openBaoClient, Log: inp.Log},
 	}
 
 	return buildServer(ctx, inp, kubernetesConnection, health, handlers, startupHealthTimeout, startupHealthInterval)
@@ -309,8 +309,8 @@ func sortedHandlerNames(handlers map[string]reconciler.ComponentHandler) []strin
 	if _, ok := handlers["external-secrets"]; ok {
 		names = moveNameToFront(names, "external-secrets")
 	}
-	if _, ok := handlers["vault"]; ok {
-		names = moveNameToFront(names, "vault")
+	if _, ok := handlers["openbao"]; ok {
+		names = moveNameToFront(names, "openbao")
 	}
 	if _, ok := handlers["cert-manager"]; ok {
 		names = moveNameToFront(names, "cert-manager")

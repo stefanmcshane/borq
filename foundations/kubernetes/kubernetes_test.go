@@ -432,18 +432,18 @@ func TestStatefulSetResourceRoundTrip(t *testing.T) {
 	is := is.New(t)
 
 	statefulSet := StatefulSet{
-		Name:        "vault",
+		Name:        "openbao",
 		Namespace:   "borq-system",
-		Labels:      map[string]string{"app": "vault"},
-		Selector:    map[string]string{"app": "vault"},
+		Labels:      map[string]string{"app": "openbao"},
+		Selector:    map[string]string{"app": "openbao"},
 		Replicas:    1,
-		ServiceName: "vault-internal",
+		ServiceName: "openbao-internal",
 		Pods: PodTemplate{
-			Labels: map[string]string{"app": "vault"},
+			Labels: map[string]string{"app": "openbao"},
 			Containers: []Container{
 				{
-					Name:  "vault",
-					Image: "hashicorp/vault:1.21.2",
+					Name:  "openbao",
+					Image: "ghcr.io/openbao/openbao:2.4.4",
 					Ports: []ContainerPort{{Name: "http", Port: 8200}},
 				},
 			},
@@ -876,7 +876,7 @@ func TestStatefulSetManagerWaitForReady(t *testing.T) {
 	manager := StatefulSetManager{
 		clientset: fake.NewSimpleClientset(&appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "vault",
+				Name:      "openbao",
 				Namespace: "borq-system",
 			},
 			Status: appsv1.StatefulSetStatus{
@@ -888,7 +888,7 @@ func TestStatefulSetManagerWaitForReady(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := manager.WaitForReady(ctx, "borq-system", "vault")
+	err := manager.WaitForReady(ctx, "borq-system", "openbao")
 	is.NoErr(err)
 }
 
@@ -901,21 +901,21 @@ func TestStatefulSetManagerGetListDeleteAndDiff(t *testing.T) {
 		clientset: fake.NewSimpleClientset(
 			&appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "vault",
+					Name:      "openbao",
 					Namespace: "borq-system",
 				},
 				Spec: appsv1.StatefulSetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": "vault"},
+						MatchLabels: map[string]string{"app": "openbao"},
 					},
 				},
 			},
 		),
 	}
 
-	statefulSet, err := manager.Get(context.Background(), "borq-system", "vault")
+	statefulSet, err := manager.Get(context.Background(), "borq-system", "openbao")
 	is.NoErr(err)
-	is.Equal(statefulSet.Name, "vault")
+	is.Equal(statefulSet.Name, "openbao")
 
 	statefulSets, err := manager.List(context.Background(), "borq-system", "")
 	is.NoErr(err)
@@ -925,7 +925,7 @@ func TestStatefulSetManagerGetListDeleteAndDiff(t *testing.T) {
 	is.NoErr(err)
 	is.True(diff.Changed)
 
-	is.NoErr(manager.Delete(context.Background(), "borq-system", "vault"))
+	is.NoErr(manager.Delete(context.Background(), "borq-system", "openbao"))
 }
 
 // TestStatefulSetManagerWaitForReadyTimeout verifies that WaitForReady
@@ -937,7 +937,7 @@ func TestStatefulSetManagerWaitForReadyTimeout(t *testing.T) {
 	manager := StatefulSetManager{
 		clientset: fake.NewSimpleClientset(&appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "vault",
+				Name:      "openbao",
 				Namespace: "borq-system",
 			},
 		}),
@@ -946,7 +946,7 @@ func TestStatefulSetManagerWaitForReadyTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	err := manager.WaitForReady(ctx, "borq-system", "vault")
+	err := manager.WaitForReady(ctx, "borq-system", "openbao")
 	is.True(err != nil)
 }
 

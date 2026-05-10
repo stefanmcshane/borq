@@ -159,17 +159,17 @@ func TestComputePatchWithMarshalUnmarshalRoundTrip(t *testing.T) {
 	is := is.New(t)
 
 	live := kubernetes.StatefulSet{
-		Name:      "vault",
+		Name:      "openbao",
 		Namespace: "borq-system",
-		Labels:    map[string]string{"app": "vault"},
-		Selector:  map[string]string{"app": "vault"},
+		Labels:    map[string]string{"app": "openbao"},
+		Selector:  map[string]string{"app": "openbao"},
 		Replicas:  1,
 		Pods: kubernetes.PodTemplate{
-			Labels: map[string]string{"app": "vault"},
+			Labels: map[string]string{"app": "openbao"},
 			Containers: []kubernetes.Container{
 				{
-					Name:  "vault",
-					Image: "hashicorp/vault:1.21.2",
+					Name:  "openbao",
+					Image: "ghcr.io/openbao/openbao:2.4.4",
 					Env:   nil,
 					Ports: []kubernetes.ContainerPort{{Name: "http", Port: 8200}},
 				},
@@ -268,8 +268,8 @@ func TestDiffMapsNestedMapsDiff(t *testing.T) {
 
 	var patches []DiffPatch
 	diffMaps("",
-		map[string]any{"spec": map[string]any{"replicas": float64(1), "selector": map[string]any{"app": "vault"}}},
-		map[string]any{"spec": map[string]any{"replicas": float64(3), "selector": map[string]any{"app": "vault"}}},
+		map[string]any{"spec": map[string]any{"replicas": float64(1), "selector": map[string]any{"app": "openbao"}}},
+		map[string]any{"spec": map[string]any{"replicas": float64(3), "selector": map[string]any{"app": "openbao"}}},
 		&patches,
 		false,
 	)
@@ -576,10 +576,10 @@ func TestComputePatchWithStructAndJsonTags(t *testing.T) {
 	live := Resource{
 		APIVersion: "apps/v1",
 		Kind:       "StatefulSet",
-		Metadata:   map[string]any{"name": "vault", "namespace": "borq-system"},
+		Metadata:   map[string]any{"name": "openbao", "namespace": "borq-system"},
 	}
 	live.Spec.Containers = []Container{
-		{Name: "vault", Image: "hashicorp/vault:1.21.2", Ports: []Port{{Name: "http", Port: 8200}}},
+		{Name: "openbao", Image: "ghcr.io/openbao/openbao:2.4.4", Ports: []Port{{Name: "http", Port: 8200}}},
 	}
 
 	desired := live

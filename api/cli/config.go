@@ -12,7 +12,7 @@ type Config struct {
 	Port           int
 	DataDir        string
 	KubeconfigPath string
-	VaultAddress   string
+	OpenBaoAddress string
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -36,8 +36,8 @@ func Load() (Config, error) {
 	} else {
 		cfg.KubeconfigPath = defaultKubeconfigPath()
 	}
-	if v, ok := os.LookupEnv("BORQ_VAULT_ADDRESS"); ok {
-		cfg.VaultAddress = strings.TrimSpace(v)
+	if v, ok := os.LookupEnv("BORQ_OPENBAO_ADDRESS"); ok {
+		cfg.OpenBaoAddress = strings.TrimSpace(v)
 	}
 
 	return cfg, nil

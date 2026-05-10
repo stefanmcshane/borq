@@ -15,8 +15,8 @@ management cluster:
 - loki
 - grafana
 - cluster api hetzner (capih)
-- hashicorp vault
-- external secrets operator (all secrets stored in vault first, only vault unlock keys need stored elsewhere securely)
+- openbao
+- external secrets operator (all secrets stored in openbao first, only openbao unlock keys need stored elsewhere securely)
 
 workload cluster:
 - traefik
@@ -36,9 +36,9 @@ If the cluster was not made with cluster api hetzner, it should go ahead and ins
 
 
 - create kind cluster (namespaces per tenant .i.e cloud provider, tailscale operator)
-- install hashicorp vault (ensure the unlock is stored correctly)
-- add hetzner secrets to vault (cloud-provider)
-- add tailscale secrets to vault (tenant)
+- install openbao (ensure the unlock is stored correctly)
+- add hetzner secrets to openbao (cloud-provider)
+- add tailscale secrets to openbao (tenant)
 - install external secrets
 - install tailscale operator
 - install cluster api hetzner with ESO secrets
@@ -46,7 +46,7 @@ If the cluster was not made with cluster api hetzner, it should go ahead and ins
 
 App install flows:
 - simple yaml for declaring the app layout, without exposing kubernetes words
-- no env vars or secrets injected, all are references to vault paths. 
+- no env vars or secrets injected, all are references to openbao paths. 
 - secrets/config need a separate creation flow prior to deploying
 - builds need to happen prior to deploying
 
@@ -74,26 +74,26 @@ commands:
 `borq secret XXX` - crud for secret management
 `borq management bootstrap` - bootstrap the management cluster
 `borq management server start` - operates the server which runs in the management cluster
-`borq management server reconcile` - reconciles the differences in the management cluster's expected state, and its actual state. This would be used for upgrading components like vault, keycloak, etc. If a `--dry-run` is passed in, it would not make any changes and instead output the diff for the cluster components that need updated, in the order they would be run.
+`borq management server reconcile` - reconciles the differences in the management cluster's expected state, and its actual state. This would be used for upgrading components like openbao, keycloak, etc. If a `--dry-run` is passed in, it would not make any changes and instead output the diff for the cluster components that need updated, in the order they would be run.
 `borq management XXX` - operations updating the management cluster
 
 
 Things to look into:
-- vault root token autosetting in prod
-- vault unseal key setting in prod/storing
-- vault autounseal somehow? -> could we set borq up as an autounsealer, and have the CLI send in the data if needed? can we seal/rewrap the vault with our own code?
-- vault policies and ACLs. Definitely per tenant later. We should probably have one per namespace/app so apps cant take eachothers secrets? helm authDelegator?
+- openbao root token autosetting in prod
+- openbao unseal key setting in prod/storing
+- openbao autounseal somehow? -> could we set borq up as an autounsealer, and have the CLI send in the data if needed? can we seal/rewrap the openbao with our own code?
+- openbao policies and ACLs. Definitely per tenant later. We should probably have one per namespace/app so apps cant take eachothers secrets? helm authDelegator?
 
-vault bootstrap:
+openbao bootstrap:
 - set root token, tell user to store that and unseal token somewhere else
 - autocreate kubernetes auth method, make sure borq server can access it
-- priority class name must be set to ensure vault always schedules
+- priority class name must be set to ensure openbao always schedules
 - borq server:
     - upon install, reads root token from secrets, uses it to create kubernetes secrets engine
-    - create service account in vault which links to vault service account
-    - recreate vault client using kubernetes service account
+    - create service account in openbao which links to openbao service account
+    - recreate openbao client using kubernetes service account
     - this can all be skipped in helm chart allows default engine enablement
 
 backups:
-- vault
+- openbao
 - can caph import/adopt a cluster if its lost?

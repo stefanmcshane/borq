@@ -11,7 +11,7 @@ func newManagementServerCommand(log logger.Logger, cfg Config) *cobra.Command {
 		Port:           cfg.Port,
 		DataDir:        cfg.DataDir,
 		KubeconfigPath: cfg.KubeconfigPath,
-		VaultAddress:   cfg.VaultAddress,
+		OpenBaoAddress: cfg.OpenBaoAddress,
 		Log:            log,
 	}
 

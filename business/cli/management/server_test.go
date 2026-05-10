@@ -190,7 +190,7 @@ func TestWaitReadyUsesStatefulSetWaiter(t *testing.T) {
 		Workload: Workload{
 			Kind: StatefulSetWorkload,
 			StatefulSet: kubernetes.StatefulSet{
-				Name: "vault",
+				Name: "openbao",
 			},
 		},
 	}
@@ -203,5 +203,5 @@ func TestWaitReadyUsesStatefulSetWaiter(t *testing.T) {
 	})
 
 	is.NoErr(err)
-	is.Equal(operations, []string{"borq-system/vault"})
+	is.Equal(operations, []string{"borq-system/openbao"})
 }

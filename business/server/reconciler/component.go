@@ -8,11 +8,11 @@ import (
 )
 
 // ComponentHandler describes a managed component that can be reconciled.
-// Every component (vault, whoami, etc.) implements this interface.
+// Every component (openbao, whoami, etc.) implements this interface.
 type ComponentHandler interface {
 	Name() string
 	// DefaultConfig returns the default configuration as a pointer to a
-	// handler-specific struct (e.g. *VaultConfig). The pointer is required so
+	// handler-specific struct (e.g. *OpenBaoConfig). The pointer is required so
 	// that json.Decode can populate fields directly — a value type wrapped
 	// in any is unaddressable and causes decode to produce map[string]any
 	// instead, which panics in Plan's type assertion.
@@ -26,7 +26,7 @@ type ComponentHandler interface {
 // Kubernetes resource types (Service, Deployment, ConfigMap, etc.).
 // Components that only use built-in K8s resources embed CoreApplier and
 // write zero apply/delete code. Components with custom resource types
-// (like VaultInit) override the methods they need.
+// (like OpenBaoInit) override the methods they need.
 type CoreApplier struct{}
 
 func (CoreApplier) ApplyResource(ctx context.Context, conn kubernetes.Connection, res Resource) error {

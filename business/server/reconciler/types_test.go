@@ -36,7 +36,7 @@ func TestReconcileErrorFields(t *testing.T) {
 	is := is.New(t)
 
 	err := &ReconcileError{
-		Type: TypeStatefulSet, Namespace: "borq-system", Name: "vault",
+		Type: TypeStatefulSet, Namespace: "borq-system", Name: "openbao",
 		Op: "destroy", Err: errors.New("timeout"),
 	}
 	fields := err.Fields()
@@ -47,7 +47,7 @@ func TestReconcileErrorFields(t *testing.T) {
 	is.Equal(fields[1].Key, "resource_namespace")
 	is.Equal(fields[1].Value, "borq-system")
 	is.Equal(fields[2].Key, "resource_name")
-	is.Equal(fields[2].Value, "vault")
+	is.Equal(fields[2].Value, "openbao")
 	is.Equal(fields[3].Key, "op")
 	is.Equal(fields[3].Value, "destroy")
 }
