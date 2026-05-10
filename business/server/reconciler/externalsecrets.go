@@ -26,11 +26,11 @@ const (
 	externalSecretsServiceAccount = "external-secrets"
 	externalSecretsVersion        = "v2.4.0"
 	clusterSecretStoreType        = "ClusterSecretStore.external-secrets.io"
+	pushSecretType                = "PushSecret.external-secrets.io"
 
-	openBaoServiceName  = "openbao"
-	openBaoUnsealSecret = "openbao-unseal"
-	openBaoTokenKey     = "root_token"
-	openBaoSecretPath   = "secret"
+	openBaoServiceName = "openbao"
+	openBaoTokenKey    = "root_token"
+	openBaoSecretPath  = "secret"
 )
 
 // ExternalSecretsConfig describes the External Secrets Operator install.
@@ -127,6 +127,7 @@ func externalSecretsResources(cfg ExternalSecretsConfig) []Resource {
 		externalSecretsClusterRoleBinding(cfg),
 		externalSecretsDeploymentObject(cfg),
 		externalSecretsClusterSecretStore(cfg),
+		externalSecretsOpenBaoPushSecret(cfg),
 	)
 
 	resources := make([]Resource, 0, len(objects)+1)
@@ -246,11 +247,17 @@ func externalSecretsClusterRole() *rbacv1.ClusterRole {
 			Labels: externalSecretsLabels("externalsecrets"),
 		},
 		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{""}, Resources: []string{"secrets", "configmaps", "events", "serviceaccounts"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			{APIGroups: []string{""}, Resources: []string{"pods", "namespaces", "services"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{"external-secrets.io"}, Resources: []string{"secretstores", "clustersecretstores", "externalsecrets", "clusterexternalsecrets"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete"}},
-			{APIGroups: []string{"external-secrets.io"}, Resources: []string{"secretstores/status", "clustersecretstores/status", "externalsecrets/status", "clusterexternalsecrets/status"}, Verbs: []string{"get", "update", "patch"}},
-			{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch"}},
+			{APIGroups: []string{"external-secrets.io"}, Resources: []string{"secretstores", "clustersecretstores", "externalsecrets", "pushsecrets"}, Verbs: []string{"get", "list", "watch"}},
+			{APIGroups: []string{"external-secrets.io"}, Resources: []string{"externalsecrets", "externalsecrets/status", "secretstores", "secretstores/status", "clustersecretstores", "clustersecretstores/status", "pushsecrets", "pushsecrets/status"}, Verbs: []string{"get", "update", "patch"}},
+			{APIGroups: []string{"external-secrets.io"}, Resources: []string{"externalsecrets"}, Verbs: []string{"create", "update", "delete"}},
+			{APIGroups: []string{"external-secrets.io"}, Resources: []string{"pushsecrets"}, Verbs: []string{"create", "update", "delete"}},
+			{APIGroups: []string{"generators.external-secrets.io"}, Resources: []string{"acraccesstokens", "cloudsmithaccesstokens", "clustergenerators", "ecrauthorizationtokens", "fakes", "gcraccesstokens", "githubaccesstokens", "grafanas", "mfas", "passwords", "quayaccesstokens", "sshkeys", "stssessiontokens", "uuids", "vaultdynamicsecrets", "webhooks"}, Verbs: []string{"get", "list", "watch"}},
+			{APIGroups: []string{"generators.external-secrets.io"}, Resources: []string{"generatorstates"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"}},
+			{APIGroups: []string{""}, Resources: []string{"serviceaccounts", "namespaces", "configmaps"}, Verbs: []string{"get", "list", "watch"}},
+			{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "watch", "create", "update", "delete", "patch"}},
+			{APIGroups: []string{""}, Resources: []string{"serviceaccounts/token"}, Verbs: []string{"create"}},
+			{APIGroups: []string{""}, Resources: []string{"events"}, Verbs: []string{"create", "patch"}},
+			{APIGroups: []string{"coordination.k8s.io"}, Resources: []string{"leases"}, Verbs: []string{"get", "create", "update", "patch"}},
 		},
 	}
 }
@@ -336,9 +343,47 @@ func externalSecretsClusterSecretStore(cfg ExternalSecretsConfig) *unstructured.
 						"version": "v2",
 						"auth": map[string]any{
 							"tokenSecretRef": map[string]any{
-								"name": openBaoUnsealSecret,
-								"key":  openBaoTokenKey,
+								"name":      openBaoUnsealSecretName,
+								"key":       openBaoTokenKey,
+								"namespace": cfg.Namespace,
 							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func externalSecretsOpenBaoPushSecret(cfg ExternalSecretsConfig) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "external-secrets.io/v1alpha1",
+			"kind":       "PushSecret",
+			"metadata": map[string]any{
+				"name":      "openbao-bootstrap",
+				"namespace": cfg.Namespace,
+			},
+			"spec": map[string]any{
+				"updatePolicy":   "Replace",
+				"deletionPolicy": "None",
+				"secretStoreRefs": []any{
+					map[string]any{
+						"kind": "ClusterSecretStore",
+						"name": "openbao-backend",
+					},
+				},
+				"selector": map[string]any{
+					"secret": map[string]any{
+						"name": openBaoUnsealSecretName,
+					},
+				},
+				"dataTo": []any{
+					map[string]any{
+						"remoteKey": cfg.Namespace + "/" + openBaoUnsealSecretName,
+						"storeRef": map[string]any{
+							"kind": "ClusterSecretStore",
+							"name": "openbao-backend",
 						},
 					},
 				},

@@ -21,6 +21,7 @@ import (
 	"github.com/stefanmcshane/borq/business/server/reconciler"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -307,17 +308,12 @@ func TestReconcileIntegrationCloudNativePG(t *testing.T) {
 
 	clusterName := "borq-postgres-integration"
 	clusterNamespace := "borq-system"
+	clusterPVCName := clusterName + "-1"
+	deleteCloudNativePGClusterStorage(t, testContext, conn, clusterNamespace, clusterName, clusterPVCName)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		cluster := &apiv1.Cluster{
-			TypeMeta: metav1.TypeMeta{APIVersion: apiv1.SchemeGroupVersion.String(), Kind: "Cluster"},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      clusterName,
-				Namespace: clusterNamespace,
-			},
-		}
-		_ = conn.Objects().Delete(cleanupCtx, cluster)
+		deleteCloudNativePGClusterStorage(t, cleanupCtx, conn, clusterNamespace, clusterName, clusterPVCName)
 	})
 
 	cfg := reconciler.BorqPostgresConfig{
@@ -441,6 +437,65 @@ func waitForCloudNativePGClusterReady(ctx context.Context, conn kubernetes.Conne
 		case <-ctx.Done():
 			return fmt.Errorf("cluster %q did not become ready before timeout: %w", name, ctx.Err())
 		case <-ticker.C:
+		}
+	}
+}
+
+func deleteCloudNativePGClusterStorage(t *testing.T, ctx context.Context, conn kubernetes.Connection, namespace string, clusterName string, pvcName string) {
+	t.Helper()
+
+	cluster := &apiv1.Cluster{
+		TypeMeta: metav1.TypeMeta{APIVersion: apiv1.SchemeGroupVersion.String(), Kind: "Cluster"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterName,
+			Namespace: namespace,
+		},
+	}
+	_ = conn.Objects().Delete(ctx, cluster)
+
+	persistentVolumeClaim := &corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pvcName,
+			Namespace: namespace,
+		},
+	}
+	livePersistentVolumeClaim, err := conn.Objects().Get(ctx, persistentVolumeClaim)
+	if err == nil {
+		_ = conn.PersistentVolumeClaims().Delete(ctx, namespace, pvcName)
+		waitForPersistentVolumeClaimDeleted(ctx, conn, namespace, pvcName)
+		liveClaim, ok := livePersistentVolumeClaim.(*corev1.PersistentVolumeClaim)
+		if !ok {
+			t.Fatalf("unexpected pvc type %T", livePersistentVolumeClaim)
+		}
+		if persistentVolumeName := strings.TrimSpace(liveClaim.Spec.VolumeName); persistentVolumeName != "" {
+			persistentVolume := &corev1.PersistentVolume{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolume"},
+				ObjectMeta: metav1.ObjectMeta{Name: persistentVolumeName},
+			}
+			_ = conn.Objects().Delete(ctx, persistentVolume)
+		}
+		return
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("get pvc %s/%s: %v", namespace, pvcName, err)
+	}
+}
+
+func waitForPersistentVolumeClaimDeleted(ctx context.Context, conn kubernetes.Connection, namespace string, name string) {
+	for {
+		_, err := conn.PersistentVolumeClaims().Get(ctx, namespace, name)
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		if err != nil {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }

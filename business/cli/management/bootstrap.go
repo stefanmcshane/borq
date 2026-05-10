@@ -16,32 +16,27 @@ import (
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
 
-	"k8s.io/apimachinery/pkg/api/resource"
 	kindconfig "sigs.k8s.io/kind/pkg/apis/config/v1alpha4"
 	"sigs.k8s.io/yaml"
 )
 
 const (
-	defaultClusterName          = "borq-management"
-	defaultNamespace            = "borq-system"
-	defaultHostPort             = 7833
-	defaultNodePort             = 31833
-	defaultTimeout              = 10 * time.Minute
-	defaultFieldOwner           = "borq-management-bootstrap"
-	defaultKindStorageClassName = "retain"
-	defaultStorageSize          = "5Gi"
-	borqImage                   = "ghcr.io/stefanmcshane/borq:latest"
-	borqName                    = "borq"
-	borqConfigName              = "borq-config"
-	borqServiceAccountName      = "borq"
-	borqRoleName                = "borq"
-	borqRoleBindingName         = "borq"
-	borqDataClaimName           = "borq-data"
-	borqDataVolumeName          = "data"
-	borqDataMountPath           = "/var/lib/borq"
-	borqContainerPort           = 7833
-	borqHealthPath              = "/healthz"
-	lxcKubeadmConfigPatch       = `kind: KubeletConfiguration
+	defaultClusterName     = "borq-management"
+	defaultNamespace       = "borq-system"
+	defaultHostPort        = 7833
+	defaultNodePort        = 31833
+	defaultTimeout         = 10 * time.Minute
+	defaultFieldOwner      = "borq-management-bootstrap"
+	borqImage              = "ghcr.io/stefanmcshane/borq:latest"
+	borqName               = "borq"
+	borqConfigName         = "borq-config"
+	borqServiceAccountName = "borq"
+	borqRoleName           = "borq"
+	borqRoleBindingName    = "borq"
+	borqDataMountPath      = "/var/lib/borq"
+	borqContainerPort      = 7833
+	borqHealthPath         = "/healthz"
+	lxcKubeadmConfigPatch  = `kind: KubeletConfiguration
 apiVersion: kubelet.config.k8s.io/v1beta1
 featureGates:
   KubeletInUserNamespace: true
@@ -57,7 +52,6 @@ type Request struct {
 	ProbeURL       string
 	Timeout        time.Duration
 	BorqImage      string
-	StorageSize    string
 	KubeconfigPath string
 }
 
@@ -78,7 +72,6 @@ func DefaultRequest() Request {
 		ProbeURL:    probeURLForHostPort(defaultHostPort),
 		Timeout:     defaultTimeout,
 		BorqImage:   borqImage,
-		StorageSize: defaultStorageSize,
 	}
 }
 
@@ -129,23 +122,13 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
-
-	if err := connection.StorageClasses().EnsureRetainDefault(timeoutContext, defaultKindStorageClassName); err != nil {
-		return Result{}, err
-	}
 	bootstrapApps := bootstrapApps(request)
 	if err := runBootstrapPhases(timeoutContext, bootstrapApps, bootstrapPhaseRunner{
 		applyNamespace: func(ctx context.Context) error {
 			return connection.Namespaces().Apply(ctx, managementNamespace(request.Namespace))
 		},
-		applyPersistentVolumeClaim: func(ctx context.Context) error {
-			return connection.PersistentVolumeClaims().Apply(ctx, borqDataClaim(request))
-		},
 		applyApp: func(ctx context.Context, managedApp App) error {
 			return managedApp.Apply(ctx, connection)
-		},
-		waitForPersistentVolumeClaimBound: func(ctx context.Context) error {
-			return connection.PersistentVolumeClaims().WaitForBound(ctx, request.Namespace, borqDataClaimName)
 		},
 		waitForAppReady: func(ctx context.Context, managedApp App) error {
 			return managedApp.WaitReady(ctx, connection)
@@ -172,30 +155,19 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 }
 
 type bootstrapPhaseRunner struct {
-	applyNamespace                    func(context.Context) error
-	applyPersistentVolumeClaim        func(context.Context) error
-	applyApp                          func(context.Context, App) error
-	waitForPersistentVolumeClaimBound func(context.Context) error
-	waitForAppReady                   func(context.Context, App) error
+	applyNamespace  func(context.Context) error
+	applyApp        func(context.Context, App) error
+	waitForAppReady func(context.Context, App) error
 }
 
 func runBootstrapPhases(ctx context.Context, bootstrapApps []App, runner bootstrapPhaseRunner) error {
 	if err := runner.applyNamespace(ctx); err != nil {
 		return err
 	}
-	if err := runner.applyPersistentVolumeClaim(ctx); err != nil {
-		return err
-	}
 	for _, managedApp := range bootstrapApps {
 		if err := runner.applyApp(ctx, managedApp); err != nil {
 			return err
 		}
-	}
-
-	// The default local-path storage class binds on first consumer, so the
-	// workload has to exist before waiting for the claim to bind.
-	if err := runner.waitForPersistentVolumeClaimBound(ctx); err != nil {
-		return err
 	}
 	for _, managedApp := range bootstrapApps {
 		if err := runner.waitForAppReady(ctx, managedApp); err != nil {
@@ -228,9 +200,6 @@ func (request Request) withDefaults() Request {
 	if request.BorqImage == "" {
 		request.BorqImage = borqImage
 	}
-	if request.StorageSize == "" {
-		request.StorageSize = defaultStorageSize
-	}
 
 	return request
 }
@@ -256,12 +225,6 @@ func (request Request) validate() error {
 	}
 	if strings.TrimSpace(request.BorqImage) == "" {
 		return errors.New("borq image must not be empty")
-	}
-	if strings.TrimSpace(request.StorageSize) == "" {
-		return errors.New("storage size must not be empty")
-	}
-	if _, err := resource.ParseQuantity(request.StorageSize); err != nil {
-		return fmt.Errorf("parse storage size: %w", err)
 	}
 
 	return nil
@@ -391,16 +354,6 @@ func managementNamespace(namespace string) kubernetes.Namespace {
 	}
 }
 
-func borqDataClaim(request Request) kubernetes.PersistentVolumeClaim {
-	return kubernetes.PersistentVolumeClaim{
-		Name:             borqDataClaimName,
-		Namespace:        request.Namespace,
-		Labels:           appLabels(borqName, "server-storage"),
-		AccessModes:      []kubernetes.PersistentVolumeAccessMode{kubernetes.ReadWriteOnceVolume},
-		RequestedStorage: request.StorageSize,
-	}
-}
-
 func borqApp(request Request) App {
 	labels := appLabels(borqName, "server")
 	selector := selectorLabels(borqName)
@@ -483,16 +436,12 @@ func borqApp(request Request) App {
 				Pods: kubernetes.PodTemplate{
 					Labels:             podLabels(labels, borqName),
 					ServiceAccountName: borqServiceAccountName,
-					Volumes: []kubernetes.Volume{
-						{Name: borqDataVolumeName, PersistentVolumeClaimName: borqDataClaimName},
-					},
 					Containers: []kubernetes.Container{
 						{
-							Name:         borqName,
-							Image:        request.BorqImage,
-							Args:         []string{"management", "server", "--port=7833", "--data-dir=" + borqDataMountPath},
-							Ports:        []kubernetes.ContainerPort{{Name: "http", Port: borqContainerPort}},
-							VolumeMounts: []kubernetes.VolumeMount{{Name: borqDataVolumeName, MountPath: borqDataMountPath}},
+							Name:  borqName,
+							Image: request.BorqImage,
+							Args:  []string{"management", "server", "--port=7833", "--data-dir=" + borqDataMountPath},
+							Ports: []kubernetes.ContainerPort{{Name: "http", Port: borqContainerPort}},
 							ReadinessProbe: kubernetes.HttpProbe{
 								Path:                borqHealthPath,
 								Port:                borqContainerPort,

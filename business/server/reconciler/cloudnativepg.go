@@ -19,6 +19,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -247,9 +248,13 @@ func (handler BorqPostgresHandler) Plan(config any) Plan {
 	defaultBorqPostgresConfig(cfg)
 
 	cluster := borqPostgresCluster(*cfg)
-	resources := []Resource{objectResource(cloudNativePGClusterType, cluster)}
+	pushSecret := borqPostgresCredentialsPushSecret(*cfg)
+	resources := []Resource{
+		objectResource(cloudNativePGClusterType, cluster),
+		objectResource(pushSecretType, pushSecret),
+	}
 	return Plan{
-		ApplyOrder: []string{cloudNativePGClusterType},
+		ApplyOrder: []string{cloudNativePGClusterType, pushSecretType},
 		Desired:    resources,
 		Current:    cloudNativePGCurrentFunc(resources),
 	}
@@ -396,7 +401,7 @@ func cloudNativePGCurrentFunc(desired []Resource) func(ctx context.Context, conn
 				continue
 			}
 			live, err := conn.Objects().Get(ctx, obj)
-			if apierrors.IsNotFound(err) {
+			if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
 				continue
 			}
 			if err != nil {
@@ -593,6 +598,43 @@ func borqPostgresCluster(cfg BorqPostgresConfig) *apiv1.Cluster {
 		cluster.Spec.StorageConfiguration.StorageClass = &cfg.StorageClass
 	}
 	return cluster
+}
+
+func borqPostgresCredentialsPushSecret(cfg BorqPostgresConfig) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "external-secrets.io/v1alpha1",
+			"kind":       "PushSecret",
+			"metadata": map[string]any{
+				"name":      cfg.Name + "-credentials",
+				"namespace": cfg.Namespace,
+			},
+			"spec": map[string]any{
+				"updatePolicy":   "Replace",
+				"deletionPolicy": "None",
+				"secretStoreRefs": []any{
+					map[string]any{
+						"kind": "ClusterSecretStore",
+						"name": "openbao-backend",
+					},
+				},
+				"selector": map[string]any{
+					"secret": map[string]any{
+						"name": cfg.Name + apiv1.ApplicationUserSecretSuffix,
+					},
+				},
+				"dataTo": []any{
+					map[string]any{
+						"remoteKey": cfg.Namespace + "/" + cfg.Database,
+						"storeRef": map[string]any{
+							"kind": "ClusterSecretStore",
+							"name": "openbao-backend",
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func cloudNativePGNamespaceObject(cfg CloudNativePGOperatorConfig) *corev1.Namespace {

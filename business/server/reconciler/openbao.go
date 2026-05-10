@@ -390,10 +390,11 @@ func (handler OpenBaoHandler) reconcileOpenBaoState(ctx context.Context, conn ku
 
 		keysJSON, _ := json.Marshal(result.UnsealKeysB64)
 
+		// dont add openBaoComponentLabels to this or the unseal will
+		// get reconciled away.
 		secret := kubernetes.Secret{
 			Name:      openBaoUnsealSecretName,
 			Namespace: res.Namespace,
-			Labels:    openBaoComponentLabels,
 			Data: map[string]string{
 				"root_token":      result.RootToken,
 				"unseal_key":      result.UnsealKeysB64[0],

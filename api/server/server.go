@@ -207,7 +207,7 @@ func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Log
 		dryRun := request.URL.Query().Get("dry-run") == "true"
 		r := reconciler.NewReconciler(conn, log)
 
-		var result reconciler.ReconcileResult
+		result := reconciler.ReconcileResult{Diffs: make([]reconciler.ResourceDiff, 0)}
 		if componentName == "" {
 			if len(bytes.TrimSpace(body)) > 0 {
 				http.Error(writer, "bad request: request body must be empty when component is omitted", http.StatusBadRequest)

@@ -75,17 +75,14 @@ func TestBootstrapIntegration(t *testing.T) {
 	if err := probeBorq(testContext, probeURLForHostPort(hostPort)); err != nil {
 		t.Fatalf("probe borq health endpoint: %v", err)
 	}
-	if err := assertPersistenceAcrossRestart(testContext, clusterName, integrationNamespace); err != nil {
-		t.Fatalf("assert persistence across restart: %v", err)
+	if err := assertRestartRecovers(testContext, clusterName, integrationNamespace); err != nil {
+		t.Fatalf("assert restart recovers: %v", err)
 	}
 }
 
 func assertBootstrapResources(ctx context.Context, connection kubernetes.Connection) error {
 	if _, err := connection.Namespaces().Get(ctx, integrationNamespace); err != nil {
 		return fmt.Errorf("namespace: %w", err)
-	}
-	if _, err := connection.PersistentVolumeClaims().Get(ctx, integrationNamespace, borqDataClaimName); err != nil {
-		return fmt.Errorf("persistent volume claim: %w", err)
 	}
 	if _, err := connection.ConfigMaps().Get(ctx, integrationNamespace, borqConfigName); err != nil {
 		return fmt.Errorf("config map: %w", err)
@@ -108,28 +105,10 @@ func assertBootstrapResources(ctx context.Context, connection kubernetes.Connect
 	return nil
 }
 
-func assertPersistenceAcrossRestart(ctx context.Context, clusterName string, namespace string) error {
+func assertRestartRecovers(ctx context.Context, clusterName string, namespace string) error {
 	podName, err := borqPodName(ctx, clusterName, namespace)
 	if err != nil {
 		return err
-	}
-
-	marker := fmt.Sprintf("integration-%d", time.Now().UnixNano())
-	if _, err := runCommand(
-		ctx,
-		"kubectl",
-		"--context",
-		kindContextName(clusterName),
-		"-n",
-		namespace,
-		"exec",
-		podName,
-		"--",
-		"sh",
-		"-c",
-		fmt.Sprintf("echo %s > %s/persistence-check", marker, borqDataMountPath),
-	); err != nil {
-		return fmt.Errorf("write persistence marker: %w", err)
 	}
 
 	if _, err := runCommand(
@@ -152,31 +131,6 @@ func assertPersistenceAcrossRestart(ctx context.Context, clusterName string, nam
 	}
 	if err := connection.Deployments().WaitForAvailable(ctx, namespace, borqName); err != nil {
 		return fmt.Errorf("wait for deployment after pod restart: %w", err)
-	}
-
-	newPodName, err := borqPodName(ctx, clusterName, namespace)
-	if err != nil {
-		return err
-	}
-
-	output, err := runCommand(
-		ctx,
-		"kubectl",
-		"--context",
-		kindContextName(clusterName),
-		"-n",
-		namespace,
-		"exec",
-		newPodName,
-		"--",
-		"cat",
-		borqDataMountPath+"/persistence-check",
-	)
-	if err != nil {
-		return fmt.Errorf("read persistence marker: %w", err)
-	}
-	if strings.TrimSpace(output) != marker {
-		return fmt.Errorf("persistence marker mismatch: got %q want %q", strings.TrimSpace(output), marker)
 	}
 
 	return nil

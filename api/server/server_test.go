@@ -249,6 +249,30 @@ func TestHandlerReconcileAllIncludesBorqPostgresAfterCloudNativePGConverges(t *t
 	is.Equal(postgres.planCalls, 1)
 }
 
+func TestHandlerReconcileAllReturnsEmptyDiffArrayWhenNoDiffs(t *testing.T) {
+	is := is.New(t)
+
+	handler := newHandler(nil, kubernetes.Connection{}, logger.Logger{}, map[string]reconciler.ComponentHandler{
+		"alpha": &testReconcileHandler{
+			name:           "alpha",
+			defaultName:    "alpha-default",
+			currentMatches: true,
+		},
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	is.Equal(recorder.Code, http.StatusOK)
+	is.True(strings.Contains(recorder.Body.String(), `"diffs":[]`))
+
+	var result reconciler.ReconcileResult
+	is.NoErr(json.Unmarshal(recorder.Body.Bytes(), &result))
+	is.Equal(len(result.Diffs), 0)
+	is.True(!result.Applied)
+}
+
 func TestHandlerRejectsBodyWhenReconcilingAllComponents(t *testing.T) {
 	is := is.New(t)
 

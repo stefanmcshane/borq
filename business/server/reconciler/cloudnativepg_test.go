@@ -6,6 +6,7 @@ import (
 	apiv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	"github.com/matryer/is"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // TestCloudNativePGOperatorDefaultConfig verifies the operator handler pins
@@ -105,10 +106,22 @@ func TestBorqPostgresClusterDefaults(t *testing.T) {
 	is := is.New(t)
 
 	plan := BorqPostgresHandler{}.Plan(&BorqPostgresConfig{})
-	is.Equal(len(plan.Desired), 1)
+	is.Equal(len(plan.Desired), 2)
 
-	cluster, ok := plan.Desired[0].Desired.(*apiv1.Cluster)
-	is.True(ok)
+	var cluster *apiv1.Cluster
+	var pushSecret *unstructured.Unstructured
+	for _, res := range plan.Desired {
+		switch desired := res.Desired.(type) {
+		case *apiv1.Cluster:
+			cluster = desired
+		case *unstructured.Unstructured:
+			if res.Type == pushSecretType {
+				pushSecret = desired
+			}
+		}
+	}
+
+	is.True(cluster != nil)
 	is.Equal(cluster.Name, "borq-postgres")
 	is.Equal(cluster.Namespace, "borq-system")
 	is.Equal(cluster.Spec.Instances, 1)
@@ -117,6 +130,10 @@ func TestBorqPostgresClusterDefaults(t *testing.T) {
 	is.Equal(cluster.Spec.Bootstrap.InitDB.Owner, "borq")
 	is.Equal(cluster.Spec.Resources.Requests.Cpu().String(), "100m")
 	is.Equal(cluster.Spec.Resources.Requests.Memory().String(), "100Mi")
+
+	is.True(pushSecret != nil)
+	is.Equal(pushSecret.GetName(), "borq-postgres-credentials")
+	is.Equal(pushSecret.GetNamespace(), "borq-system")
 }
 
 // TestBorqPostgresClusterCustomConfig verifies user config can override the
@@ -147,6 +164,45 @@ func TestBorqPostgresClusterCustomConfig(t *testing.T) {
 	memoryRequest := cluster.Spec.Resources.Requests[corev1.ResourceMemory]
 	is.Equal(cpuRequest.String(), "250m")
 	is.Equal(memoryRequest.String(), "512Mi")
+}
+
+// TestBorqPostgresPlanPushesApplicationCredentials verifies the postgres
+// component publishes the generated application secret into OpenBao/Vault.
+func TestBorqPostgresPlanPushesApplicationCredentials(t *testing.T) {
+	is := is.New(t)
+
+	plan := BorqPostgresHandler{}.Plan(&BorqPostgresConfig{
+		Name:      "custom",
+		Namespace: "data",
+		Database:  "appdb",
+	})
+
+	var pushSecret *unstructured.Unstructured
+	for _, res := range plan.Desired {
+		if res.Type != pushSecretType {
+			continue
+		}
+		var ok bool
+		pushSecret, ok = res.Desired.(*unstructured.Unstructured)
+		is.True(ok)
+		break
+	}
+
+	if pushSecret == nil {
+		t.Fatal("expected pushsecret in desired resources")
+	}
+
+	is.Equal(pushSecret.GetName(), "custom-credentials")
+	is.Equal(pushSecret.GetNamespace(), "data")
+
+	dataTo, found, err := unstructured.NestedSlice(pushSecret.Object, "spec", "dataTo")
+	is.NoErr(err)
+	is.True(found)
+	is.Equal(len(dataTo), 1)
+
+	firstEntry, ok := dataTo[0].(map[string]any)
+	is.True(ok)
+	is.Equal(firstEntry["remoteKey"], "data/appdb")
 }
 
 func indexOf(values []string, value string) int {

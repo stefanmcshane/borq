@@ -24,7 +24,6 @@ func TestDefaultRequest(t *testing.T) {
 	is.Equal(request.ProbeURL, probeURLForHostPort(defaultHostPort))
 	is.Equal(request.Timeout, defaultTimeout)
 	is.Equal(request.BorqImage, borqImage)
-	is.Equal(request.StorageSize, defaultStorageSize)
 }
 
 func TestRequestWithDefaults(t *testing.T) {
@@ -39,7 +38,6 @@ func TestRequestWithDefaults(t *testing.T) {
 	is.Equal(request.ProbeURL, probeURLForHostPort(defaultHostPort))
 	is.Equal(request.Timeout, defaultTimeout)
 	is.Equal(request.BorqImage, borqImage)
-	is.Equal(request.StorageSize, defaultStorageSize)
 }
 
 func TestRequestValidate(t *testing.T) {
@@ -51,48 +49,38 @@ func TestRequestValidate(t *testing.T) {
 	}{
 		{
 			name:    "empty cluster name",
-			request: Request{HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage, StorageSize: defaultStorageSize},
+			request: Request{HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage},
 			wantErr: "cluster name must not be empty",
 		},
 		{
 			name:    "empty namespace",
-			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage, StorageSize: defaultStorageSize},
+			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage},
 			wantErr: "namespace must not be empty",
 		},
 		{
 			name:    "empty probe url",
-			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, Timeout: time.Minute, BorqImage: borqImage, StorageSize: defaultStorageSize},
+			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, Timeout: time.Minute, BorqImage: borqImage},
 			wantErr: "probe URL must not be empty",
 		},
 		{
 			name:    "non-positive host port",
-			request: Request{ClusterName: defaultClusterName, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage, StorageSize: defaultStorageSize},
+			request: Request{ClusterName: defaultClusterName, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage},
 			wantErr: "host port must be greater than zero",
 		},
 		{
 			name:    "non-positive node port",
-			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage, StorageSize: defaultStorageSize},
+			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage},
 			wantErr: "node port must be greater than zero",
 		},
 		{
 			name:    "non-positive timeout",
-			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), BorqImage: borqImage, StorageSize: defaultStorageSize},
+			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), BorqImage: borqImage},
 			wantErr: "timeout must be greater than zero",
 		},
 		{
 			name:    "empty borq image",
-			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, StorageSize: defaultStorageSize},
+			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute},
 			wantErr: "borq image must not be empty",
-		},
-		{
-			name:    "empty storage size",
-			request: Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage},
-			wantErr: "storage size must not be empty",
-		},
-		{
-			name:            "invalid storage size",
-			request:         Request{ClusterName: defaultClusterName, HostPort: defaultHostPort, Namespace: defaultNamespace, NodePort: defaultNodePort, ProbeURL: probeURLForHostPort(defaultHostPort), Timeout: time.Minute, BorqImage: borqImage, StorageSize: "not-a-size"},
-			wantErrContains: "parse storage size: quantities must match the regular expression",
 		},
 	}
 
@@ -233,17 +221,6 @@ func TestProbeURLForHostPort(t *testing.T) {
 	is.Equal(probeURLForHostPort(7833), "http://localhost:7833/healthz")
 }
 
-func TestBorqDataClaim(t *testing.T) {
-	is := is.New(t)
-
-	request := DefaultRequest()
-	persistentVolumeClaim := borqDataClaim(request)
-
-	is.Equal(persistentVolumeClaim.Name, borqDataClaimName)
-	is.Equal(persistentVolumeClaim.AccessModes, []kubernetes.PersistentVolumeAccessMode{kubernetes.ReadWriteOnceVolume})
-	is.Equal(persistentVolumeClaim.RequestedStorage, defaultStorageSize)
-}
-
 func TestBorqApp(t *testing.T) {
 	is := is.New(t)
 
@@ -268,8 +245,8 @@ func TestBorqApp(t *testing.T) {
 	is.Equal(managedApp.Workload.Deployment.Name, borqName)
 	is.Equal(managedApp.Workload.Deployment.Pods.ServiceAccountName, borqServiceAccountName)
 	is.Equal(managedApp.Workload.Deployment.Pods.Containers[0].Image, borqImage)
-	is.Equal(managedApp.Workload.Deployment.Pods.Volumes[0].PersistentVolumeClaimName, borqDataClaimName)
-	is.Equal(managedApp.Workload.Deployment.Pods.Containers[0].VolumeMounts[0].MountPath, borqDataMountPath)
+	is.Equal(len(managedApp.Workload.Deployment.Pods.Volumes), 0)
+	is.Equal(len(managedApp.Workload.Deployment.Pods.Containers[0].VolumeMounts), 0)
 }
 
 func TestManagementNamespace(t *testing.T) {
@@ -291,7 +268,7 @@ func TestBootstrapApps(t *testing.T) {
 func TestRunBootstrapPhasesOrder(t *testing.T) {
 	is := is.New(t)
 
-	events := make([]string, 0, 6)
+	events := make([]string, 0, 4)
 	bootstrapApps := []App{{Name: "borq"}}
 
 	err := runBootstrapPhases(context.Background(), bootstrapApps, bootstrapPhaseRunner{
@@ -299,16 +276,8 @@ func TestRunBootstrapPhasesOrder(t *testing.T) {
 			events = append(events, "namespace")
 			return nil
 		},
-		applyPersistentVolumeClaim: func(context.Context) error {
-			events = append(events, "pvc-apply")
-			return nil
-		},
 		applyApp: func(_ context.Context, managedApp App) error {
 			events = append(events, "app-apply:"+managedApp.Name)
-			return nil
-		},
-		waitForPersistentVolumeClaimBound: func(context.Context) error {
-			events = append(events, "pvc-bound")
 			return nil
 		},
 		waitForAppReady: func(_ context.Context, managedApp App) error {
@@ -319,9 +288,7 @@ func TestRunBootstrapPhasesOrder(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(events, []string{
 		"namespace",
-		"pvc-apply",
 		"app-apply:borq",
-		"pvc-bound",
 		"app-ready:borq",
 	})
 }
