@@ -185,6 +185,70 @@ func TestHandlerReconcilesAllComponentsWhenComponentIsOmitted(t *testing.T) {
 	is.Equal(zeta.planCalls, 1)
 }
 
+// TestHandlerReconcileAllDefersBorqPostgresWhenCloudNativePGChanges verifies
+// reconcile-all skips borq-postgres until a later pass when the operator has
+// converged.
+func TestHandlerReconcileAllDefersBorqPostgresWhenCloudNativePGChanges(t *testing.T) {
+	is := is.New(t)
+
+	operator := &testReconcileHandler{name: "cloudnativepg-operator", defaultName: "operator-default"}
+	postgres := &testReconcileHandler{name: "borq-postgres", defaultName: "postgres-default"}
+	alpha := &testReconcileHandler{name: "alpha", defaultName: "alpha-default"}
+
+	handler := newHandler(nil, kubernetes.Connection{}, logger.Logger{}, map[string]reconciler.ComponentHandler{
+		"alpha":                  alpha,
+		"borq-postgres":          postgres,
+		"cloudnativepg-operator": operator,
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	is.Equal(recorder.Code, http.StatusOK)
+
+	var result reconciler.ReconcileResult
+	is.NoErr(json.Unmarshal(recorder.Body.Bytes(), &result))
+	is.Equal(len(result.Diffs), 2)
+	is.Equal(result.Diffs[0].Name, "operator-default")
+	is.Equal(result.Diffs[1].Name, "alpha-default")
+	is.Equal(operator.planCalls, 1)
+	is.Equal(postgres.planCalls, 0)
+	is.Equal(alpha.planCalls, 1)
+}
+
+// TestHandlerReconcileAllIncludesBorqPostgresAfterCloudNativePGConverges
+// verifies reconcile-all includes borq-postgres once the operator is already
+// converged.
+func TestHandlerReconcileAllIncludesBorqPostgresAfterCloudNativePGConverges(t *testing.T) {
+	is := is.New(t)
+
+	operator := &testReconcileHandler{
+		name:           "cloudnativepg-operator",
+		defaultName:    "operator-default",
+		currentMatches: true,
+	}
+	postgres := &testReconcileHandler{name: "borq-postgres", defaultName: "postgres-default"}
+
+	handler := newHandler(nil, kubernetes.Connection{}, logger.Logger{}, map[string]reconciler.ComponentHandler{
+		"borq-postgres":          postgres,
+		"cloudnativepg-operator": operator,
+	})
+
+	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	is.Equal(recorder.Code, http.StatusOK)
+
+	var result reconciler.ReconcileResult
+	is.NoErr(json.Unmarshal(recorder.Body.Bytes(), &result))
+	is.Equal(len(result.Diffs), 1)
+	is.Equal(result.Diffs[0].Name, "postgres-default")
+	is.Equal(operator.planCalls, 1)
+	is.Equal(postgres.planCalls, 1)
+}
+
 func TestHandlerRejectsBodyWhenReconcilingAllComponents(t *testing.T) {
 	is := is.New(t)
 
@@ -217,6 +281,25 @@ func TestHandlerReconcileUsesDefaultConfigWhenBodyIsEmpty(t *testing.T) {
 	is.NoErr(json.Unmarshal(recorder.Body.Bytes(), &result))
 	is.Equal(len(result.Diffs), 1)
 	is.Equal(result.Diffs[0].Name, "alpha-default")
+}
+
+// TestSortedHandlerNamesPrioritizesDependencies verifies the reconcile-all
+// order respects component dependencies: cert-manager must run before vault
+// before cloudnativepg-operator before borq-postgres.
+func TestSortedHandlerNamesPrioritizesDependencies(t *testing.T) {
+	is := is.New(t)
+
+	names := sortedHandlerNames(map[string]reconciler.ComponentHandler{
+		"vault":                  &testReconcileHandler{name: "vault", defaultName: "vault-default"},
+		"borq-postgres":          &testReconcileHandler{name: "borq-postgres", defaultName: "postgres-default"},
+		"cloudnativepg-operator": &testReconcileHandler{name: "cloudnativepg-operator", defaultName: "operator-default"},
+		"cert-manager":           &testReconcileHandler{name: "cert-manager", defaultName: "cert-default"},
+	})
+
+	is.Equal(names[0], "cert-manager")
+	is.Equal(names[1], "vault")
+	is.Equal(names[2], "cloudnativepg-operator")
+	is.Equal(names[3], "borq-postgres")
 }
 
 type flakyHealthCheck struct {
@@ -254,9 +337,10 @@ type testReconcileConfig struct {
 
 type testReconcileHandler struct {
 	reconciler.CoreApplier
-	name        string
-	defaultName string
-	planCalls   int
+	name           string
+	defaultName    string
+	planCalls      int
+	currentMatches bool
 }
 
 func (handler *testReconcileHandler) Name() string {
@@ -292,6 +376,17 @@ func (handler *testReconcileHandler) Plan(config any) reconciler.Plan {
 			},
 		},
 		Current: func(context.Context, kubernetes.Connection) ([]reconciler.Resource, error) {
+			if handler.currentMatches {
+				return []reconciler.Resource{
+					{
+						Type:      reconciler.TypeConfigMap,
+						Namespace: desired.Namespace,
+						Name:      desired.Name,
+						Actual:    desired,
+						Desired:   desired,
+					},
+				}, nil
+			}
 			return nil, nil
 		},
 	}

@@ -16,16 +16,15 @@ func TestJoinPath(t *testing.T) {
 	is.Equal(joinPath("/spec", "replicas"), "/spec/replicas")
 }
 
-func TestCollectKeysSkipsMetadataApiVersionKind(t *testing.T) {
+func TestCollectKeysSkipsMetadataApiVersionKindStatus(t *testing.T) {
 	is := is.New(t)
 
 	live := map[string]any{"metadata": "x", "spec": "y"}
 	desired := map[string]any{"apiVersion": "v1", "kind": "Pod", "status": "z"}
 	keys := collectKeys(live, desired)
 
-	is.Equal(len(keys), 2)
+	is.Equal(len(keys), 1)
 	is.Equal(keys[0], "spec")
-	is.Equal(keys[1], "status")
 }
 
 func TestCollectKeysSortsAlphabetically(t *testing.T) {
@@ -234,7 +233,7 @@ func TestDiffMapsKeyInLiveNotDesired(t *testing.T) {
 	diffMaps("",
 		map[string]any{"storageClassName": "retain"},
 		map[string]any{},
-		&patches)
+		&patches, false)
 
 	is.Equal(len(patches), 0)
 }
@@ -246,7 +245,7 @@ func TestDiffMapsKeyInDesiredNotLive(t *testing.T) {
 	diffMaps("",
 		map[string]any{},
 		map[string]any{"replicas": float64(3)},
-		&patches)
+		&patches, false)
 
 	is.True(len(patches) > 0)
 }
@@ -258,7 +257,7 @@ func TestDiffMapsBothHaveKeyWithDiff(t *testing.T) {
 	diffMaps("",
 		map[string]any{"replicas": float64(1)},
 		map[string]any{"replicas": float64(3)},
-		&patches)
+		&patches, false)
 
 	is.Equal(len(patches), 1)
 	is.Equal(patches[0].Op, "replace")
@@ -272,36 +271,30 @@ func TestDiffMapsNestedMapsDiff(t *testing.T) {
 		map[string]any{"spec": map[string]any{"replicas": float64(1), "selector": map[string]any{"app": "vault"}}},
 		map[string]any{"spec": map[string]any{"replicas": float64(3), "selector": map[string]any{"app": "vault"}}},
 		&patches,
+		false,
 	)
 
 	is.Equal(len(patches), 1)
 	is.Equal(patches[0].Path, "/spec/replicas")
 }
 
-func TestDiffMapsRemoveKey(t *testing.T) {
+func TestDiffMapsExtraLiveKeySkipped(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
 	diffMaps("",
-		map[string]any{"replicas": float64(3), "removedField": map[string]any{"nested": "value"}},
+		map[string]any{"replicas": float64(3), "extraMap": map[string]any{"nested": "value"}},
 		map[string]any{"replicas": float64(3)},
-		&patches)
+		&patches, false)
 
-	found := false
-	for _, p := range patches {
-		if p.Op == "remove" {
-			found = true
-			break
-		}
-	}
-	is.True(found)
+	is.Equal(len(patches), 0)
 }
 
 func TestDiffValuesBothNil(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/replicas", nil, nil, &patches)
+	diffValues("/spec/replicas", nil, nil, &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -309,7 +302,7 @@ func TestDiffValuesBothStringsSame(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/image", "nginx", "nginx", &patches)
+	diffValues("/spec/image", "nginx", "nginx", &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -317,7 +310,7 @@ func TestDiffValuesBothStringsDiff(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/image", "nginx:1.0", "nginx:2.0", &patches)
+	diffValues("/spec/image", "nginx:1.0", "nginx:2.0", &patches, false)
 	is.Equal(len(patches), 1)
 	is.Equal(patches[0].Op, "replace")
 }
@@ -326,7 +319,7 @@ func TestDiffValuesBothFloat64Same(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/replicas", float64(3), float64(3), &patches)
+	diffValues("/spec/replicas", float64(3), float64(3), &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -334,7 +327,7 @@ func TestDiffValuesBothFloat64Diff(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/replicas", float64(1), float64(3), &patches)
+	diffValues("/spec/replicas", float64(1), float64(3), &patches, false)
 	is.Equal(len(patches), 1)
 }
 
@@ -342,7 +335,7 @@ func TestDiffValuesBothBoolSame(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/enabled", true, true, &patches)
+	diffValues("/spec/enabled", true, true, &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -350,7 +343,7 @@ func TestDiffValuesDesiredAbsentLiveNonEmptyString(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/storageClassName", "retain", nil, &patches)
+	diffValues("/spec/storageClassName", "retain", nil, &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -358,7 +351,7 @@ func TestDiffValuesDesiredAbsentLiveEmptySlice(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/env", []any{}, nil, &patches)
+	diffValues("/spec/env", []any{}, nil, &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -366,7 +359,7 @@ func TestDiffValuesLiveAbsentDesiredEmptySlice(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/env", nil, []any{}, &patches)
+	diffValues("/spec/env", nil, []any{}, &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -374,7 +367,7 @@ func TestDiffValuesEmptyDesiredStringNonEmptyLive(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/storageClassName", "retain", "", &patches)
+	diffValues("/spec/storageClassName", "retain", "", &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -382,7 +375,7 @@ func TestDiffValuesDesiredAbsentLiveNonEmptyList(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/items", []any{"a"}, nil, &patches)
+	diffValues("/spec/items", []any{"a"}, nil, &patches, false)
 	is.True(len(patches) > 0)
 }
 
@@ -390,7 +383,7 @@ func TestDiffValuesDesiredAbsentLiveEmptyString(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffValues("/spec/name", "", nil, &patches)
+	diffValues("/spec/name", "", nil, &patches, false)
 	is.True(len(patches) > 0)
 }
 
@@ -398,7 +391,7 @@ func TestDiffListsBothEmpty(t *testing.T) {
 	is := is.New(t)
 
 	var patches []DiffPatch
-	diffLists("/spec/containers", []any{}, []any{}, &patches)
+	diffLists("/spec/containers", []any{}, []any{}, &patches, false)
 	is.Equal(len(patches), 0)
 }
 
@@ -409,7 +402,7 @@ func TestDiffListsAddItem(t *testing.T) {
 	diffLists("/spec/containers",
 		[]any{},
 		[]any{map[string]any{"name": "nginx"}},
-		&patches)
+		&patches, false)
 
 	is.Equal(len(patches), 1)
 	is.Equal(patches[0].Op, "add")
@@ -422,7 +415,7 @@ func TestDiffListsRemoveItem(t *testing.T) {
 	diffLists("/spec/containers",
 		[]any{map[string]any{"name": "nginx"}, map[string]any{"name": "sidecar"}},
 		[]any{map[string]any{"name": "nginx"}},
-		&patches)
+		&patches, false)
 
 	is.True(len(patches) >= 1)
 	removeFound := false
@@ -442,7 +435,7 @@ func TestDiffListsReplaceItem(t *testing.T) {
 	diffLists("/spec/containers",
 		[]any{map[string]any{"image": "nginx:1.0"}},
 		[]any{map[string]any{"image": "nginx:2.0"}},
-		&patches)
+		&patches, false)
 
 	is.True(len(patches) >= 1)
 }
@@ -620,6 +613,70 @@ func TestComputePatchAddsNewKeyToNestedMap(t *testing.T) {
 	is.True(hasAdd)
 }
 
+func TestComputePatchUnstructuredLiveWithExtraFields(t *testing.T) {
+	is := is.New(t)
+
+	type Container struct {
+		Name  string `json:"name"`
+		Image string `json:"image"`
+		Ports []struct {
+			ContainerPort int32  `json:"containerPort"`
+			Protocol      string `json:"protocol"`
+		} `json:"ports,omitempty"`
+	}
+
+	type Spec struct {
+		Containers []Container `json:"containers"`
+	}
+
+	type Deployment struct {
+		APIVersion string         `json:"apiVersion"`
+		Kind       string         `json:"kind"`
+		Metadata   map[string]any `json:"metadata,omitempty"`
+		Spec       Spec           `json:"spec"`
+	}
+
+	desired := Deployment{
+		APIVersion: "apps/v1",
+		Kind:       "Deployment",
+		Spec: Spec{
+			Containers: []Container{
+				{Name: "test", Image: "nginx", Ports: nil},
+			},
+		},
+	}
+
+	live := map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata": map[string]any{
+			"name":            "test",
+			"namespace":       "default",
+			"resourceVersion": "12345",
+			"generation":      float64(1),
+			"uid":             "abc-123",
+		},
+		"spec": map[string]any{
+			"containers": []any{
+				map[string]any{
+					"name":                     "test",
+					"image":                    "nginx",
+					"terminationMessagePath":   "/dev/termination-log",
+					"terminationMessagePolicy": "File",
+					"imagePullPolicy":          "IfNotPresent",
+				},
+			},
+			"dnsPolicy":                     "ClusterFirst",
+			"restartPolicy":                 "Always",
+			"schedulerName":                 "default-scheduler",
+			"terminationGracePeriodSeconds": float64(30),
+		},
+	}
+
+	patches := computePatch(live, desired)
+	is.Equal(len(patches), 0)
+}
+
 func TestCollectKeysLiveNilDesiredHasKeys(t *testing.T) {
 	is := is.New(t)
 
@@ -757,6 +814,7 @@ func TestDiffMapsSkipsMetadataApiVersionKind(t *testing.T) {
 			"spec":       map[string]any{"replicas": float64(3)},
 		},
 		&patches,
+		false,
 	)
 
 	is.Equal(len(patches), 1)

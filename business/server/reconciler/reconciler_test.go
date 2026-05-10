@@ -201,6 +201,59 @@ func TestReconcileSkipsUnchangedResource(t *testing.T) {
 	is.True(!result.Applied)
 }
 
+func TestReconcileSkipsUnchangedWithExtraLiveFields(t *testing.T) {
+	is := is.New(t)
+
+	svc := kubernetes.Service{
+		Name: "whoami", Namespace: "default",
+		Labels: map[string]string{"app": "whoami"}, Selector: map[string]string{"app": "whoami"},
+		Type:  kubernetes.ClusterIPService,
+		Ports: []kubernetes.ServicePort{{Name: "http", Port: 80, TargetPort: 8080}},
+	}
+
+	handler := &mockHandler{
+		plan: Plan{
+			ApplyOrder: []string{TypeService},
+			Desired: []Resource{
+				{Type: TypeService, Name: "whoami", Namespace: "default", Desired: svc},
+			},
+			Current: func(ctx context.Context, conn kubernetes.Connection) ([]Resource, error) {
+				return []Resource{
+					{
+						Type: TypeService, Name: "whoami", Namespace: "default",
+						Actual: map[string]any{
+							"Name":                     "whoami",
+							"Namespace":                "default",
+							"Labels":                   map[string]any{"app": "whoami"},
+							"Selector":                 map[string]any{"app": "whoami"},
+							"Type":                     "ClusterIP",
+							"Headless":                 false,
+							"PublishNotReadyAddresses": false,
+							"Ports": []any{
+								map[string]any{
+									"Name":       "http",
+									"Port":       float64(80),
+									"TargetPort": float64(8080),
+									"NodePort":   float64(0),
+								},
+							},
+							"ClusterIP":       "10.0.0.1",
+							"SessionAffinity": "None",
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	r := NewReconciler(kubernetes.Connection{}, logger.Logger{})
+	result, err := r.Reconcile(context.Background(), handler.Plan(nil), handler, false)
+	is.NoErr(err)
+	is.Equal(len(result.Diffs), 0)
+	is.Equal(handler.applyCount, 0)
+	is.True(!result.Applied)
+}
+
 func TestReconcileAppliesInApplyOrder(t *testing.T) {
 	is := is.New(t)
 

@@ -7,6 +7,14 @@ import (
 )
 
 func computePatch(live, desired any) []DiffPatch {
+	return computeDiff(live, desired, false)
+}
+
+func computePatchWithRemoves(live, desired any) []DiffPatch {
+	return computeDiff(live, desired, true)
+}
+
+func computeDiff(live, desired any, emitRemoves bool) []DiffPatch {
 	liveData, _ := json.Marshal(live)
 	desiredData, _ := json.Marshal(desired)
 
@@ -15,7 +23,7 @@ func computePatch(live, desired any) []DiffPatch {
 	_ = json.Unmarshal(desiredData, &desiredMap)
 
 	var patches []DiffPatch
-	diffMaps("", liveMap, desiredMap, &patches)
+	diffMaps("", liveMap, desiredMap, &patches, emitRemoves)
 	return patches
 }
 
@@ -31,7 +39,7 @@ func addPatchFor(obj any) []DiffPatch {
 	return patches
 }
 
-func diffMaps(prefix string, live, desired map[string]any, patches *[]DiffPatch) {
+func diffMaps(prefix string, live, desired map[string]any, patches *[]DiffPatch, emitRemoves bool) {
 	keys := collectKeys(live, desired)
 	for _, key := range keys {
 		path := joinPath(prefix, key)
@@ -41,17 +49,16 @@ func diffMaps(prefix string, live, desired map[string]any, patches *[]DiffPatch)
 		if !liveOK && desiredOK {
 			addValue(path, desiredVal, patches)
 		} else if liveOK && !desiredOK {
-			if liveStr, ok := liveVal.(string); ok && liveStr != "" {
-				continue
+			if emitRemoves {
+				*patches = append(*patches, DiffPatch{Op: "remove", Path: path})
 			}
-			*patches = append(*patches, DiffPatch{Op: "remove", Path: path})
 		} else {
-			diffValues(path, liveVal, desiredVal, patches)
+			diffValues(path, liveVal, desiredVal, patches, emitRemoves)
 		}
 	}
 }
 
-func diffValues(path string, live, desired any, patches *[]DiffPatch) {
+func diffValues(path string, live, desired any, patches *[]DiffPatch, emitRemoves bool) {
 	if desired == nil {
 		if liveList, ok := live.([]any); ok && len(liveList) == 0 {
 			return
@@ -75,14 +82,14 @@ func diffValues(path string, live, desired any, patches *[]DiffPatch) {
 	liveMap, liveIsMap := live.(map[string]any)
 	desiredMap, desiredIsMap := desired.(map[string]any)
 	if liveIsMap && desiredIsMap {
-		diffMaps(path, liveMap, desiredMap, patches)
+		diffMaps(path, liveMap, desiredMap, patches, emitRemoves)
 		return
 	}
 
 	liveList, liveIsList := live.([]any)
 	desiredList, desiredIsList := desired.([]any)
 	if liveIsList && desiredIsList {
-		diffLists(path, liveList, desiredList, patches)
+		diffLists(path, liveList, desiredList, patches, emitRemoves)
 		return
 	}
 
@@ -91,7 +98,7 @@ func diffValues(path string, live, desired any, patches *[]DiffPatch) {
 	}
 }
 
-func diffLists(prefix string, live, desired []any, patches *[]DiffPatch) {
+func diffLists(prefix string, live, desired []any, patches *[]DiffPatch, emitRemoves bool) {
 	maxLen := len(live)
 	if len(desired) > maxLen {
 		maxLen = len(desired)
@@ -104,7 +111,7 @@ func diffLists(prefix string, live, desired []any, patches *[]DiffPatch) {
 		} else if i >= len(desired) {
 			*patches = append(*patches, DiffPatch{Op: "remove", Path: path})
 		} else {
-			diffValues(path, live[i], desired[i], patches)
+			diffValues(path, live[i], desired[i], patches, emitRemoves)
 		}
 	}
 }
@@ -157,7 +164,7 @@ func collectKeys(a, b map[string]any) []string {
 	}
 	keys := make([]string, 0, len(seen))
 	for k := range seen {
-		if k == "metadata" || k == "apiVersion" || k == "kind" {
+		if k == "metadata" || k == "apiVersion" || k == "kind" || k == "status" {
 			continue
 		}
 		keys = append(keys, k)

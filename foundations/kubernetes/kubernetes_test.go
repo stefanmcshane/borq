@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	"github.com/matryer/is"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -14,10 +15,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // TestBuildConnectionConfig verifies that buildConnectionConfig applies
@@ -66,6 +70,90 @@ func TestRestConfigForConfigDefaultsToInCluster(t *testing.T) {
 	_, err := restConfigForConfig(Config{})
 	is.True(err != nil)
 	is.True(strings.Contains(err.Error(), "load in-cluster kubernetes config"))
+}
+
+// TestNewSchemeRegistersCloudNativePG verifies the shared scheme can encode
+// CloudNativePG SDK types used by the reconciler.
+func TestNewSchemeRegistersCloudNativePG(t *testing.T) {
+	is := is.New(t)
+
+	scheme := NewScheme()
+	gvks, _, err := scheme.ObjectKinds(&apiv1.Cluster{})
+	is.NoErr(err)
+	is.Equal(len(gvks), 1)
+	is.Equal(gvks[0].Group, "postgresql.cnpg.io")
+	is.Equal(gvks[0].Version, "v1")
+	is.Equal(gvks[0].Kind, "Cluster")
+}
+
+// TestObjectManagerApplyGetDelete verifies the generic object manager can
+// manage typed custom resources through a controller-runtime client.
+func TestObjectManagerApplyGetDelete(t *testing.T) {
+	is := is.New(t)
+
+	scheme := NewScheme()
+	client := ctrlfake.NewClientBuilder().WithScheme(scheme).Build()
+	manager := ObjectManager{client: client, fieldOwner: defaultFieldOwner}
+	cluster := &apiv1.Cluster{
+		TypeMeta: metav1.TypeMeta{APIVersion: apiv1.SchemeGroupVersion.String(), Kind: "Cluster"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "borq-postgres",
+			Namespace: "borq-system",
+		},
+		Spec: apiv1.ClusterSpec{
+			Instances: 1,
+			StorageConfiguration: apiv1.StorageConfiguration{
+				Size: "5Gi",
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("100Mi"),
+				},
+			},
+		},
+	}
+
+	ctx := context.Background()
+	is.NoErr(manager.Apply(ctx, cluster))
+
+	live, err := manager.Get(ctx, cluster)
+	is.NoErr(err)
+	liveCluster, ok := live.(*apiv1.Cluster)
+	is.True(ok)
+	is.Equal(liveCluster.Spec.StorageConfiguration.Size, "5Gi")
+
+	cluster.Spec.StorageConfiguration.Size = "10Gi"
+	is.NoErr(manager.Apply(ctx, cluster))
+	live, err = manager.Get(ctx, cluster)
+	is.NoErr(err)
+	liveCluster = live.(*apiv1.Cluster)
+	is.Equal(liveCluster.Spec.StorageConfiguration.Size, "10Gi")
+
+	is.NoErr(manager.Delete(ctx, cluster))
+	_, err = manager.Get(ctx, cluster)
+	is.True(err != nil)
+}
+
+// TestCustomResourceListForCRDUsesListKind verifies CRD cleanup lists the
+// list resource kind rather than the singular custom resource kind.
+func TestCustomResourceListForCRDUsesListKind(t *testing.T) {
+	is := is.New(t)
+
+	list := customResourceListForCRD(apiextensionsv1.CustomResourceDefinition{
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "postgresql.cnpg.io",
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Kind:     "Cluster",
+				ListKind: "ClusterList",
+			},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{Name: "v1"},
+			},
+		},
+	})
+
+	is.Equal(list.GetAPIVersion(), "postgresql.cnpg.io/v1")
+	is.Equal(list.GetKind(), "ClusterList")
 }
 
 // TestCanAdminNamespace verifies that CanAdminNamespace returns nil when the

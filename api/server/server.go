@@ -82,7 +82,11 @@ func NewServer(ctx context.Context, inp NewServerInput) (Server, error) {
 	}
 
 	handlers := map[string]reconciler.ComponentHandler{
-		"vault": reconciler.VaultHandler{Client: vc, Log: inp.Log},
+		"cert-manager":           reconciler.CertManagerHandler{},
+		"external-secrets":       reconciler.ExternalSecretsHandler{},
+		"borq-postgres":          reconciler.BorqPostgresHandler{},
+		"cloudnativepg-operator": reconciler.CloudNativePGOperatorHandler{},
+		"vault":                  reconciler.VaultHandler{Client: vc, Log: inp.Log},
 	}
 
 	return buildServer(ctx, inp, kubernetesConnection, health, handlers, startupHealthTimeout, startupHealthInterval)
@@ -210,7 +214,12 @@ func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Log
 				return
 			}
 
+			deferBorqPostgres := false
 			for _, name := range sortedHandlerNames(handlers) {
+				if name == "borq-postgres" && deferBorqPostgres {
+					continue
+				}
+
 				handlerResult, err := reconcileHandler(request.Context(), r, log, handlers[name], nil, dryRun)
 				if err != nil {
 					http.Error(writer, "reconcile failed: "+err.Error(), http.StatusInternalServerError)
@@ -218,6 +227,9 @@ func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Log
 				}
 				result.Diffs = append(result.Diffs, handlerResult.Diffs...)
 				result.Applied = result.Applied || handlerResult.Applied
+				if name == "cloudnativepg-operator" && len(handlerResult.Diffs) > 0 {
+					deferBorqPostgres = true
+				}
 			}
 		} else {
 			handler, ok := handlers[componentName]
@@ -288,5 +300,30 @@ func sortedHandlerNames(handlers map[string]reconciler.ComponentHandler) []strin
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	if _, ok := handlers["borq-postgres"]; ok {
+		names = moveNameToFront(names, "borq-postgres")
+	}
+	if _, ok := handlers["cloudnativepg-operator"]; ok {
+		names = moveNameToFront(names, "cloudnativepg-operator")
+	}
+	if _, ok := handlers["external-secrets"]; ok {
+		names = moveNameToFront(names, "external-secrets")
+	}
+	if _, ok := handlers["vault"]; ok {
+		names = moveNameToFront(names, "vault")
+	}
+	if _, ok := handlers["cert-manager"]; ok {
+		names = moveNameToFront(names, "cert-manager")
+	}
+	return names
+}
+
+func moveNameToFront(names []string, name string) []string {
+	for i, candidate := range names {
+		if candidate != name {
+			continue
+		}
+		return append([]string{name}, append(names[:i], names[i+1:]...)...)
+	}
 	return names
 }

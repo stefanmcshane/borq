@@ -16,10 +16,13 @@ import (
 	"testing"
 	"time"
 
+	apiv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	"github.com/matryer/is"
 	"github.com/stefanmcshane/borq/business/server/reconciler"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -228,17 +231,158 @@ func TestReconcileIntegration(t *testing.T) {
 	})
 }
 
+// TestReconcileIntegrationCloudNativePG verifies the real server reconciles
+// the CNPG operator first and the borq postgres cluster in a separate run.
+func TestReconcileIntegrationCloudNativePG(t *testing.T) {
+	log := logger.Logger{}
+
+	kubeconfigPath := strings.TrimSpace(os.Getenv("BORQ_KUBECONFIG"))
+	if kubeconfigPath == "" {
+		t.Fatal("BORQ_KUBECONFIG must be set to run CloudNativePG reconciliation integration tests")
+	}
+	conn, err := kubernetes.NewConnection(
+		kubernetes.Config{KubeconfigPath: kubeconfigPath},
+		log,
+	)
+	if err != nil {
+		t.Fatalf("create kubernetes connection: %v", err)
+	}
+
+	handlers := map[string]reconciler.ComponentHandler{
+		"cloudnativepg-operator": reconciler.CloudNativePGOperatorHandler{},
+		"borq-postgres":          reconciler.BorqPostgresHandler{},
+	}
+
+	port := findFreePort(t)
+	testContext, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	server, err := buildServer(
+		testContext,
+		NewServerInput{Port: port, DataDir: t.TempDir(), Log: log},
+		conn,
+		[]HealthCheck{
+			{
+				Name: "test-check",
+				Run: func(context.Context) HealthResult {
+					return HealthResult{Name: "test-check", Status: healthStatusSuccess, Description: "ok"}
+				},
+			},
+		},
+		handlers,
+		time.Second,
+		time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("build server: %v", err)
+	}
+
+	go func() {
+		if serveErr := server.Serve(testContext); serveErr != nil {
+			t.Logf("server stopped: %v", serveErr)
+		}
+	}()
+	waitForServer(t, port, 5*time.Second)
+
+	client := &http.Client{Timeout: 4 * time.Minute}
+	reconcileURL := fmt.Sprintf("http://localhost:%d/reconcile", port)
+
+	t.Run("initial operator reconcile", func(t *testing.T) {
+		operatorResult := reconcileRaw(t, testContext, client, reconcileURL+"?component=cloudnativepg-operator", nil)
+		if len(operatorResult.Diffs) > 0 && !operatorResult.Applied {
+			t.Fatalf("operator reconcile returned diffs without applying them")
+		}
+	})
+
+	if err := conn.Deployments().WaitForAvailable(testContext, "borq-system", "cnpg-controller-manager"); err != nil {
+		t.Fatalf("wait for cloudnativepg operator: %v", err)
+	}
+
+	t.Run("idempotent operator reconcile", func(t *testing.T) {
+		operatorResult := reconcileRaw(t, testContext, client, reconcileURL+"?component=cloudnativepg-operator", nil)
+		if len(operatorResult.Diffs) > 0 {
+			t.Fatalf("operator reconcile returned %d diffs when no changes expected", len(operatorResult.Diffs))
+		}
+	})
+
+	clusterName := "borq-postgres-integration"
+	clusterNamespace := "borq-system"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		cluster := &apiv1.Cluster{
+			TypeMeta: metav1.TypeMeta{APIVersion: apiv1.SchemeGroupVersion.String(), Kind: "Cluster"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: clusterNamespace,
+			},
+		}
+		_ = conn.Objects().Delete(cleanupCtx, cluster)
+	})
+
+	cfg := reconciler.BorqPostgresConfig{
+		Name:          clusterName,
+		Namespace:     clusterNamespace,
+		StorageSize:   "5Gi",
+		Database:      "borq",
+		Owner:         "borq",
+		CPURequest:    "100m",
+		MemoryRequest: "100Mi",
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal postgres config: %v", err)
+	}
+
+	t.Run("initial postgres reconcile", func(t *testing.T) {
+		postgresResult := reconcileRaw(t, testContext, client, reconcileURL+"?component=borq-postgres", body)
+		if len(postgresResult.Diffs) == 0 && postgresResult.Applied {
+			t.Fatalf("postgres reconcile applied without reporting diffs")
+		}
+	})
+
+	if err := waitForCloudNativePGClusterReady(testContext, conn, clusterNamespace, clusterName); err != nil {
+		t.Fatalf("wait for cloudnativepg cluster: %v", err)
+	}
+
+	t.Run("idempotent postgres reconcile", func(t *testing.T) {
+		postgresResult := reconcileRaw(t, testContext, client, reconcileURL+"?component=borq-postgres", body)
+		for _, d := range postgresResult.Diffs {
+			t.Logf("postgres idempotent pass1 diff: type=%s name=%s patch=%+v", d.Type, d.Name, d.Patch)
+		}
+		if len(postgresResult.Diffs) > 0 {
+			postgresResult = reconcileRaw(t, testContext, client, reconcileURL+"?component=borq-postgres", body)
+			for _, d := range postgresResult.Diffs {
+				t.Logf("postgres idempotent pass2 diff: type=%s name=%s patch=%+v", d.Type, d.Name, d.Patch)
+			}
+		}
+		if len(postgresResult.Diffs) > 0 {
+			postgresResult = reconcileRaw(t, testContext, client, reconcileURL+"?component=borq-postgres", body)
+		}
+		if len(postgresResult.Diffs) > 0 {
+			t.Fatalf("postgres reconcile not converging after 3 passes: %d diffs", len(postgresResult.Diffs))
+		}
+	})
+}
+
 func reconcileConfig(t *testing.T, ctx context.Context, client *http.Client, url string, cfg testComponentConfig) reconciler.ReconcileResult {
 	t.Helper()
 	body, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatalf("marshal request body: %v", err)
 	}
+	return reconcileRaw(t, ctx, client, url, body)
+}
+
+func reconcileRaw(t *testing.T, ctx context.Context, client *http.Client, url string, body []byte) reconciler.ReconcileResult {
+	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	request.Header.Set("Content-Type", "application/json")
+	if len(body) > 0 {
+		request.Header.Set("Content-Type", "application/json")
+	}
 
 	response, err := client.Do(request)
 	if err != nil {
@@ -247,7 +391,11 @@ func reconcileConfig(t *testing.T, ctx context.Context, client *http.Client, url
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected status: got %d want %d", response.StatusCode, http.StatusOK)
+		responseBody, readErr := io.ReadAll(response.Body)
+		if readErr != nil {
+			t.Fatalf("unexpected status: got %d want %d; also failed to read response body: %v", response.StatusCode, http.StatusOK, readErr)
+		}
+		t.Fatalf("unexpected status: got %d want %d body=%q", response.StatusCode, http.StatusOK, strings.TrimSpace(string(responseBody)))
 	}
 
 	var result reconciler.ReconcileResult
@@ -255,6 +403,46 @@ func reconcileConfig(t *testing.T, ctx context.Context, client *http.Client, url
 		t.Fatalf("decode response: %v", err)
 	}
 	return result
+}
+
+func waitForCloudNativePGClusterReady(ctx context.Context, conn kubernetes.Connection, namespace string, name string) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	cluster := &apiv1.Cluster{
+		TypeMeta: metav1.TypeMeta{APIVersion: apiv1.SchemeGroupVersion.String(), Kind: "Cluster"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+
+	for {
+		live, err := conn.Objects().Get(ctx, cluster)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if err == nil {
+			liveCluster, ok := live.(*apiv1.Cluster)
+			if !ok {
+				return fmt.Errorf("unexpected cluster type %T", live)
+			}
+			if liveCluster.Status.Phase == apiv1.PhaseHealthy {
+				return nil
+			}
+			for _, condition := range liveCluster.Status.Conditions {
+				if condition.Type == string(apiv1.ConditionClusterReady) && condition.Status == metav1.ConditionTrue {
+					return nil
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("cluster %q did not become ready before timeout: %w", name, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 type testComponentConfig struct {

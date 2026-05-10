@@ -186,7 +186,12 @@ func (r Reconciler) reconcileResource(ctx context.Context, res Resource, actualB
 		logger.String("type", res.Type),
 		logger.String("name", res.Name),
 	))
-	patch := computePatch(actualRes.Actual, res.Desired)
+	var patch []DiffPatch
+	if emitFieldRemovals(res.Type) {
+		patch = computePatchWithRemoves(actualRes.Actual, res.Desired)
+	} else {
+		patch = computePatch(actualRes.Actual, res.Desired)
+	}
 	if len(patch) == 0 {
 		r.log.Debug("reconcile_resource_unchanged", logger.WithFields(
 			logger.String("handler", handler.Name()),
@@ -236,4 +241,14 @@ func (r Reconciler) Destroy(ctx context.Context, plan Plan, handler ComponentHan
 		}
 	}
 	return nil
+}
+
+func emitFieldRemovals(resType string) bool {
+	switch resType {
+	case certManagerClusterIssuerType,
+		clusterSecretStoreType:
+		return true
+	default:
+		return false
+	}
 }

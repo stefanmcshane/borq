@@ -8,21 +8,28 @@ import (
 	"strings"
 	"time"
 
+	certmanagerapi "github.com/cert-manager/cert-manager/pkg/api"
+	apiv1 "github.com/cloudnative-pg/cloudnative-pg/api/v1"
 	"github.com/stefanmcshane/borq/foundations/logger"
 
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 )
 
@@ -266,15 +273,28 @@ type HttpProbe struct {
 
 // Connection provides pleasant access to Kubernetes resource managers.
 type Connection struct {
-	clientset  kubernetes.Interface
-	fieldOwner string
-	logger     logger.Logger
+	clientset    kubernetes.Interface
+	objectClient ctrlclient.Client
+	fieldOwner   string
+	logger       logger.Logger
+	scheme       *runtime.Scheme
 }
 
 // NewConnectionForTest creates a Connection backed by the given clientset.
 // This is exported for testing in downstream packages.
 func NewConnectionForTest(clientset kubernetes.Interface) Connection {
-	return Connection{clientset: clientset, fieldOwner: defaultFieldOwner}
+	return Connection{clientset: clientset, fieldOwner: defaultFieldOwner, scheme: NewScheme()}
+}
+
+// NewScheme returns the Kubernetes runtime scheme used by borq object clients.
+func NewScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = admissionv1.AddToScheme(scheme)
+	_ = apiextensionsv1.AddToScheme(scheme)
+	_ = apiv1.AddToScheme(scheme)
+	_ = certmanagerapi.AddToScheme(scheme)
+	return scheme
 }
 
 // NewConnection creates a Kubernetes connection.
@@ -294,10 +314,18 @@ func NewConnection(config Config, log logger.Logger, options ...Option) (Connect
 		return Connection{}, fmt.Errorf("create kubernetes clientset: %w", err)
 	}
 
+	scheme := NewScheme()
+	objectClient, err := ctrlclient.New(&restConfig, ctrlclient.Options{Scheme: scheme})
+	if err != nil {
+		return Connection{}, fmt.Errorf("create kubernetes object client: %w", err)
+	}
+
 	return Connection{
-		clientset:  clientset,
-		fieldOwner: connectionConfig.fieldOwner,
-		logger:     log,
+		clientset:    clientset,
+		objectClient: objectClient,
+		fieldOwner:   connectionConfig.fieldOwner,
+		logger:       log,
+		scheme:       scheme,
 	}, nil
 }
 
@@ -422,6 +450,16 @@ func (connection Connection) ClusterRoles() ClusterRoleManager {
 func (connection Connection) ClusterRoleBindings() ClusterRoleBindingManager {
 	return ClusterRoleBindingManager{
 		clientset:  connection.clientset,
+		fieldOwner: connection.fieldOwner,
+		logger:     connection.logger,
+	}
+}
+
+// Objects returns a manager for typed Kubernetes objects that do not have a
+// dedicated borq-local manager.
+func (connection Connection) Objects() ObjectManager {
+	return ObjectManager{
+		client:     connection.objectClient,
 		fieldOwner: connection.fieldOwner,
 		logger:     connection.logger,
 	}
@@ -1326,6 +1364,21 @@ func (manager DeploymentManager) WaitForAvailable(ctx context.Context, namespace
 	}
 }
 
+// IsAvailable returns true if the Deployment has at least one available
+// replica and its Available condition is True. Non-blocking — does not wait.
+func (manager DeploymentManager) IsAvailable(ctx context.Context, namespace string, name string) bool {
+	deployment, err := manager.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		manager.logger.Debug("deployment_is_available_failed", logger.WithFields(
+			logger.String("namespace", namespace),
+			logger.String("name", name),
+			logger.String("error", err.Error()),
+		))
+		return false
+	}
+	return deploymentAvailable(*deployment)
+}
+
 // StatefulSetManager manages StatefulSet resources.
 type StatefulSetManager struct {
 	clientset  kubernetes.Interface
@@ -1697,6 +1750,14 @@ type PodManager struct {
 	logger     logger.Logger
 }
 
+// ObjectManager manages typed Kubernetes objects that are not represented by
+// borq-local resource structs.
+type ObjectManager struct {
+	client     ctrlclient.Client
+	fieldOwner string
+	logger     logger.Logger
+}
+
 // Get fetches a Pod by namespace and name.
 func (manager PodManager) Get(ctx context.Context, namespace string, name string) (Pod, error) {
 	pod, err := manager.clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -1788,6 +1849,86 @@ func (manager PodManager) Diff(ctx context.Context, pod Pod) (DiffResult, error)
 	}
 
 	return diffNormalized(live, pod)
+}
+
+// Get fetches an object by the GroupVersionKind, namespace, and name on the
+// provided object. The returned value has the same concrete type as desired.
+func (manager ObjectManager) Get(ctx context.Context, desired ctrlclient.Object) (ctrlclient.Object, error) {
+	if manager.client == nil {
+		return nil, errors.New("kubernetes object client is not configured")
+	}
+
+	live, ok := desired.DeepCopyObject().(ctrlclient.Object)
+	if !ok {
+		return nil, fmt.Errorf("object %T does not implement client.Object", desired)
+	}
+
+	err := manager.client.Get(ctx, ctrlclient.ObjectKeyFromObject(desired), live)
+	if err != nil {
+		return nil, fmt.Errorf("get object %s/%s %q: %w", desired.GetObjectKind().GroupVersionKind().GroupKind().String(), desired.GetNamespace(), desired.GetName(), err)
+	}
+
+	return live, nil
+}
+
+// Apply creates or updates the object to match the desired state.
+func (manager ObjectManager) Apply(ctx context.Context, desired ctrlclient.Object) error {
+	if manager.client == nil {
+		return errors.New("kubernetes object client is not configured")
+	}
+
+	manager.logger.Debug("applying_object", logger.WithFields(
+		logger.String("kind", desired.GetObjectKind().GroupVersionKind().Kind),
+		logger.String("namespace", desired.GetNamespace()),
+		logger.String("name", desired.GetName()),
+	))
+
+	live, ok := desired.DeepCopyObject().(ctrlclient.Object)
+	if !ok {
+		return fmt.Errorf("object %T does not implement client.Object", desired)
+	}
+
+	err := manager.client.Get(ctx, ctrlclient.ObjectKeyFromObject(desired), live)
+	if apierrors.IsNotFound(err) {
+		if err := manager.client.Create(ctx, desired.DeepCopyObject().(ctrlclient.Object)); err != nil {
+			return fmt.Errorf("create object %q: %w", desired.GetName(), err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get object %q for apply: %w", desired.GetName(), err)
+	}
+
+	next := desired.DeepCopyObject().(ctrlclient.Object)
+	next.SetResourceVersion(live.GetResourceVersion())
+	if err := manager.client.Update(ctx, next); err != nil {
+		return fmt.Errorf("update object %q: %w", desired.GetName(), err)
+	}
+
+	return nil
+}
+
+// Delete removes the object if it exists.
+func (manager ObjectManager) Delete(ctx context.Context, desired ctrlclient.Object) error {
+	if manager.client == nil {
+		return errors.New("kubernetes object client is not configured")
+	}
+
+	manager.logger.Debug("deleting_object", logger.WithFields(
+		logger.String("kind", desired.GetObjectKind().GroupVersionKind().Kind),
+		logger.String("namespace", desired.GetNamespace()),
+		logger.String("name", desired.GetName()),
+	))
+
+	err := manager.client.Delete(ctx, desired.DeepCopyObject().(ctrlclient.Object))
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete object %q: %w", desired.GetName(), err)
+	}
+
+	return nil
 }
 
 func buildConnectionConfig(options []Option) (connectionConfig, error) {
