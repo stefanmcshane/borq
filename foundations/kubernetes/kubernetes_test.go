@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -50,6 +51,27 @@ func TestRestConfigForConfigLoadsKubeconfigPath(t *testing.T) {
 	restConfig, err := restConfigForConfig(Config{KubeconfigPath: kubeconfigPath})
 	is.NoErr(err)
 	is.Equal(restConfig.Host, "https://127.0.0.1:6443")
+}
+
+// TestConnectionRestConfigReturnsCopy verifies that callers receive a cloned
+// REST config instead of shared mutable connection state.
+func TestConnectionRestConfigReturnsCopy(t *testing.T) {
+	is := is.New(t)
+
+	connection := Connection{
+		restConfig: rest.Config{
+			Host:  "https://127.0.0.1:6443",
+			QPS:   5,
+			Burst: 10,
+		},
+	}
+
+	restConfig := connection.RestConfig()
+	restConfig.Host = "https://changed.example"
+	restConfig.QPS = 99
+
+	is.Equal(connection.restConfig.Host, "https://127.0.0.1:6443")
+	is.Equal(connection.restConfig.QPS, float32(5))
 }
 
 // TestRestConfigForConfigRejectsInvalidKubeconfigPath verifies that a

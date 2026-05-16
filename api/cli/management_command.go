@@ -3,9 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -29,18 +26,6 @@ func newManagementCommand(ctx context.Context, log logger.Logger, cfg Config) *c
 func newManagementBootstrapCommand(ctx context.Context, log logger.Logger) *cobra.Command {
 	request := management.DefaultRequest()
 	request.ProbeURL = ""
-
-	kubeconfigPaths := filepath.SplitList(os.Getenv("KUBECONFIG"))
-	for _, p := range kubeconfigPaths {
-		if strings.TrimSpace(p) != "" {
-			request.KubeconfigPath = p
-			break
-		}
-	}
-	if request.KubeconfigPath == "" {
-		home, _ := os.UserHomeDir()
-		request.KubeconfigPath = filepath.Join(home, ".kube", "config")
-	}
 
 	command := &cobra.Command{
 		Use:   "bootstrap",
@@ -71,6 +56,7 @@ func newManagementBootstrapCommand(ctx context.Context, log logger.Logger) *cobr
 	command.Flags().DurationVar(&request.Timeout, "timeout", request.Timeout, "Overall bootstrap timeout.")
 	command.Flags().StringVar(&request.Namespace, "namespace", request.Namespace, "Namespace for borq management bootstrap resources.")
 	command.Flags().StringVar(&request.ProbeURL, "probe-url", request.ProbeURL, "Optional management health endpoint URL override.")
+	command.Flags().StringVar(&request.KubeconfigPath, "kubeconfig", request.KubeconfigPath, "Kubeconfig file path for the management cluster.")
 	command.Flags().StringVar(&request.BorqImage, "server-image", request.BorqImage, "Borq server image to deploy.")
 	command.Flags().StringVar(&request.BorqImage, "borq-image", request.BorqImage, "Borq server image to deploy.")
 

@@ -277,6 +277,7 @@ type Connection struct {
 	objectClient ctrlclient.Client
 	fieldOwner   string
 	logger       logger.Logger
+	restConfig   rest.Config
 	scheme       *runtime.Scheme
 }
 
@@ -325,8 +326,14 @@ func NewConnection(config Config, log logger.Logger, options ...Option) (Connect
 		objectClient: objectClient,
 		fieldOwner:   connectionConfig.fieldOwner,
 		logger:       log,
+		restConfig:   restConfig,
 		scheme:       scheme,
 	}, nil
+}
+
+// RestConfig returns a copy of the Kubernetes REST config used by the connection.
+func (connection Connection) RestConfig() rest.Config {
+	return *rest.CopyConfig(&connection.restConfig)
 }
 
 // Services returns a manager for Service resources.

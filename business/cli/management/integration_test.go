@@ -17,6 +17,8 @@ import (
 
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 const (
@@ -46,7 +48,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	clusterName := fmt.Sprintf("%s-%d", integrationBootstrapClusterPrefix, time.Now().Unix())
 	borqImage := integrationBootstrapImage()
 
-	testContext, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	testContext, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	if !keepClusterForDebug() {
@@ -84,6 +86,24 @@ func assertBootstrapResources(ctx context.Context, connection kubernetes.Connect
 	if _, err := connection.Namespaces().Get(ctx, integrationNamespace); err != nil {
 		return fmt.Errorf("namespace: %w", err)
 	}
+	if _, err := connection.Namespaces().Get(ctx, fluxNamespace); err != nil {
+		return fmt.Errorf("flux namespace: %w", err)
+	}
+	if _, err := connection.Secrets().Get(ctx, integrationNamespace, giteaAdminSecretName); err != nil {
+		return fmt.Errorf("gitea admin secret: %w", err)
+	}
+	if _, err := connection.Deployments().Get(ctx, integrationNamespace, giteaReleaseName); err != nil {
+		return fmt.Errorf("gitea deployment: %w", err)
+	}
+	if _, err := connection.Services().Get(ctx, integrationNamespace, giteaHttpServiceName()); err != nil {
+		return fmt.Errorf("gitea http service: %w", err)
+	}
+	if _, err := connection.Deployments().Get(ctx, fluxNamespace, fluxOperatorReleaseName); err != nil {
+		return fmt.Errorf("flux operator deployment: %w", err)
+	}
+	if _, err := connection.Secrets().Get(ctx, fluxNamespace, fluxPullSecretName); err != nil {
+		return fmt.Errorf("flux pull secret: %w", err)
+	}
 	if _, err := connection.ConfigMaps().Get(ctx, integrationNamespace, borqConfigName); err != nil {
 		return fmt.Errorf("config map: %w", err)
 	}
@@ -101,6 +121,14 @@ func assertBootstrapResources(ctx context.Context, connection kubernetes.Connect
 	}
 	if _, err := connection.Services().Get(ctx, integrationNamespace, borqName); err != nil {
 		return fmt.Errorf("service: %w", err)
+	}
+	fluxInstance := &unstructured.Unstructured{}
+	fluxInstance.SetAPIVersion("fluxcd.controlplane.io/v1")
+	fluxInstance.SetKind("FluxInstance")
+	fluxInstance.SetNamespace(fluxNamespace)
+	fluxInstance.SetName(fluxInstanceName)
+	if _, err := connection.Objects().Get(ctx, fluxInstance); err != nil {
+		return fmt.Errorf("flux instance: %w", err)
 	}
 	return nil
 }
@@ -219,6 +247,8 @@ func freeTCPPort() (int32, error) {
 }
 
 func runBootstrapCLI(ctx context.Context, repoRoot string, clusterName string, hostPort int32, image string) (string, error) {
+	kubeconfigPath := defaultKubeconfig()
+
 	return runCommandInDir(
 		ctx,
 		repoRoot,
@@ -231,8 +261,10 @@ func runBootstrapCLI(ctx context.Context, repoRoot string, clusterName string, h
 		clusterName,
 		"--host-port",
 		strconv.Itoa(int(hostPort)),
+		"--kubeconfig",
+		kubeconfigPath,
 		"--timeout",
-		"8m",
+		"12m",
 		"--server-image",
 		image,
 	)

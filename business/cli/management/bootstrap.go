@@ -122,20 +122,23 @@ func Execute(ctx context.Context, log logger.Logger, request Request) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
-	bootstrapApps := bootstrapApps(request)
-	if err := runBootstrapPhases(timeoutContext, bootstrapApps, bootstrapPhaseRunner{
-		applyNamespace: func(ctx context.Context) error {
-			return connection.Namespaces().Apply(ctx, managementNamespace(request.Namespace))
-		},
-		applyApp: func(ctx context.Context, managedApp App) error {
-			return managedApp.Apply(ctx, connection)
-		},
-		waitForAppReady: func(ctx context.Context, managedApp App) error {
-			return managedApp.WaitReady(ctx, connection)
-		},
-	}); err != nil {
+	if err := runManagementBootstrapWorkflow(ctx, log, request, connection); err != nil {
 		return Result{}, err
 	}
+	// bootstrapApps := bootstrapApps(request)
+	// if err := runBootstrapPhases(timeoutContext, bootstrapApps, bootstrapPhaseRunner{
+	// 	applyNamespace: func(ctx context.Context) error {
+	// 		return connection.Namespaces().Apply(ctx, managementNamespace(request.Namespace))
+	// 	},
+	// 	applyApp: func(ctx context.Context, managedApp App) error {
+	// 		return managedApp.Apply(ctx, connection)
+	// 	},
+	// 	waitForAppReady: func(ctx context.Context, managedApp App) error {
+	// 		return managedApp.WaitReady(ctx, connection)
+	// 	},
+	// }); err != nil {
+	// 	return Result{}, err
+	// }
 
 	log.Info("management_apps_ready")
 	log.Info("probing_management_liveness_endpoint", logger.WithFields(

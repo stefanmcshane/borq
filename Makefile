@@ -50,7 +50,7 @@ dev: ## Ensure dev-borq exists, bootstrap borq, then run local borq with air via
 	@command -v kind >/dev/null || { echo "kind not found on PATH (install: https://kind.sigs.k8s.io/)"; exit 1; }
 	@command -v kubectl >/dev/null || { echo "kubectl not found on PATH (install: https://kubernetes.io/docs/tasks/tools/)"; exit 1; }
 	@mkdir -p "$(dir $(DEV_KUBECONFIG_PATH))"
-	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" go run ./cmd/borq management bootstrap --cluster-name "$(DEV_KIND_CLUSTER_NAME)" --host-port 7833
+# 	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" go run ./cmd/borq management bootstrap --cluster-name "$(DEV_KIND_CLUSTER_NAME)" --host-port 7835 --kubeconfig "$(DEV_KUBECONFIG_PATH)"
 	@kind get kubeconfig --name "$(DEV_KIND_CLUSTER_NAME)" > "$(DEV_KUBECONFIG_PATH)"
 	@KUBECONFIG="$(DEV_KUBECONFIG_PATH)" kubectl -n borq-system wait --for=condition=Available deployment/borq --timeout=120s || { \
 		echo "borq deployment did not become available in time"; \
