@@ -98,7 +98,11 @@ func (server handler) validatePath(next http.Handler) http.Handler {
 		} {
 			if value := request.PathValue(parameter); value != "" {
 				if err := schema.VisitJSON(value); err != nil {
-					writeProblem(writer, http.StatusBadRequest, "invalid request path")
+					message := "invalid request path"
+					if parameter == "postgres" {
+						message = "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
+					}
+					writeProblem(writer, http.StatusBadRequest, message)
 					return
 				}
 			}

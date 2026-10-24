@@ -48,20 +48,29 @@ func TestManagedRoutesRejectInvalidRequestsBeforeManager(t *testing.T) {
 	for _, input := range []struct {
 		method, path, body string
 		status             int
+		message            string
 	}{
-		{http.MethodPut, base + "database", `{"password":"private-password"}`, 400},
-		{http.MethodPut, base + "database?apply=invalid", `{}`, 400},
-		{http.MethodPut, base + "INVALID", `{}`, 400},
-		{http.MethodGet, base + "database/logs?limit=0", "", 400},
-		{http.MethodGet, base + "database/logs?limit=1001", "", 400},
-		{http.MethodPost, base + "database/restore-check", `{"jobUid":"job"}`, 401},
-		{http.MethodGet, base + "database/restore-check/operation?jobUid=job", "", 401},
+		{http.MethodPut, base + "database", `{"password":"private-password"}`, 400, "request body does not match the OpenAPI schema"},
+		{http.MethodPut, base + "test", `{"password":"private-password"}`, 400, "request body does not match the OpenAPI schema"},
+		{http.MethodPut, base + "test-1", `{"password":"private-password"}`, 400, "request body does not match the OpenAPI schema"},
+		{http.MethodPut, base + "database?apply=invalid", `{}`, 400, "invalid request path"},
+		{http.MethodPut, base + "Test1", `{}`, 400, "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."},
+		{http.MethodGet, base + "database/logs?limit=0", "", 400, "log limit must be between 1 and 1000"},
+		{http.MethodGet, base + "database/logs?limit=1001", "", 400, "log limit must be between 1 and 1000"},
+		{http.MethodPost, base + "database/restore-check", `{"jobUid":"job"}`, 401, "a projected restore-check token is required"},
+		{http.MethodGet, base + "database/restore-check/operation?jobUid=job", "", 401, "a projected restore-check token is required"},
 	} {
-		response := httptest.NewRecorder()
-		api.ServeHTTP(response, httptest.NewRequest(input.method, input.path, strings.NewReader(input.body)))
-		assert.Equal(response.Code, input.status)
-		assert.Equal(response.Header().Get("Cache-Control"), "no-store")
-		assert.True(!strings.Contains(response.Body.String(), "private-password"))
+		t.Run(input.method+" "+input.path, func(t *testing.T) {
+			assert := is.New(t)
+			response := httptest.NewRecorder()
+			api.ServeHTTP(response, httptest.NewRequest(input.method, input.path, strings.NewReader(input.body)))
+			assert.Equal(response.Code, input.status)
+			assert.Equal(response.Header().Get("Cache-Control"), "no-store")
+			assert.True(!strings.Contains(response.Body.String(), "private-password"))
+			var problem Problem
+			assert.NoErr(json.Unmarshal(response.Body.Bytes(), &problem))
+			assert.Equal(problem.Message, input.message)
+		})
 	}
 }
 
