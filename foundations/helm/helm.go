@@ -33,6 +33,7 @@ import (
 	"helm.sh/helm/v4/pkg/action"
 	chartv2 "helm.sh/helm/v4/pkg/chart/v2"
 	"helm.sh/helm/v4/pkg/chart/v2/loader"
+	chartutil "helm.sh/helm/v4/pkg/chart/v2/util"
 	"helm.sh/helm/v4/pkg/cli"
 	"helm.sh/helm/v4/pkg/kube"
 	"helm.sh/helm/v4/pkg/registry"
@@ -248,7 +249,33 @@ func (manager ReleaseManager) Reconcile(ctx context.Context, input InstallOrUpgr
 	} else {
 		// Helm does not upgrade CRDs from a chart's crds/ directory. Borq
 		// deliberately updates them before the controller during explicit upgrades.
-		if err := manager.upgradeChartCrds(ctx, chart); err != nil {
+		values := valuesOrEmpty(input.Values)
+		if len(values) == 0 {
+			values = live.Config
+			if live.Info.Status != common.StatusDeployed {
+				deployed, err := actionConfig.Releases.Deployed(input.ReleaseName)
+				if err != nil && !errors.Is(err, driver.ErrNoDeployedReleases) {
+					return ReleaseState{}, fmt.Errorf("lookup deployed Helm release: %w", err)
+				}
+				if err == nil {
+					current, err := releaseRecord(deployed)
+					if err != nil {
+						return ReleaseState{}, err
+					}
+					values = current.Config
+				}
+			}
+		}
+		// Dependency processing mutates imported values, so Helm must receive
+		// its original chart and evaluate dependency conditions only once.
+		crdChart, loadErr := loader.Load(chartPath)
+		if loadErr != nil {
+			return ReleaseState{}, fmt.Errorf("load Helm chart for CRD upgrades: %w", loadErr)
+		}
+		if err := chartutil.ProcessDependencies(crdChart, values); err != nil {
+			return ReleaseState{}, fmt.Errorf("process Helm chart dependencies: %w", err)
+		}
+		if err := manager.upgradeChartCrds(ctx, crdChart); err != nil {
 			return ReleaseState{}, err
 		}
 		err = manager.upgrade(ctx, actionConfig, registryClient, chart, chartPath, input)
