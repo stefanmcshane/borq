@@ -85,19 +85,22 @@ func TestApplyDoesNotReplanOnLookupFailure(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			assert := is.New(t)
+			requests := 0
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requests++
 				assert.Equal(request.Method, http.MethodGet)
 				assert.Equal(request.URL.Path, "/api/v1/operations/old")
 				writer.WriteHeader(status)
 			}))
 			defer server.Close()
 			file := filepath.Join(t.TempDir(), "apps.yaml")
-			source := []byte("apps: []\n")
+			source := []byte("apps:\n- name: api\n  image: example/api:v1\n")
 			assert.NoErr(os.WriteFile(file, source, 0600))
 			options := deploymentOptions{file: file, scope: applicationScope{server: server.URL, organization: "team", space: "dev"}}
 			assert.NoErr(saveApplicationPlan(applicationPlanPath(options), applicationPlanMetadata(options, source, "old")))
 			_, _, err := runApplicationCommand(t, "apply", "--api-url", server.URL, "--organization", "team", "--space", "dev", "-f", file)
 			assert.True(err != nil)
+			assert.Equal(requests, 1)
 		})
 	}
 }
@@ -129,13 +132,13 @@ func TestUnsubmittedMismatchedPlansDoNotBlockApply(t *testing.T) {
 			}))
 			defer server.Close()
 			file := filepath.Join(t.TempDir(), "apps.yaml")
-			source := []byte("apps: []\n")
+			source := []byte("apps:\n- name: api\n  image: example/api:v1\n")
 			assert.NoErr(os.WriteFile(file, source, 0600))
 			options := deploymentOptions{file: file, scope: applicationScope{server: server.URL, organization: "team", space: "dev"}}
 			metadata := applicationPlanMetadata(options, source, "old")
 			switch change {
 			case "file":
-				assert.NoErr(os.WriteFile(file, []byte("# changed input\napps: []\n"), 0600))
+				assert.NoErr(os.WriteFile(file, append([]byte("# changed input\n"), source...), 0600))
 			case "organization":
 				metadata.Organization = "previous"
 			case "space":

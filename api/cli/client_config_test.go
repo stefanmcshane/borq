@@ -136,7 +136,7 @@ func TestClientDefaultsRouteCommandsAndPreserveSavedPlans(t *testing.T) {
 			_ = json.NewEncoder(writer).Encode(appapi.Problem{Message: "operation not found"})
 		case strings.HasSuffix(request.URL.Path, "/plans"):
 			writer.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(writer).Encode(appapi.Plan{ID: "saved-plan", Configuration: appapi.Configuration{Apps: []appapi.App{}}})
+			_ = json.NewEncoder(writer).Encode(appapi.Plan{ID: "saved-plan", Configuration: appapi.Configuration{Apps: []appapi.App{{Name: "api", Image: "example/api:v1", Replicas: 1}}}})
 		case request.URL.Path == "/api/v1/plans/saved-plan/apply":
 			writer.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(writer).Encode(appapi.Operation{ID: "saved-operation", PlanID: "saved-plan", Status: appapi.Pending})
@@ -148,7 +148,7 @@ func TestClientDefaultsRouteCommandsAndPreserveSavedPlans(t *testing.T) {
 	_, _, err := runConfiguredApplicationCommand("config", "set", "--server", server.URL, "--organization", "team", "--space", "dev")
 	assert.NoErr(err)
 	file := filepath.Join(t.TempDir(), "apps.yaml")
-	assert.NoErr(os.WriteFile(file, []byte("apps: []\n"), 0o600))
+	assert.NoErr(os.WriteFile(file, []byte("apps:\n- name: api\n  image: example/api:v1\n"), 0o600))
 	for _, arguments := range [][]string{
 		{"org", "list"}, {"cluster", "list"}, {"space", "list"}, {"environment-group", "list"},
 		{"plan", "-f", file}, {"apply", "-f", file},

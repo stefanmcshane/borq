@@ -13,8 +13,10 @@
     <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "spaces" .Organization ""}}" hx-get="{{pageUrl "spaces" .Organization ""}}" {{if eq .View "spaces"}}aria-current="page"{{end}}>{{template "ui-icon" "spaces"}}<span>Spaces</span></a>
     <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "environment" .Organization .Space.Name}}" hx-get="{{pageUrl "environment" .Organization .Space.Name}}" {{if or (eq .View "environment") (eq .View "environment-group")}}aria-current="page"{{end}}>{{template "ui-icon" "spaces"}}<span>Environment groups</span></a>
     <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "custom-charts" .Organization .Space.Name}}" hx-get="{{pageUrl "custom-charts" .Organization .Space.Name}}" {{if or (eq .View "custom-charts") (eq .View "custom-chart")}}aria-current="page"{{end}}>{{template "ui-icon" "applications"}}<span>Custom addons</span></a>
+    <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "postgres" .Organization .Space.Name}}" hx-get="{{pageUrl "postgres" .Organization .Space.Name}}" {{if eq .SectionView "postgres"}}aria-current="page"{{end}}>{{template "ui-icon" "applications"}}<span>Managed addons</span></a>
     <p class="nav-group-label">Admin</p>
-    <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "clusters" "" ""}}" hx-get="{{pageUrl "clusters" "" ""}}" {{if eq .SectionView "clusters"}}aria-current="page"{{end}}>{{template "ui-icon" "clusters"}}<span>Clusters</span></a>
+    <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "clusters" "" ""}}" hx-get="{{pageUrl "clusters" "" ""}}" {{if or (eq .SectionView "clusters") (eq .SectionView "settings")}}aria-current="page"{{end}}>{{template "ui-icon" "clusters"}}<span>Clusters</span></a>
+    <a class="btn nav-item" data-variant="ghost" href="{{pageUrl "settings" "" ""}}" hx-get="{{pageUrl "settings" "" ""}}" {{if eq .View "settings"}}aria-current="page"{{end}}>{{template "ui-icon" "clusters"}}<span>Settings</span></a>
 {{end}}
 {{define "ui-topbar"}}<header class="topbar"><nav id="workspace-breadcrumb" class="breadcrumb" aria-label="Breadcrumb" hx-sync="#workspace:replace">{{template "ui-breadcrumb" .}}</nav><div id="workspace-actions" class="topbar-actions">{{template "ui-refresh-button" .}}</div></header>{{end}}
 {{define "ui-breadcrumb"}}

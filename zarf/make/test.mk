@@ -1,4 +1,4 @@
-.PHONY: pre-commit test-slow test-dev test-unit test-pod-history test-ui test-apps test-apps-e2e generate-api dev-cluster dev-certificates dev-secrets test-integration-server test-bootstrap test-platform-sdk test-platform-vault test-integration-bootstrap test-custom-charts test-telemetry test-chart-defaults fmt
+.PHONY: pre-commit test-slow test-dev test-unit test-pod-history test-ui test-apps test-managed-addons test-apps-e2e generate-api dev-cluster dev-certificates dev-secrets test-integration-server test-bootstrap test-platform-sdk test-platform-vault test-integration-bootstrap test-custom-charts test-telemetry test-chart-defaults fmt
 
 # The older application acceptance fixture stays separate from the full dev installation.
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
@@ -28,6 +28,15 @@ test-ui: ## Verify the embedded management shell and htmx refresh, optionally wi
 
 test-apps: ## Run application manager tests, optionally with ARGS for focused checks.
 	$(GO_TEST_ENV) go test ./business/server/apps ./foundations/kubeapps ./foundations/sqlite ./api/appapi ./api/appmcp ./api/appserver ./api/cli -count=1 $(ARGS)
+
+test-managed-addons: ## Verify managed addon configuration, storage, runtime, and public surfaces without live clusters.
+	$(GO_TEST_ENV) go test ./foundations/objectstore ./foundations/postgres ./business/server/platform ./business/server/apps ./api/appapi ./api/appmcp ./api/cli ./api/webui -count=1 $(ARGS)
+
+.PHONY: test-managed-postgres-e2e
+test-managed-postgres-e2e: ## Create, seed, back up, restore, compare, and remove real managed Postgres addons.
+	@mkdir -p tmp
+	$(GO_TEST_ENV) go build -o tmp/borq-managed-postgres-e2e ./cmd/borq
+	BORQ_MANAGEMENT_KUBECONFIG="$(CURDIR)/tmp/management/kubeconfig" BORQ_MANAGED_ADDON_TEST_BINARY="$(CURDIR)/tmp/borq-managed-postgres-e2e" BORQ_MANAGED_ADDON_TEST_SERVER_URL="$(BORQ_INTEGRATION_SERVER_URL)" $(GO_TEST_ENV) go test -tags=integration ./api/appserver -run TestManagedPostgresIntegrationRecovery -v -count=1 -timeout=35m $(ARGS)
 
 test-apps-e2e: ## Deploy apps on local k3d, test conversions and CLI exit codes using temporary servers and SQLite state.
 	@mkdir -p tmp
@@ -82,6 +91,10 @@ test-chart-defaults: ## Verify matching pinned public HTTP and OCI chart default
 
 test-platform-vault: ## Verify persistent production OpenBao initialization, unsealing, and recovery on local k3d.
 	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestPersistentVaultIntegration -v -count=1 -timeout=6m
+
+.PHONY: test-platform-s3
+test-platform-s3: ## Verify credential generations through the real management secrets controller.
+	BORQ_MANAGEMENT_KUBECONFIG="$(CURDIR)/tmp/management/kubeconfig" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestSharedS3ProjectionIntegration -v -count=1 -timeout=3m $(ARGS)
 
 test-integration-bootstrap: ## Prepare isolated dev Kubernetes, then bootstrap Borq, link targets, and test secrets and deployment.
 	bash zarf/dev/ensure-k3d.sh "$(K3D)"

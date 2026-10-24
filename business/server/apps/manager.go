@@ -163,6 +163,8 @@ type Manager struct {
 
 type managerRuntime struct {
 	addonSlots               chan struct{}
+	postgresSlots            chan struct{}
+	storageMutex             sync.Mutex
 	observability            observability.Client
 	context                  context.Context
 	cancel                   context.CancelFunc
@@ -227,8 +229,9 @@ func NewManager(ctx context.Context, input NewInput) (Manager, error) {
 	}
 	workerContext, cancel := context.WithCancel(ctx)
 	manager := Manager{database: database, runtime: &managerRuntime{
-		addonSlots: make(chan struct{}, 3),
-		context:    workerContext, cancel: cancel,
+		addonSlots:    make(chan struct{}, 3),
+		postgresSlots: make(chan struct{}, 3),
+		context:       workerContext, cancel: cancel,
 		observability:  telemetry,
 		rolloutTimeout: input.RolloutTimeout, pollInterval: input.PollInterval,
 		credentialsDir:           filepath.Join(filepath.Dir(input.DatabasePath), "clusters"),
@@ -315,6 +318,12 @@ func (manager Manager) resumeOperationWorkers(ctx context.Context) error {
 	}
 	manager.runtime.deferredOperations, manager.runtime.deferredQueue = nil, nil
 	if err := manager.resumeAddonOperations(ctx); err != nil {
+		return err
+	}
+	if err := manager.resumeManagementOperations(ctx); err != nil {
+		return err
+	}
+	if err := manager.resumePostgresOperations(ctx); err != nil {
 		return err
 	}
 	manager.runtime.operationsResumed = true

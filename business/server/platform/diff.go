@@ -73,7 +73,7 @@ func DiffTarget(ctx context.Context, input TargetInput) (ComponentDiff, error) {
 		return ComponentDiff{}, err
 	}
 	result := ComponentDiff{Components: []ComponentChange{}}
-	for _, definition := range targetCatalog(input.Upgrade) {
+	for _, definition := range overrideComponents(targetCatalog(input.Upgrade), settings.Components) {
 		values, err := renderComponentValues(definition, valuesInput{Settings: settings, ClusterID: input.ID})
 		if err != nil {
 			return result, err
@@ -82,9 +82,12 @@ func DiffTarget(ctx context.Context, input TargetInput) (ComponentDiff, error) {
 		if err != nil {
 			return result, err
 		}
-		change, err := componentChange(definition, inspection, values, input.Upgrade)
+		change, err := componentChange(definition, inspection, values, input.Upgrade && componentSelected(input.UpgradeComponents, definition.Name))
 		if err != nil {
 			return result, err
+		}
+		if input.Upgrade && !componentSelected(input.UpgradeComponents, definition.Name) {
+			change.Action = "none"
 		}
 		if reason := conflicts[definition.Name]; reason != "" {
 			change.Action = "conflict"

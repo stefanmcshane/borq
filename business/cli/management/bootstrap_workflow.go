@@ -203,6 +203,9 @@ func borqServerArguments(request Request) []string {
 	if request.PrometheusUrl != "" {
 		arguments = append(arguments, "--management-prometheus-url="+request.PrometheusUrl)
 	}
+	if request.S3Endpoint != "" {
+		arguments = append(arguments, "--management-s3-endpoint="+request.S3Endpoint)
+	}
 	return arguments
 }
 

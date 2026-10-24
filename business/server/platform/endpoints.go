@@ -11,6 +11,8 @@ import (
 const (
 	// OpenBaoNodePort exposes Borq's management vault to deployment targets.
 	OpenBaoNodePort = 30200
+	// RustfsNodePort exposes the existing development S3 service to deployment targets.
+	RustfsNodePort = 30900
 	// TelemetryNodePort exposes authenticated management ingestion to target Alloy.
 	TelemetryNodePort = 31834
 )
@@ -27,6 +29,9 @@ func managedEndpointDefaults(settings Settings) (Settings, error) {
 	// The advertised hostname must reach the management node from target clusters.
 	// An API served through a separate load balancer needs explicit component
 	// endpoints when its hostname does not expose the management NodePorts.
+	if settings.S3Endpoint == "" {
+		settings.S3Endpoint = (&url.URL{Scheme: "http", Host: net.JoinHostPort(address.Hostname(), strconv.Itoa(RustfsNodePort))}).String()
+	}
 	if settings.OpenBaoURL == "" {
 		settings.OpenBaoURL = (&url.URL{Scheme: "http", Host: net.JoinHostPort(address.Hostname(), strconv.Itoa(OpenBaoNodePort))}).String()
 	}

@@ -40,9 +40,6 @@ func newCustomChartCommand() *cobra.Command {
 			command.Use += " NAME"
 			command.Args = cobra.ExactArgs(1)
 		}
-		if action == "apply" {
-			command.Aliases = []string{"upgrade"}
-		}
 		if action == "delete" {
 			command.Aliases = []string{"uninstall", "remove"}
 		}

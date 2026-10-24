@@ -40,6 +40,10 @@ func TestToolDiscovery(t *testing.T) {
 		arguments string
 		valid     bool
 	}{
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{}}`, true},
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{"password":"secret"}}`, false},
+		{"ApplyManagementConfiguration", `{"body":{"components":{"cloudnative-pg":{"version":"0.29.1"}},"organizations":[{"name":"team","managedAddons":true,"spaces":[{"name":"dev","managedAddons":{"postgres":[{"name":"database"}]}}]}]}}`, true},
+		{"RestorePostgres", `{"path":{"organization":"team","space":"dev","postgres":"restored"},"body":{"backupId":"approved"}}`, true},
 		{"PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"body":{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.3","values":{"replicas":0},"logs":false}}`, true},
 		{"PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"body":{"repository":"https://charts.example.com","chart":"redis"}}`, false},
 		{"GetChartDefaults", `{"body":{"repository":"https://charts.example.com","name":"redis","version":"1.2.3"}}`, true},
@@ -71,6 +75,8 @@ func TestToolDiscovery(t *testing.T) {
 			assert.Equal(schemas[input.name].Validate(arguments) == nil, input.valid)
 		})
 	}
+	assert.True(tools["RestoreCheckPostgres"] == nil)
+	assert.True(tools["GetPostgresEnv"].Annotations.ReadOnlyHint)
 	assert.True(tools["ListOrganizations"].Annotations.ReadOnlyHint)
 	assert.True(tools["CreateCluster"] == nil)
 	assert.True(tools["ListClusterCreations"] == nil)
@@ -92,6 +98,7 @@ func TestToolRequests(t *testing.T) {
 		status                                   int
 		response                                 string
 	}{
+		{"managed restore", "RestorePostgres", `{"path":{"organization":"team","space":"dev","postgres":"restored"},"body":{"backupId":"approved"}}`, "POST", "/api/v1/organizations/team/spaces/dev/managed-addons/postgres/restored/restore", `{"backupId":"approved"}`, 202, `{"operation":"restore-1"}`},
 		{"custom chart install", "PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"body":{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.3","logs":false,"values":{"replicas":0}}}`, "PUT", "/api/v1/organizations/team/spaces/dev/custom-charts/cache", `{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.3","logs":false,"values":{"replicas":0}}`, 202, `{"operation":"addon-1"}`},
 		{"custom chart apply", "PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"query":{"apply":true},"body":{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.4"}}`, "PUT", "/api/v1/organizations/team/spaces/dev/custom-charts/cache?apply=true", `{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.4"}`, 202, `{"operation":"addon-2"}`},
 		{"app logs", "GetAppLogs", `{"path":{"organization":"team","space":"dev","application":"web"},"query":{"range":"12h","search":"error timeout","limit":20}}`, "GET", "/api/v1/organizations/team/spaces/dev/apps/web/logs?limit=20&range=12h&search=error+timeout", "", 200, `{"entries":[]}`},

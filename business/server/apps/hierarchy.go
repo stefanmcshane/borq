@@ -15,6 +15,10 @@ import (
 type Organization struct {
 	// Name is unique within this Borq server.
 	Name string `json:"name"`
+	// ID preserves storage isolation when a named organization is reused.
+	ID string `json:"id"`
+	// ManagedAddons grants this organization use of the shared S3 connection.
+	ManagedAddons bool `json:"managedAddons"`
 }
 
 // CreateOrganization creates an organization without allocating deployment spaces.
@@ -22,7 +26,11 @@ func (manager Manager) CreateOrganization(ctx context.Context, name string) (Org
 	if err := validateNames(name); err != nil {
 		return Organization{}, err
 	}
-	organization := Organization{Name: name}
+	identity, err := newId()
+	if err != nil {
+		return Organization{}, err
+	}
+	organization := Organization{Name: name, ID: identity}
 	if previous, _, err := loadDocument[Organization](ctx, manager.database, "organization", name); err == nil {
 		return previous, nil
 	} else if !errors.Is(err, ErrNotFound) {

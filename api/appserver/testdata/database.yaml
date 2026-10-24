@@ -1,0 +1,4 @@
+managedAddons:
+  postgres:
+    - name: source
+      snapshots: preferred

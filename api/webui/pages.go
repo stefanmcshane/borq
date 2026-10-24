@@ -10,6 +10,10 @@ import (
 )
 
 type pageData struct {
+	// Postgres supplies managed database configuration, recovery and monitoring.
+	Postgres postgresPageData
+	// Settings contains safe storage configuration and component pins.
+	Settings managementSettingsData
 	// CustomCharts and CustomChartDraft populate the per-space chart catalog and editor.
 	CustomCharts     []appapi.CustomChart
 	CustomChart      appapi.CustomChart
@@ -173,7 +177,7 @@ func (web handler) loadPage(request *http.Request, selection url.Values) (pageDa
 	if view == "clusters" && selection.Get("cluster") != "" {
 		view = "cluster"
 	}
-	titles := map[string]string{"custom-charts": "Custom addons", "custom-chart": "Install a custom addon", "overview": "Overview", "applications": "Applications", "application": "Add an application", "spaces": "Spaces", "clusters": "Clusters", "environment": "Environment groups", "environment-group": "Create an environment group"}
+	titles := map[string]string{"settings": "Management settings", "postgres": "Managed PostgreSQL", "postgres-detail": "PostgreSQL", "custom-charts": "Custom addons", "custom-chart": "Install a custom addon", "overview": "Overview", "applications": "Applications", "application": "Add an application", "spaces": "Spaces", "clusters": "Clusters", "environment": "Environment groups", "environment-group": "Create an environment group"}
 	page := pageData{View: view, Title: titles[view], Organization: selection.Get("organization"), Cluster: selection.Get("cluster"),
 		EnvironmentEditor: environmentEditorData{Format: "fields"}}
 	if view == "cluster" {
@@ -193,6 +197,8 @@ func (web handler) loadPage(request *http.Request, selection url.Values) (pageDa
 		page.SectionView = "custom-charts"
 	case "cluster":
 		page.SectionView = "clusters"
+	case "postgres-detail":
+		page.SectionView = "postgres"
 	}
 	page.SectionTitle = titles[page.SectionView]
 	var err error
@@ -202,6 +208,9 @@ func (web handler) loadPage(request *http.Request, selection url.Values) (pageDa
 	}
 	if view == "clusters" || view == "cluster" {
 		return web.loadClustersPage(request, page)
+	}
+	if view == "settings" {
+		return web.loadManagementSettings(request, selection, page)
 	}
 	if page.Organization == "" && len(page.Organizations) > 0 {
 		page.Organization = page.Organizations[0].Name
@@ -288,11 +297,17 @@ func (web handler) loadPage(request *http.Request, selection url.Values) (pageDa
 		}
 	}
 
+	if (view == "postgres" || view == "postgres-detail") && page.Space.ID != "" {
+		page, err = web.loadPostgresPage(request, selection, page)
+		if err != nil {
+			return page, err
+		}
+	}
 	extra := []string{}
 	if page.PromptCluster {
 		extra = append(extra, "setup", "cluster")
 	}
-	for _, key := range []string{"customChart", "app", "tab", "subtab", "draft", "plan", "operation", "cluster", "group", "version"} {
+	for _, key := range []string{"postgres", "customChart", "app", "tab", "subtab", "draft", "plan", "operation", "cluster", "group", "version"} {
 		if value := selection.Get(key); value != "" {
 			extra = append(extra, key, value)
 		}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,23 +56,26 @@ func TestManagementBootstrapApiUrlKeepsAdvancedEndpointsHidden(t *testing.T) {
 	assert.True(!strings.Contains(output, "--management-telemetry-url"))
 }
 
-// TestManagementUpgradeUsesSelectedServer proves management lifecycle changes
+// TestManagementApplyUsesSelectedServer proves management lifecycle changes
 // run through Borq's API instead of installing charts from the client machine.
-func TestManagementUpgradeUsesSelectedServer(t *testing.T) {
+func TestManagementApplyUsesSelectedServer(t *testing.T) {
 	assert := is.New(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		assert.Equal(request.Method, http.MethodPost)
-		assert.Equal(request.URL.Path, "/api/v1/management/components/upgrade")
+		assert.Equal(request.Method, http.MethodPut)
+		assert.Equal(request.URL.Path, "/api/v1/management/configuration")
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"clusterId":"management","status":"ready"}`))
+		writer.WriteHeader(http.StatusAccepted)
+		_, _ = writer.Write([]byte(`{"id":"management-apply","status":"succeeded"}`))
 	}))
 	defer server.Close()
 	_, _, err := runConfiguredApplicationCommand("config", "set", "--server", server.URL)
 	assert.NoErr(err)
-	output, _, err := runConfiguredApplicationCommand("management", "upgrade")
+	file := filepath.Join(t.TempDir(), "management.yaml")
+	assert.NoErr(os.WriteFile(file, []byte("components: {}\n"), 0600))
+	output, _, err := runConfiguredApplicationCommand("management", "apply", "-f", file, "--wait=false")
 	assert.NoErr(err)
-	assert.True(strings.Contains(output, "status: ready"))
+	assert.True(strings.Contains(output, "status: succeeded"))
 }
 
 // TestClusterCreationCommandsAreUnavailable keeps Kubernetes installation outside

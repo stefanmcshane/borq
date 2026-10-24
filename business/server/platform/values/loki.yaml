@@ -4,7 +4,21 @@ loki:
   commonConfig:
     replication_factor: 1
   storage:
-{{ if eq .Profile "dev" }}
+{{ if .S3.Bucket }}
+    type: s3
+    bucketNames:
+      chunks: {{ .S3.Bucket | quote }}
+      ruler: {{ .S3.Bucket | quote }}
+      admin: {{ .S3.Bucket | quote }}
+    s3:
+      endpoint: {{ s3Endpoint .S3.Endpoint | quote }}
+      region: {{ .S3.Region | quote }}
+      accessKeyId: ${accessKey}
+      secretAccessKey: ${secretKey}
+      session_token: ${sessionToken}
+      insecure: {{ s3Insecure .S3.Endpoint }}
+      s3ForcePathStyle: {{ .S3.PathStyle }}
+{{ else if eq .Profile "dev" }}
     type: s3
     bucketNames:
       chunks: loki
@@ -24,7 +38,7 @@ loki:
     configs:
       - from: "2024-04-01"
         store: tsdb
-        object_store: {{ if eq .Profile "dev" }}s3{{ else }}filesystem{{ end }}
+        object_store: {{ if or .S3.Bucket (eq .Profile "dev") }}s3{{ else }}filesystem{{ end }}
         schema: v13
         index:
           prefix: index_
@@ -33,15 +47,19 @@ loki:
     retention_period: {{ if eq .Profile "dev" }}96h{{ else }}168h{{ end }}
   compactor:
     retention_enabled: true
-    delete_request_store: {{ if eq .Profile "dev" }}s3{{ else }}filesystem{{ end }}
+    delete_request_store: {{ if or .S3.Bucket (eq .Profile "dev") }}s3{{ else }}filesystem{{ end }}
 singleBinary:
   replicas: 1
-{{ if eq .Profile "dev" }}
+{{ if .S3.Bucket }}
+  podAnnotations:
+    borq.run/s3-credentials: {{ .S3.CredentialsRef | quote }}
+{{ end }}
+{{ if or .S3.Bucket (eq .Profile "dev") }}
   extraArgs:
     - -config.expand-env=true
   extraEnvFrom:
     - secretRef:
-        name: borq-rustfs
+        name: {{ if .S3.Bucket }}{{ sharedS3SecretName .S3.CredentialsRef }}{{ else }}borq-rustfs{{ end }}
 {{ end }}
   persistence:
     enabled: true

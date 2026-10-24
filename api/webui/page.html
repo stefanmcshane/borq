@@ -49,11 +49,14 @@
       <div id="notice" aria-live="polite">{{if .Notice}}<p class="alert notice-success" role="status">{{.Notice}}</p>{{end}}</div>
       {{if eq .View "clusters"}}{{template "view-clusters" .}}
       {{else if eq .View "cluster"}}{{template "view-cluster" .}}
+      {{else if eq .View "settings"}}{{template "view-settings" .}}
       {{else if not .Organization}}
         <section class="empty workspace-empty onboarding"><header><h2>Create your first organization</h2><p>Organizations bring your clusters, spaces, and applications together. Open the Org menu above to create one.</p></header></section>
       {{else if eq .View "overview"}}{{template "view-overview" .}}
       {{else if eq .View "applications"}}{{template "view-applications" .}}
       {{else if eq .View "application"}}{{template "view-application" .}}
+      {{else if eq .View "postgres"}}{{template "view-postgres" .}}
+      {{else if eq .View "postgres-detail"}}{{template "view-postgres-detail" .}}
       {{else if eq .View "custom-charts"}}{{template "view-custom-charts" .}}
       {{else if eq .View "custom-chart"}}{{template "view-custom-chart" .}}
       {{else if eq .View "spaces"}}{{template "view-spaces" .}}

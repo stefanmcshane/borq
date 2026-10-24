@@ -36,6 +36,8 @@ func NewHandler(manager apps.Manager) (http.Handler, error) {
 	}
 	implementation := handler{manager: manager, schemas: specification.Components.Schemas}
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/restore-check", implementation.postgresRestoreCheck)
+	mux.HandleFunc("GET /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/restore-check/{operation}", implementation.postgresRestoreCheckOperation)
 	mux.HandleFunc("GET /api/openapi.yaml", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/yaml")
 		_, _ = writer.Write(openapiDocument)
@@ -69,6 +71,7 @@ func NewHandler(manager apps.Manager) (http.Handler, error) {
 		if strings.HasPrefix(request.URL.Path, "/api/v1/organizations/") && (strings.HasSuffix(request.URL.Path, "/kubeconfig") || strings.HasSuffix(request.URL.Path, "/metrics")) {
 			writer.Header().Set("Cache-Control", "no-store")
 		}
+		writer.Header().Set("Cache-Control", "no-store")
 		routes.ServeHTTP(writer, request)
 	}), nil
 }
@@ -87,6 +90,7 @@ func (server handler) validatePath(next http.Handler) http.Handler {
 			}
 		}
 		for parameter, schema := range map[string]*openapi3.Schema{
+			"postgres":    server.schemas["Postgres"].Value.Properties["name"].Value,
 			"customChart": server.schemas["CustomChart"].Value.Properties["name"].Value,
 			"application": server.schemas["App"].Value.Properties["name"].Value,
 			"group":       server.schemas["CloneEnvironmentGroupInput"].Value.Properties["sourceName"].Value,

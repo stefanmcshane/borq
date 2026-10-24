@@ -27,6 +27,11 @@ func NewRootCommand(ctx context.Context, log logger.Logger, cfg Config) *cobra.C
 	command.AddCommand(newApplicationCommands()...)
 	command.AddCommand(newEnvironmentGroupCommand())
 	command.AddCommand(newAddonCommand())
+	managed := newManagedAddonCommand()
+	managed.Use = "am"
+	custom := newCustomChartCommand()
+	custom.Use = "ac"
+	command.AddCommand(managed, custom)
 	command.AddCommand(newClientConfigCommand())
 
 	command.SetOut(os.Stdout)

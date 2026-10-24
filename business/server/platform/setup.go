@@ -25,7 +25,7 @@ func GetTargetSetup(settings Settings) (TargetSetup, error) {
 		return TargetSetup{}, err
 	}
 	setup := TargetSetup{Namespace: settings.Namespace, Components: []SetupComponent{}}
-	for _, definition := range targetCatalog(false) {
+	for _, definition := range overrideComponents(targetCatalog(false), settings.Components) {
 		setup.Components = append(setup.Components, SetupComponent{Name: definition.Name, Version: definition.Version, Description: definition.Description})
 	}
 	return setup, nil
