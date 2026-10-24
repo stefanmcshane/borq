@@ -20,6 +20,9 @@ func TestManagedPostgresCommands(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
+		case base + "/managed-addons/postgres/Uppercase":
+			writer.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(writer).Encode(appapi.Problem{Message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."})
 		case base + "/managed-addons/postgres/database":
 			if request.Method == http.MethodPut {
 				var input appapi.PostgresInput
@@ -57,6 +60,8 @@ func TestManagedPostgresCommands(t *testing.T) {
 	output, _, err := runApplicationCommand(t, arguments...)
 	assert.NoErr(err)
 	assert.True(strings.Contains(output, "succeeded"))
+	_, _, nameError := runApplicationCommand(t, append([]string{"am", "postgres", "create", "Uppercase", "--wait=false"}, flags...)...)
+	assert.True(nameError != nil && strings.Contains(nameError.Error(), "lowercase letters"))
 	status = appapi.Failed
 	_, _, err = runApplicationCommand(t, arguments...)
 	assert.True(err != nil && strings.Contains(err.Error(), "database operation failed"))
@@ -74,6 +79,10 @@ func TestManagedPostgresCommands(t *testing.T) {
 	assert.NoErr(err)
 	_, _, err = runApplicationCommand(t, append([]string{"apply", "-f", file}, flags...)...)
 	assert.NoErr(err)
+	assert.NoErr(os.WriteFile(file, []byte("managedAddons:\n  postgres:\n    - name: database\n      private-token: private-token\n"), 0600))
+	output, diagnostic, err := runApplicationCommand(t, append([]string{"am", "postgres", "apply", "-f", file}, flags...)...)
+	assert.True(err != nil && strings.Contains(err.Error(), "Passwords are generated automatically."))
+	assert.True(!strings.Contains(output+diagnostic+err.Error(), "private-token"))
 	_, _, err = runApplicationCommand(t, append([]string{"am", "postgres", "backup", "restore", "restored", "--backup", "approved-backup", "--wait=false"}, flags...)...)
 	assert.NoErr(err)
 }

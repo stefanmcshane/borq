@@ -303,11 +303,13 @@ func safePostgresError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "PostgreSQL operation exceeded its original durable deadline"
 	}
-	message := err.Error()
-	if len(message) > 1024 {
-		message = message[:1024]
+	if message := PostgresRequestMessage(err); message != "" {
+		return message
 	}
-	return message
+	if errors.Is(err, ErrComponentsNotReady) {
+		return "PostgreSQL components are not ready. Inspect cluster components or run cluster reconcile, then retry."
+	}
+	return "PostgreSQL operation failed. Check database events, cluster components, and shared storage access, then retry."
 }
 
 func (manager Manager) postgresMaintenance() {

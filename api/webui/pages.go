@@ -307,9 +307,16 @@ func (web handler) loadPage(request *http.Request, selection url.Values) (pageDa
 	if page.PromptCluster {
 		extra = append(extra, "setup", "cluster")
 	}
-	for _, key := range []string{"postgres", "customChart", "app", "tab", "subtab", "draft", "plan", "operation", "cluster", "group", "version"} {
+	for _, key := range []string{"postgres", "postgresOperation", "customChart", "app", "tab", "subtab", "draft", "plan", "operation", "cluster", "group", "version"} {
 		if value := selection.Get(key); value != "" {
 			extra = append(extra, key, value)
+		}
+	}
+	if view == "postgres" || view == "postgres-detail" {
+		for _, key := range []string{"range", "search", "end"} {
+			if value := selection.Get(key); value != "" {
+				extra = append(extra, key, value)
+			}
 		}
 	}
 	page.Location = pageUrl(view, page.Organization, page.Space.Name, extra...)

@@ -60,7 +60,7 @@ func (manager Manager) ListPostgresBackups(ctx context.Context, organization, sp
 // RestorePostgres reserves a fresh destination and freezes an approved source identity before asynchronous work.
 func (manager Manager) RestorePostgres(ctx context.Context, organization, space, name string, input PostgresRestoreInput) (Postgres, error) {
 	if input.BackupID == "" {
-		return Postgres{}, fmt.Errorf("%w: an approved backup ID is required", ErrInvalid)
+		return Postgres{}, postgresValidationError{message: "an approved backup ID is required"}
 	}
 	archive, backup, err := manager.findPostgresBackup(ctx, organization, input.BackupID)
 	if err != nil {
@@ -72,10 +72,10 @@ func (manager Manager) RestorePostgres(ctx context.Context, organization, space,
 		return Postgres{}, err
 	}
 	if postgresMajor(specification.Image) != backup.MajorVersion {
-		return Postgres{}, fmt.Errorf("%w: physical restore must retain PostgreSQL major version %d", ErrInvalid, backup.MajorVersion)
+		return Postgres{}, postgresValidationError{message: fmt.Sprintf("physical restore must retain PostgreSQL major version %d", backup.MajorVersion)}
 	}
 	if !input.RecoveryTarget.IsZero() && (input.RecoveryTarget.Before(backup.CompletedAt) || input.RecoveryTarget.After(backup.RecoveryEnd)) {
-		return Postgres{}, fmt.Errorf("%w: recovery target is outside the verified available WAL range", ErrInvalid)
+		return Postgres{}, postgresValidationError{message: "recovery target is outside the verified available WAL range"}
 	}
 	task := postgresTask{SourceArchive: archive.ID, BackupID: backup.ID, Fingerprint: backup.Fingerprint, RecoveryTarget: input.RecoveryTarget}
 	return manager.acceptPostgres(ctx, organization, space, name, specification, "restore", task)
@@ -127,7 +127,7 @@ func (manager Manager) findPostgresBackup(ctx context.Context, organization, id 
 				continue
 			}
 			if !backup.Eligible || backup.MajorVersion != archive.MajorVersion {
-				return postgresArchive{}, postgres.BackupMetadata{}, fmt.Errorf("%w: selected backup is not eligible for physical recovery", ErrInvalid)
+				return postgresArchive{}, postgres.BackupMetadata{}, postgresValidationError{message: "selected backup is not eligible for physical recovery"}
 			}
 			return archive, backup, nil
 		}
@@ -144,7 +144,7 @@ func (manager Manager) revalidatePostgresBackup(ctx context.Context, organizatio
 		return archive, backup, fmt.Errorf("%w: selected PostgreSQL backup metadata changed after acceptance", ErrConflict)
 	}
 	if !task.RecoveryTarget.IsZero() && (task.RecoveryTarget.Before(backup.CompletedAt) || task.RecoveryTarget.After(backup.RecoveryEnd)) {
-		return archive, backup, fmt.Errorf("%w: requested PostgreSQL recovery target is no longer available", ErrInvalid)
+		return archive, backup, postgresValidationError{message: "requested PostgreSQL recovery target is no longer available"}
 	}
 	return archive, backup, nil
 }
@@ -163,7 +163,7 @@ func (manager Manager) RestoreCheckPostgres(ctx context.Context, organization, s
 		return Operation{}, err
 	}
 	if input.JobUID == "" || input.Token == "" {
-		return Operation{}, fmt.Errorf("%w: Job-bound restore check credentials are required", ErrInvalid)
+		return Operation{}, postgresValidationError{message: "Job-bound restore check credentials are required"}
 	}
 	if err := client.AuthenticateCheck(ctx, clusterInput, input.Token, input.JobUID); err != nil {
 		return Operation{}, fmt.Errorf("%w: %v", ErrInvalid, err)

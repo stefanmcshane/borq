@@ -75,20 +75,20 @@ func normalizePostgres(input PostgresInput) (PostgresInput, error) {
 		input.Instances = 1
 	}
 	if input.Instances < 1 || input.Instances > 16 {
-		return input, fmt.Errorf("%w: PostgreSQL instances must be between 1 and 16", ErrInvalid)
+		return input, postgresValidationError{message: "PostgreSQL instances must be between 1 and 16"}
 	}
 	if input.Storage == "" {
 		input.Storage = "1Gi"
 	}
 	capacity, err := resource.ParseQuantity(input.Storage)
 	if err != nil || capacity.Sign() <= 0 {
-		return input, fmt.Errorf("%w: PostgreSQL storage must be a positive Kubernetes quantity", ErrInvalid)
+		return input, postgresValidationError{message: "PostgreSQL storage must be a positive Kubernetes quantity"}
 	}
 	if input.Image == "" {
 		input.Image = "ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie"
 	}
 	if postgresMajor(input.Image) == 0 {
-		return input, fmt.Errorf("%w: PostgreSQL image must pin a supported 14–18 major and exact minor tag", ErrInvalid)
+		return input, postgresValidationError{message: "PostgreSQL image must pin a supported 14–18 major and exact minor tag"}
 	}
 	if input.Database == "" {
 		input.Database = "app"
@@ -98,60 +98,60 @@ func normalizePostgres(input PostgresInput) (PostgresInput, error) {
 	}
 	identifier := regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 	if !identifier.MatchString(input.Database) || !identifier.MatchString(input.Username) || input.Username == "postgres" {
-		return input, fmt.Errorf("%w: database and application username must be lowercase SQL identifiers; postgres is reserved", ErrInvalid)
+		return input, postgresValidationError{message: "database and application username must be lowercase SQL identifiers; postgres is reserved"}
 	}
 	if input.Backup.Schedule == "" {
 		input.Backup.Schedule = "0 0 * * *"
 	}
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	if _, err := parser.Parse(input.Backup.Schedule); err != nil {
-		return input, fmt.Errorf("%w: full backup schedule requires five cron fields", ErrInvalid)
+		return input, postgresValidationError{message: "full backup schedule requires five cron fields"}
 	}
 	if input.Backup.RecoveryWindowDays == 0 {
 		input.Backup.RecoveryWindowDays = 30
 	}
 	if input.Backup.RecoveryWindowDays < 1 || input.Backup.RecoveryWindowDays > 3650 {
-		return input, fmt.Errorf("%w: recovery window must be 1–3650 days", ErrInvalid)
+		return input, postgresValidationError{message: "recovery window must be 1–3650 days"}
 	}
 	if input.Snapshots == "" {
 		input.Snapshots = "preferred"
 	}
 	if input.Snapshots != "preferred" && input.Snapshots != "required" && input.Snapshots != "disabled" {
-		return input, fmt.Errorf("%w: snapshots must be preferred, required, or disabled", ErrInvalid)
+		return input, postgresValidationError{message: "snapshots must be preferred, required, or disabled"}
 	}
 	if input.SnapshotSchedule == "" {
 		input.SnapshotSchedule = "0 * * * *"
 	}
 	if _, err := parser.Parse(input.SnapshotSchedule); err != nil {
-		return input, fmt.Errorf("%w: snapshot schedule requires five cron fields", ErrInvalid)
+		return input, postgresValidationError{message: "snapshot schedule requires five cron fields"}
 	}
 	if input.SnapshotRetentionHours == 0 {
 		input.SnapshotRetentionHours = 24
 	}
 	if input.SnapshotRetentionHours < 1 || input.SnapshotRetentionHours > 8760 {
-		return input, fmt.Errorf("%w: snapshot retention must be 1–8760 hours", ErrInvalid)
+		return input, postgresValidationError{message: "snapshot retention must be 1–8760 hours"}
 	}
 	if input.RestoreCheck.Schedule == "" {
 		input.RestoreCheck.Schedule = "0 3 * * 0"
 	}
 	if _, err := cron.ParseStandard(input.RestoreCheck.Schedule); err != nil {
-		return input, fmt.Errorf("%w: restore check schedule requires five cron fields", ErrInvalid)
+		return input, postgresValidationError{message: "restore check schedule requires five cron fields"}
 	}
 	if input.RestoreCheck.TimeoutSeconds == 0 {
 		input.RestoreCheck.TimeoutSeconds = 1800
 	}
 	if input.RestoreCheck.TimeoutSeconds < 60 || input.RestoreCheck.TimeoutSeconds > 86400 {
-		return input, fmt.Errorf("%w: restore check timeout must be 60–86400 seconds", ErrInvalid)
+		return input, postgresValidationError{message: "restore check timeout must be 60–86400 seconds"}
 	}
 	for _, resources := range []PostgresResources{input.Resources, input.RestoreCheck.Resources} {
 		for _, quantities := range []map[string]string{resources.Requests, resources.Limits} {
 			for name, value := range quantities {
 				if name != "cpu" && name != "memory" {
-					return input, fmt.Errorf("%w: supported PostgreSQL resources are cpu and memory", ErrInvalid)
+					return input, postgresValidationError{message: "supported PostgreSQL resources are cpu and memory"}
 				}
 				quantity, err := resource.ParseQuantity(value)
 				if err != nil || quantity.Sign() <= 0 {
-					return input, fmt.Errorf("%w: PostgreSQL resource quantities must be positive", ErrInvalid)
+					return input, postgresValidationError{message: "PostgreSQL resource quantities must be positive"}
 				}
 			}
 		}
@@ -308,17 +308,17 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 		return Postgres{}, ErrNotFound
 	}
 	if exists && (action == "create" || action == "restore") {
-		return Postgres{}, fmt.Errorf("%w: PostgreSQL name already exists", ErrConflict)
+		return Postgres{}, postgresNameConflictError{}
 	}
 	if exists && action == "apply" {
 		previous := stored.Postgres.Specification
 		if previous.Database != input.Database || previous.Username != input.Username || postgresMajor(previous.Image) != postgresMajor(input.Image) || previous.StorageClass != input.StorageClass {
-			return Postgres{}, fmt.Errorf("%w: database, username, major version and storage class are immutable; restore to a new name", ErrInvalid)
+			return Postgres{}, postgresValidationError{message: "database, username, major version and storage class are immutable; restore to a new name"}
 		}
 		prior, _ := resource.ParseQuantity(previous.Storage)
 		next, _ := resource.ParseQuantity(input.Storage)
 		if next.Cmp(prior) < 0 {
-			return Postgres{}, fmt.Errorf("%w: PostgreSQL storage cannot shrink", ErrInvalid)
+			return Postgres{}, postgresValidationError{message: "PostgreSQL storage cannot shrink"}
 		}
 	}
 	archive := postgresArchive{}
@@ -333,7 +333,7 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 			return Postgres{}, err
 		}
 		if err := storageClient.Validate(ctx); err != nil {
-			return Postgres{}, fmt.Errorf("%w: managed PostgreSQL requires available S3 read/write/list/delete access", ErrInvalid)
+			return Postgres{}, postgresValidationError{message: "managed PostgreSQL requires available S3 read/write/list/delete access"}
 		}
 		id, err := newId()
 		if err != nil {
@@ -391,7 +391,7 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 			}
 		}
 		if snapshotClass == "" && stored.Postgres.Specification.Snapshots == "required" {
-			return Postgres{}, fmt.Errorf("%w: CSI snapshots are required but no matching CSI driver and deleting VolumeSnapshotClass are installed", ErrInvalid)
+			return Postgres{}, postgresValidationError{message: "CSI snapshots are required but no matching CSI driver and deleting VolumeSnapshotClass are installed"}
 		}
 		stored.Postgres.Protection.Snapshots = "unsupported"
 		if stored.Postgres.Specification.Snapshots == "disabled" {

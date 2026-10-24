@@ -99,8 +99,8 @@ func (server handler) validatePath(next http.Handler) http.Handler {
 			if value := request.PathValue(parameter); value != "" {
 				if err := schema.VisitJSON(value); err != nil {
 					message := "invalid request path"
-					if parameter == "postgres" {
-						message = "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
+					if guidance := SchemaValidationMessage(err); guidance != "" {
+						message = guidance
 					}
 					writeProblem(writer, http.StatusBadRequest, message)
 					return
@@ -350,8 +350,11 @@ func (server handler) decodeBody(writer http.ResponseWriter, request *http.Reque
 		return false
 	}
 	if err = server.schemas[schemaName].Value.VisitJSON(value); err != nil {
-		// Schema errors can contain environment values, so do not echo their details.
-		writeProblem(writer, http.StatusBadRequest, "request body does not match the OpenAPI schema")
+		message := SchemaValidationMessage(err)
+		if message == "" {
+			message = "request body does not match the OpenAPI schema"
+		}
+		writeProblem(writer, http.StatusBadRequest, message)
 		return false
 	}
 	if err = json.Unmarshal(data, output); err != nil {
@@ -383,9 +386,17 @@ func respond[Model any](writer http.ResponseWriter, status int, result any, err 
 		case errors.Is(err, apps.ErrAddonExists):
 			writeProblem(writer, http.StatusConflict, "A custom addon with this name already exists in this space. Open it to update its settings, or use apply.")
 		case errors.Is(err, apps.ErrConflict):
-			writeProblem(writer, http.StatusConflict, "request conflicts with current state; create a new plan if needed")
+			message := apps.PostgresRequestMessage(err)
+			if message == "" {
+				message = "request conflicts with current state; create a new plan if needed"
+			}
+			writeProblem(writer, http.StatusConflict, message)
 		case errors.Is(err, apps.ErrInvalid):
-			writeProblem(writer, http.StatusBadRequest, "request configuration is invalid")
+			message := apps.PostgresRequestMessage(err)
+			if message == "" {
+				message = "request configuration is invalid"
+			}
+			writeProblem(writer, http.StatusBadRequest, message)
 		default:
 			writeProblem(writer, http.StatusInternalServerError, "application manager request failed")
 		}

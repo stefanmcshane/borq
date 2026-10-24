@@ -6,10 +6,15 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type postgresPageData struct {
+	// Tab and Subtab select the database section and observability view.
+	Tab, Subtab string
+	// Range, Search and End retain the selected observation window and log filter.
+	Range, Search, End string
 	// Databases lists accepted services in the selected space.
 	Databases []appapi.Postgres
 	// Database is selected accepted state without credentials.
@@ -33,17 +38,53 @@ func (web handler) loadPostgresPage(request *http.Request, selection url.Values,
 	}
 	name := selection.Get("postgres")
 	if name == "" {
+		if id := selection.Get("postgresOperation"); id != "" {
+			page.Postgres.Operation, err = requestApi[appapi.Operation](request.Context(), web.api, http.MethodGet, "/api/v1/postgres-operations/"+url.PathEscape(id), nil)
+			if err != nil {
+				return page, err
+			}
+			if page.Postgres.Operation.SpaceID != page.Space.ID {
+				return page, apiProblem{status: http.StatusNotFound, message: "The operation belongs to another space."}
+			}
+		}
 		return page, nil
+	}
+	page.Postgres.Tab = selection.Get("tab")
+	if page.Postgres.Tab == "" {
+		page.Postgres.Tab = "overview"
+	}
+	switch page.Postgres.Tab {
+	case "overview", "backups", "configuration":
+	case "observability":
+		page.Postgres.Subtab = selection.Get("subtab")
+		if page.Postgres.Subtab == "" {
+			page.Postgres.Subtab = "metrics"
+		}
+		if page.Postgres.Subtab != "metrics" && page.Postgres.Subtab != "logs" {
+			return page, apiProblem{status: http.StatusNotFound, message: "This database observability view was not found."}
+		}
+	default:
+		return page, apiProblem{status: http.StatusNotFound, message: "This database section was not found."}
 	}
 	page.Postgres.Database, err = requestApi[appapi.Postgres](request.Context(), web.api, http.MethodGet, base+"/"+url.PathEscape(name), nil)
 	if err != nil {
 		return page, err
 	}
 	page.Title = name
-	page.Postgres.Path = "/ui/postgres?" + url.Values{"organization": {page.Organization}, "space": {page.Space.Name}, "postgres": {name}}.Encode()
-	page.Postgres.Backups, err = requestApi[[]appapi.PostgresBackup](request.Context(), web.api, http.MethodGet, base+"/"+url.PathEscape(name)+"/backups", nil)
-	if err != nil {
-		page.Postgres.BackupProblem = "Backup catalogue is unavailable. Check shared storage and retry."
+	page.Postgres.Range = selection.Get("range")
+	if page.Postgres.Range == "" {
+		page.Postgres.Range = "1h"
+	}
+	page.Postgres.Search, page.Postgres.End = selection.Get("search"), selection.Get("end")
+	page.Postgres.Path = "/ui/postgres?" + url.Values{
+		"organization": {page.Organization}, "space": {page.Space.Name}, "postgres": {name},
+		"range": {page.Postgres.Range}, "search": {page.Postgres.Search}, "end": {page.Postgres.End},
+	}.Encode()
+	if page.Postgres.Tab == "backups" {
+		page.Postgres.Backups, err = requestApi[[]appapi.PostgresBackup](request.Context(), web.api, http.MethodGet, base+"/"+url.PathEscape(name)+"/backups", nil)
+		if err != nil {
+			page.Postgres.BackupProblem = "Backup catalogue is unavailable. Check shared storage and retry."
+		}
 	}
 	if id := page.Postgres.Database.Operation; id != "" {
 		page.Postgres.Operation, err = requestApi[appapi.Operation](request.Context(), web.api, http.MethodGet, "/api/v1/postgres-operations/"+url.PathEscape(id), nil)
@@ -74,11 +115,16 @@ func (web handler) postgresPanel(writer http.ResponseWriter, request *http.Reque
 	if history == "" {
 		history = "1h"
 	}
-	values := url.Values{"range": {history}, "limit": {"200"}, "search": {query.Get("search")}}
+	values := url.Values{"range": {history}}
+	if end := query.Get("end"); end != "" {
+		values.Set("end", end)
+	}
 	data := postgresPanelData{Location: "/ui/postgres?" + query.Encode()}
 	panel := query.Get("panel")
 	var err error
 	if panel == "logs" {
+		values.Set("limit", "200")
+		values.Set("search", query.Get("search"))
 		data.Logs, err = requestApi[appapi.AppLogs](request.Context(), web.api, http.MethodGet, base+"/logs?"+values.Encode(), nil)
 	} else if panel == "metrics" {
 		data.Metrics, err = requestApi[appapi.PostgresMetrics](request.Context(), web.api, http.MethodGet, base+"/metrics?"+values.Encode(), nil)
@@ -96,7 +142,16 @@ func (web handler) postgresPanel(writer http.ResponseWriter, request *http.Reque
 
 func (web handler) executePostgresAction(request *http.Request, result actionResult) (actionResult, error) {
 	form := request.PostForm
-	base := spacePath(form.Get("organization"), form.Get("space")) + "/managed-addons/postgres/" + url.PathEscape(form.Get("name"))
+	name := form.Get("name")
+	if form.Get("action") == "restore-postgres" || (form.Get("action") == "put-postgres" && form.Get("apply") != "true") {
+		name = strings.Map(func(character rune) rune {
+			if character >= 'A' && character <= 'Z' {
+				return character + ('a' - 'A')
+			}
+			return character
+		}, name)
+	}
+	base := spacePath(form.Get("organization"), form.Get("space")) + "/managed-addons/postgres/" + url.PathEscape(name)
 	var database appapi.Postgres
 	var err error
 	switch form.Get("action") {
@@ -116,7 +171,11 @@ func (web handler) executePostgresAction(request *http.Request, result actionRes
 				return result, err
 			}
 			if err := specification.Components.Schemas["PostgresInput"].Value.VisitJSON(value); err != nil {
-				return result, apiProblem{status: http.StatusBadRequest, message: "Advanced database settings must match the PostgreSQL configuration schema."}
+				message := appapi.SchemaValidationMessage(err)
+				if message == "" {
+					message = "Advanced database settings must match the PostgreSQL configuration schema."
+				}
+				return result, apiProblem{status: http.StatusBadRequest, message: message}
 			}
 			if err := json.Unmarshal(data, &input); err != nil {
 				return result, apiProblem{status: http.StatusBadRequest, message: "Unable to read PostgreSQL configuration."}
@@ -154,7 +213,21 @@ func (web handler) executePostgresAction(request *http.Request, result actionRes
 	}
 	result.selection.Set("view", "postgres-detail")
 	result.selection.Set("postgres", database.Name)
+	result.selection.Set("tab", "overview")
+	result.selection.Del("subtab")
 	result.notice = "Database operation accepted. Protection and recovery progress update below."
+	if form.Get("action") == "put-postgres" && form.Get("apply") == "true" {
+		result.selection.Set("tab", "configuration")
+	}
+	if form.Get("action") == "delete-postgres" {
+		result.selection.Set("view", "postgres")
+		result.selection.Del("postgres")
+		result.selection.Del("tab")
+		if database.Operation != "" {
+			result.selection.Set("postgresOperation", database.Operation)
+		}
+		result.notice = "Database deletion accepted. Its backup archive will be preserved."
+	}
 	return result, nil
 }
 

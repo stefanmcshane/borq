@@ -6,6 +6,7 @@ components:
       required: true
       description: Managed PostgreSQL name within this space.
       schema:
+        x-borq-validation-message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
         type: string
         minLength: 1
         maxLength: 47
@@ -67,27 +68,34 @@ components:
         format: date-time
   schemas:
     PostgresInput:
+      x-borq-validation-message: "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."
       type: "object"
       additionalProperties: false
       properties:
         instances:
+          x-borq-validation-message: "PostgreSQL instances must be an integer between 1 and 16."
           type: "integer"
           description: "Instances is the number of PostgreSQL instances; omission selects one."
           minimum: 1
           maximum: 16
         storage:
+          x-borq-validation-message: "PostgreSQL storage must be a positive Kubernetes quantity string."
           type: "string"
           description: "Storage is the capacity of each instance; omission selects 1Gi."
         storageClass:
+          x-borq-validation-message: "PostgreSQL storageClass must be a string."
           type: "string"
           description: "StorageClass selects the persistent storage driver."
         image:
+          x-borq-validation-message: "PostgreSQL image must be a string pinning a supported 14–18 major and exact minor tag."
           type: "string"
           description: "Image pins the PostgreSQL operand; omission selects the tested default."
         database:
+          x-borq-validation-message: "PostgreSQL database must be a lowercase SQL identifier string."
           type: "string"
           description: "Database is the initial application database; omission selects app."
         username:
+          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres is reserved."
           type: "string"
           description: "Username is the application role; omission selects app."
         resources:
@@ -97,12 +105,15 @@ components:
           $ref: "#/components/schemas/PostgresBackupPolicy"
           description: "Backup configures mandatory full backups and WAL retention."
         snapshotSchedule:
+          x-borq-validation-message: "PostgreSQL snapshotSchedule must be a five-field UTC cron string."
           type: "string"
           description: "Five-field UTC cron schedule; omitted selects hourly."
         snapshotRetentionHours:
+          x-borq-validation-message: "PostgreSQL snapshotRetentionHours must be an integer between 1 and 8760."
           type: "integer"
           description: "SnapshotRetentionHours bounds CSI backup retention; omission selects 24."
         snapshots:
+          x-borq-validation-message: "PostgreSQL snapshots must be preferred, required, or disabled."
           type: "string"
           description: "Snapshots selects preferred, required, or disabled CSI protection."
           enum:
@@ -110,45 +121,58 @@ components:
             - "required"
             - "disabled"
         snapshotClass:
+          x-borq-validation-message: "PostgreSQL snapshotClass must be a string."
           type: "string"
           description: "SnapshotClass selects an optional CSI snapshot class."
         restoreCheck:
           $ref: "#/components/schemas/PostgresRestoreCheckInput"
     PostgresBackupPolicy:
+      x-borq-validation-message: "PostgreSQL backup settings must use supported configuration fields."
       type: "object"
       additionalProperties: false
       properties:
         schedule:
+          x-borq-validation-message: "PostgreSQL backup schedule must be a five-field UTC cron string."
           type: "string"
           description: "Five-field UTC cron schedule; omitted selects daily at midnight."
         recoveryWindowDays:
+          x-borq-validation-message: "PostgreSQL recoveryWindowDays must be an integer between 1 and 3650."
           type: "integer"
           description: "RecoveryWindowDays retains a recovery window; omission selects 30 days."
     PostgresResources:
+      x-borq-validation-message: "PostgreSQL resources must contain requests or limits for cpu and memory."
       type: "object"
       additionalProperties: false
       properties:
         requests:
+          x-borq-validation-message: "PostgreSQL resource requests must be an object of quantity strings for cpu and memory."
           type: "object"
           additionalProperties:
+            x-borq-validation-message: "PostgreSQL resource quantities must be strings for cpu and memory."
             type: "string"
           description: "Requests reserves CPU and memory."
         limits:
+          x-borq-validation-message: "PostgreSQL resource limits must be an object of quantity strings for cpu and memory."
           type: "object"
           additionalProperties:
+            x-borq-validation-message: "PostgreSQL resource quantities must be strings for cpu and memory."
             type: "string"
           description: "Limits caps CPU and memory."
     PostgresRestoreCheckInput:
+      x-borq-validation-message: "PostgreSQL restoreCheck settings must use supported configuration fields."
       type: "object"
       additionalProperties: false
       properties:
         enabled:
+          x-borq-validation-message: "PostgreSQL restoreCheck enabled must be a boolean."
           type: "boolean"
           description: "Enabled distinguishes omitted weekly verification from explicit disablement."
         schedule:
+          x-borq-validation-message: "PostgreSQL restoreCheck schedule must be a five-field UTC cron string."
           type: "string"
           description: "Schedule is a five-field UTC cron expression; omission selects Sunday at 03:00."
         timeoutSeconds:
+          x-borq-validation-message: "PostgreSQL restoreCheck timeoutSeconds must be an integer between 60 and 86400."
           type: "integer"
           description: "TimeoutSeconds bounds the complete verification and cleanup workflow."
         resources:
@@ -164,6 +188,7 @@ components:
         name:
           type: "string"
           description: "Name identifies this managed addon within its space."
+          x-borq-validation-message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
           minLength: 1
           maxLength: 47
           pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
@@ -324,14 +349,17 @@ components:
         - "recoveryEnd"
         - "eligible"
     PostgresRestoreInput:
+      x-borq-validation-message: "PostgreSQL restore requires a non-empty backupId and an optional RFC3339 recoveryTarget."
       type: "object"
       additionalProperties: false
       properties:
         backupId:
+          x-borq-validation-message: "PostgreSQL restore backupId must be a non-empty approved backup ID string."
           type: "string"
           description: "BackupID selects an opaque entry returned by ListPostgresBackups."
           minLength: 1
         recoveryTarget:
+          x-borq-validation-message: "PostgreSQL recoveryTarget must be an RFC3339 date-time string."
           type: "string"
           format: "date-time"
           description: "RecoveryTarget optionally selects a point in time within the available WAL range."
@@ -605,30 +633,41 @@ components:
             $ref: "#/components/schemas/NamedPostgres"
           description: "Postgres merges named PostgreSQL addons."
     NamedPostgres:
+      x-borq-validation-message: "PostgreSQL settings require a name and supported configuration fields. Passwords are generated automatically."
       type: "object"
       additionalProperties: false
       properties:
         name:
+          x-borq-validation-message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
           type: "string"
           description: "Name identifies this PostgreSQL addon within its space."
+          minLength: 1
+          maxLength: 47
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
         instances:
+          x-borq-validation-message: "PostgreSQL instances must be an integer between 1 and 16."
           type: "integer"
           description: "Instances is the number of PostgreSQL instances; omission selects one."
           minimum: 1
           maximum: 16
         storage:
+          x-borq-validation-message: "PostgreSQL storage must be a positive Kubernetes quantity string."
           type: "string"
           description: "Storage is the capacity of each instance; omission selects 1Gi."
         storageClass:
+          x-borq-validation-message: "PostgreSQL storageClass must be a string."
           type: "string"
           description: "StorageClass selects the persistent storage driver."
         image:
+          x-borq-validation-message: "PostgreSQL image must be a string pinning a supported 14–18 major and exact minor tag."
           type: "string"
           description: "Image pins the PostgreSQL operand; omission selects the tested default."
         database:
+          x-borq-validation-message: "PostgreSQL database must be a lowercase SQL identifier string."
           type: "string"
           description: "Database is the initial application database; omission selects app."
         username:
+          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres is reserved."
           type: "string"
           description: "Username is the application role; omission selects app."
         resources:
@@ -638,12 +677,15 @@ components:
           $ref: "#/components/schemas/PostgresBackupPolicy"
           description: "Backup configures mandatory full backups and WAL retention."
         snapshotSchedule:
+          x-borq-validation-message: "PostgreSQL snapshotSchedule must be a five-field UTC cron string."
           type: "string"
           description: "Five-field UTC cron schedule; omitted selects hourly."
         snapshotRetentionHours:
+          x-borq-validation-message: "PostgreSQL snapshotRetentionHours must be an integer between 1 and 8760."
           type: "integer"
           description: "SnapshotRetentionHours bounds CSI backup retention; omission selects 24."
         snapshots:
+          x-borq-validation-message: "PostgreSQL snapshots must be preferred, required, or disabled."
           type: "string"
           description: "Snapshots selects preferred, required, or disabled CSI protection."
           enum:
@@ -651,6 +693,7 @@ components:
             - "required"
             - "disabled"
         snapshotClass:
+          x-borq-validation-message: "PostgreSQL snapshotClass must be a string."
           type: "string"
           description: "SnapshotClass selects an optional CSI snapshot class."
         restoreCheck:

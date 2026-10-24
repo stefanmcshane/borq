@@ -338,6 +338,9 @@ func decodeManagedDocument(source []byte, schema string, output any) error {
 		return err
 	}
 	if err := specification.Components.Schemas[schema].Value.VisitJSON(value); err != nil {
+		if message := appapi.SchemaValidationMessage(err); message != "" {
+			return errors.New(message)
+		}
 		return errors.New("configuration does not match the OpenAPI configuration schema")
 	}
 	if err := json.Unmarshal(data, output); err != nil {

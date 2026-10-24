@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,16 +167,18 @@ func TestInvalidToolArguments(t *testing.T) {
 		t.Error("invalid arguments reached the API")
 		writer.WriteHeader(http.StatusInternalServerError)
 	}))
-	for _, input := range []struct{ tool, arguments string }{
-		{"PutOrganization", `{}`},
-		{"PutOrganization", `{"path":{"organization":"../escape"}}`},
-		{"PutOrganization", `{"path":{"organization":"team"},"body":{}}`},
-		{"ExpandApps", `{"body":null}`},
-		{"ExpandApps", `{"body":{"unexpected":true}}`},
-		{"ExpandApps", `{"body":{"apps":[{"name":"api","replicas":-1}]}}`},
-		{"ListOrganizations", `[]`},
-		{"ListOrganizations", `null`},
-		{"DiffClusterComponents", `{"path":{"organization":"team","cluster":"local"},"query":{"upgrade":"true"}}`},
+	for _, input := range []struct{ tool, arguments, guidance string }{
+		{"PutOrganization", `{}`, ""},
+		{"PutOrganization", `{"path":{"organization":"../escape"}}`, ""},
+		{"PutOrganization", `{"path":{"organization":"team"},"body":{}}`, ""},
+		{"ExpandApps", `{"body":null}`, ""},
+		{"ExpandApps", `{"body":{"unexpected":true}}`, ""},
+		{"ExpandApps", `{"body":{"apps":[{"name":"api","replicas":-1}]}}`, ""},
+		{"ListOrganizations", `[]`, ""},
+		{"ListOrganizations", `null`, ""},
+		{"DiffClusterComponents", `{"path":{"organization":"team","cluster":"local"},"query":{"upgrade":"true"}}`, ""},
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"Uppercase"},"body":{}}`, "PostgreSQL names must contain 1 to 47 lowercase letters"},
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{"private-vault-token":"private-vault-token"}}`, "Passwords are generated automatically."},
 	} {
 		t.Run(input.tool+input.arguments, func(t *testing.T) {
 			assert := is.New(t)
@@ -183,6 +186,9 @@ func TestInvalidToolArguments(t *testing.T) {
 			assert.NoErr(err)
 			assert.True(result.IsError)
 			assert.True(len(result.Content) > 0)
+			text := result.Content[0].(*mcp.TextContent).Text
+			assert.True(strings.Contains(text, input.guidance))
+			assert.True(!strings.Contains(text, "private-vault-token"))
 		})
 	}
 }

@@ -2,6 +2,8 @@ package apps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,9 +25,23 @@ func TestPostgresDefaults(t *testing.T) {
 	check.Equal(input.SnapshotRetentionHours, 24)
 	check.Equal(input.RestoreCheck.Schedule, "0 3 * * 0")
 	check.Equal(input.RestoreCheck.TimeoutSeconds, 1800)
-	for _, bad := range []PostgresInput{{Instances: -1}, {Storage: "0Gi"}, {Image: "postgres:latest"}, {Database: "app; DROP DATABASE postgres"}, {Username: "postgres"}, {Snapshots: "enabled"}, {Backup: PostgresBackupPolicy{Schedule: "0 0 0 * * *"}}, {RestoreCheck: PostgresRestoreCheckInput{Schedule: "0 0 0 * * *"}}, {Resources: PostgresResources{Requests: map[string]string{"cpu": "-1"}}}} {
-		_, err := normalizePostgres(bad)
-		check.True(err != nil)
+	for _, bad := range []struct {
+		input   PostgresInput
+		message string
+	}{
+		{PostgresInput{Instances: -1}, "PostgreSQL instances must be between 1 and 16"},
+		{PostgresInput{Storage: "0Gi"}, "PostgreSQL storage must be a positive Kubernetes quantity"},
+		{PostgresInput{Image: "postgres:latest"}, "PostgreSQL image must pin a supported 14–18 major and exact minor tag"},
+		{PostgresInput{Database: "app; DROP DATABASE postgres"}, "database and application username must be lowercase SQL identifiers; postgres is reserved"},
+		{PostgresInput{Username: "postgres"}, "database and application username must be lowercase SQL identifiers; postgres is reserved"},
+		{PostgresInput{Snapshots: "enabled"}, "snapshots must be preferred, required, or disabled"},
+		{PostgresInput{Backup: PostgresBackupPolicy{Schedule: "0 0 0 * * *"}}, "full backup schedule requires five cron fields"},
+		{PostgresInput{RestoreCheck: PostgresRestoreCheckInput{Schedule: "0 0 0 * * *"}}, "restore check schedule requires five cron fields"},
+		{PostgresInput{Resources: PostgresResources{Requests: map[string]string{"cpu": "-1"}}}, "PostgreSQL resource quantities must be positive"},
+	} {
+		_, err := normalizePostgres(bad.input)
+		check.True(errors.Is(err, ErrInvalid))
+		check.Equal(PostgresRequestMessage(err), bad.message)
 	}
 	disabled := false
 	input, err = normalizePostgres(PostgresInput{RestoreCheck: PostgresRestoreCheckInput{Enabled: &disabled}, Snapshots: "disabled", Backup: PostgresBackupPolicy{RecoveryWindowDays: 60}})
@@ -92,4 +108,43 @@ func TestPostgresRestartDeadline(t *testing.T) {
 	archive, _, err := loadDocument[postgresArchive](ctx, manager.database, "postgres-archive", "archive-original")
 	check.NoErr(err)
 	check.Equal(archive.ResourceID, "resource-original")
+}
+
+// TestPostgresSafeErrors keeps private dependency diagnostics out of public and
+// durable operation messages, including when they wrap approved guidance.
+func TestPostgresSafeErrors(t *testing.T) {
+	check := is.New(t)
+	_, invalid := normalizePostgres(PostgresInput{Storage: "private-vault-token"})
+	for _, input := range []struct {
+		err     error
+		message string
+	}{
+		{fmt.Errorf("private-vault-token: %w", invalid), "PostgreSQL storage must be a positive Kubernetes quantity"},
+		{fmt.Errorf("private-vault-token: %w", context.DeadlineExceeded), "PostgreSQL operation exceeded its original durable deadline"},
+		{fmt.Errorf("private-vault-token: %w", ErrComponentsNotReady), "PostgreSQL components are not ready. Inspect cluster components or run cluster reconcile, then retry."},
+		{fmt.Errorf("private-vault-token: %w", ErrInvalid), "PostgreSQL operation failed. Check database events, cluster components, and shared storage access, then retry."},
+		{errors.New("https://user:private-vault-token@internal.example"), "PostgreSQL operation failed. Check database events, cluster components, and shared storage access, then retry."},
+	} {
+		check.Equal(safePostgresError(input.err), input.message)
+	}
+	check.Equal(PostgresRequestMessage(fmt.Errorf("private-vault-token: %w", ErrInvalid)), "")
+}
+
+// TestPostgresExistingName preserves the conflict category and actionable guidance
+// for both create and restore when the destination is already reserved.
+func TestPostgresExistingName(t *testing.T) {
+	check := is.New(t)
+	ctx := context.Background()
+	manager := openTestManager(t, filepath.Join(t.TempDir(), "state.sqlite"), 0)
+	spaceWrite, err := documentWrite("space", "acme/production", spaceRecord{Space: Space{Name: "production"}}, 0)
+	check.NoErr(err)
+	postgresWrite, err := documentWrite("postgres", "acme/production/db", postgresRecord{Postgres: Postgres{Name: "db", State: "ready"}}, 0)
+	check.NoErr(err)
+	check.NoErr(manager.database.Commit(ctx, []sqlite.Write{spaceWrite, postgresWrite}))
+	for _, action := range []string{"create", "restore"} {
+		_, err := manager.acceptPostgres(ctx, "acme", "production", "db", PostgresInput{}, action, postgresTask{})
+		check.True(errors.Is(err, ErrConflict))
+		check.Equal(err.Error(), "A PostgreSQL database with this name already exists in this space. Choose a new name to create or restore a database, or use apply to update the existing database.")
+		check.Equal(PostgresRequestMessage(fmt.Errorf("private-vault-token: %w", err)), err.Error())
+	}
 }

@@ -50,11 +50,16 @@ func TestManagedRoutesRejectInvalidRequestsBeforeManager(t *testing.T) {
 		status             int
 		message            string
 	}{
-		{http.MethodPut, base + "database", `{"password":"private-password"}`, 400, "request body does not match the OpenAPI schema"},
-		{http.MethodPut, base + "test", `{"password":"private-password"}`, 400, "request body does not match the OpenAPI schema"},
-		{http.MethodPut, base + "test-1", `{"password":"private-password"}`, 400, "request body does not match the OpenAPI schema"},
+		{http.MethodPut, base + "database", `{"password":"private-password"}`, 400, "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."},
+		{http.MethodPut, base + "test", `{"password":"private-password"}`, 400, "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."},
+		{http.MethodPut, base + "test-1", `{"password":"private-password"}`, 400, "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."},
+		{http.MethodPut, base + "database", `{"instances":17}`, 400, "PostgreSQL instances must be an integer between 1 and 16."},
+		{http.MethodPut, base + "database", `{"private-password":"private-password"}`, 400, "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."},
+		{http.MethodPost, base + "database/restore", `{"backupId":"approved","specification":{"restoreCheck":{"enabled":"private-password"}}}`, 400, "PostgreSQL restoreCheck enabled must be a boolean."},
+		{http.MethodPost, base + "database/restore", `{"backupId":"approved","recoveryTarget":"private-password"}`, 400, "PostgreSQL recoveryTarget must be an RFC3339 date-time string."},
 		{http.MethodPut, base + "database?apply=invalid", `{}`, 400, "invalid request path"},
 		{http.MethodPut, base + "Test1", `{}`, 400, "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."},
+		{http.MethodPut, "/api/v1/organizations/team/spaces/dev/configuration", `{"managedAddons":{"postgres":[{"name":"Uppercase"}]}}`, 400, "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."},
 		{http.MethodGet, base + "database/logs?limit=0", "", 400, "log limit must be between 1 and 1000"},
 		{http.MethodGet, base + "database/logs?limit=1001", "", 400, "log limit must be between 1 and 1000"},
 		{http.MethodPost, base + "database/restore-check", `{"jobUid":"job"}`, 401, "a projected restore-check token is required"},

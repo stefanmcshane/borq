@@ -14,59 +14,166 @@ import (
 	"time"
 )
 
-// TestManagedPostgresBrowser keeps restore choices restricted to eligible backups and credentials outside rendered database pages.
+// TestManagedPostgresBrowser keeps database sections scoped, restore choices eligible and credentials outside rendered pages.
 func TestManagedPostgresBrowser(t *testing.T) {
-	assert := is.New(t)
 	reason := "incomplete metadata"
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
-	web, err := NewHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		var output any
-		switch {
-		case request.URL.Path == "/api/v1/organizations":
-			output = []appapi.Organization{{Name: "team"}}
-		case strings.HasSuffix(request.URL.Path, "/spaces"):
-			output = []appapi.Space{{ID: "dev", Name: "dev", Cluster: "local"}}
-		case strings.HasSuffix(request.URL.Path, "/clusters"):
-			output = []appapi.Cluster{}
-		case strings.HasSuffix(request.URL.Path, "/postgres"):
-			output = []appapi.Postgres{{Name: "database"}}
-		case strings.HasSuffix(request.URL.Path, "/postgres/database"):
-			output = appapi.Postgres{Name: "database", State: "ready", Protection: appapi.PostgresProtection{Backups: "ready", Wal: "ready", Snapshots: "unsupported"}, RestoreCheck: appapi.PostgresRestoreCheck{Status: "succeeded"}}
-		case strings.HasSuffix(request.URL.Path, "/backups"):
-			output = []appapi.PostgresBackup{{ID: "approved", SourceName: "database", CompletedAt: now, Eligible: true}, {ID: "rejected", CompletedAt: now, Reason: &reason}}
-		default:
-			t.Errorf("unexpected API request %s", request.URL.Path)
-			http.NotFound(writer, request)
-			return
-		}
-		_ = json.NewEncoder(writer).Encode(output)
-	}))
-	assert.NoErr(err)
-	response := httptest.NewRecorder()
-	web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?view=postgres-detail&organization=team&space=dev&postgres=database", nil))
-	assert.Equal(response.Code, http.StatusOK)
-	assert.Equal(response.Header().Get("Cache-Control"), "no-store")
-	body := response.Body.String()
-	document, err := html.Parse(strings.NewReader(body))
-	assert.NoErr(err)
-	options := []string{}
-	for node := range document.Descendants() {
-		if node.Data == "option" {
-			for _, attribute := range node.Attr {
-				if attribute.Key == "value" {
-					options = append(options, attribute.Val)
+	for _, test := range []struct {
+		name, query, tab, subtab, content, panel string
+		status                                   int
+	}{
+		{name: "overview", tab: "overview", content: "Recovery verification"},
+		{name: "backups", query: "&tab=backups", tab: "backups", content: "Restore from a backup"},
+		{name: "configuration", query: "&tab=configuration", tab: "configuration", content: "Database settings"},
+		{name: "metrics", query: "&tab=observability", tab: "observability", subtab: "metrics", panel: "metrics", content: "Reading CPU"},
+		{name: "logs", query: "&tab=observability&subtab=logs&range=12h&search=error&end=2026-10-24T12%3A00%3A00Z", tab: "observability", subtab: "logs", panel: "logs", content: "Database logs"},
+		{name: "unknown section", query: "&tab=other", status: http.StatusNotFound},
+		{name: "unknown observability", query: "&tab=observability&subtab=other", status: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := is.New(t)
+			backupsRead := false
+			web, err := NewHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var output any
+				switch {
+				case request.URL.Path == "/api/v1/organizations":
+					output = []appapi.Organization{{Name: "team"}}
+				case strings.HasSuffix(request.URL.Path, "/spaces"):
+					output = []appapi.Space{{ID: "dev", Name: "dev", Cluster: "local"}}
+				case strings.HasSuffix(request.URL.Path, "/clusters"):
+					output = []appapi.Cluster{}
+				case strings.HasSuffix(request.URL.Path, "/postgres"):
+					output = []appapi.Postgres{{Name: "database"}}
+				case strings.HasSuffix(request.URL.Path, "/postgres/database"):
+					output = appapi.Postgres{Name: "database", State: "ready", Operation: "change", Protection: appapi.PostgresProtection{Backups: "ready", Wal: "ready", Snapshots: "unsupported"}, RestoreCheck: appapi.PostgresRestoreCheck{Status: "succeeded"}}
+				case strings.HasSuffix(request.URL.Path, "/postgres-operations/change"):
+					output = appapi.Operation{ID: "change", SpaceID: "dev", Status: "running", Message: "Updating database"}
+				case strings.HasSuffix(request.URL.Path, "/backups"):
+					backupsRead = true
+					output = []appapi.PostgresBackup{{ID: "approved", SourceName: "database", CompletedAt: now, Eligible: true}, {ID: "rejected", CompletedAt: now, Reason: &reason}}
+				default:
+					t.Errorf("unexpected API request %s", request.URL.Path)
+					http.NotFound(writer, request)
+					return
+				}
+				_ = json.NewEncoder(writer).Encode(output)
+			}))
+			assert.NoErr(err)
+			response := httptest.NewRecorder()
+			web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?view=postgres-detail&organization=team&space=dev&postgres=database"+test.query, nil))
+			if test.status != 0 {
+				assert.Equal(response.Code, test.status)
+				assert.True(!backupsRead)
+				return
+			}
+			assert.Equal(response.Code, http.StatusOK)
+			assert.Equal(response.Header().Get("Cache-Control"), "no-store")
+			body := response.Body.String()
+			assert.True(strings.Contains(body, test.content))
+			assert.True(strings.Contains(body, "Updating database"))
+			assert.True(!strings.Contains(body, "PGPASSWORD"))
+			assert.Equal(backupsRead, test.tab == "backups")
+			document, err := html.Parse(strings.NewReader(body))
+			assert.NoErr(err)
+			options := []string{}
+			active := []string{}
+			panels := []string{}
+			hidden := url.Values{}
+			for node := range document.Descendants() {
+				attributes := map[string]string{}
+				for _, attribute := range node.Attr {
+					attributes[attribute.Key] = attribute.Val
+				}
+				if node.Data == "option" {
+					options = append(options, attributes["value"])
+				}
+				if node.Data == "input" && attributes["type"] == "hidden" {
+					hidden.Set(attributes["name"], attributes["value"])
+				}
+				if node.Data == "a" && attributes["aria-current"] == "page" && strings.Contains(attributes["href"], "postgres-detail") {
+					link, err := url.Parse(attributes["href"])
+					assert.NoErr(err)
+					assert.Equal(link.Query().Get("organization"), "team")
+					assert.Equal(link.Query().Get("space"), "dev")
+					assert.Equal(link.Query().Get("postgres"), "database")
+					assert.Equal(attributes["hx-get"], attributes["href"])
+					active = append(active, link.Query().Get("tab")+"/"+link.Query().Get("subtab"))
+				}
+				if strings.HasPrefix(attributes["hx-get"], "/ui/postgres?") {
+					link, err := url.Parse(attributes["hx-get"])
+					assert.NoErr(err)
+					panels = append(panels, link.Query().Get("panel"))
+					assert.Equal(link.Query().Get("postgres"), "database")
+					if test.subtab == "logs" {
+						assert.Equal(link.Query().Get("range"), "12h")
+						assert.Equal(link.Query().Get("search"), "error")
+						assert.Equal(link.Query().Get("end"), "2026-10-24T12:00:00Z")
+					}
 				}
 			}
-		}
+			assert.True(containsText(active, test.tab+"/"))
+			if test.subtab != "" {
+				assert.True(containsText(active, test.tab+"/"+test.subtab))
+			}
+			if test.panel == "" {
+				assert.Equal(len(panels), 0)
+			} else {
+				assert.Equal(panels, []string{test.panel})
+			}
+			if test.tab == "backups" {
+				assert.True(containsText(options, "approved"))
+				assert.True(!containsText(options, "rejected"))
+			}
+			if test.tab == "backups" || test.tab == "configuration" {
+				assert.Equal(hidden.Get("tab"), test.tab)
+			}
+			if test.tab == "overview" {
+				assert.True(strings.Contains(body, "unsupported"))
+				assert.True(strings.Contains(body, "borq am postgres env"))
+			}
+		})
 	}
-	assert.True(containsText(options, "approved"))
-	assert.True(!containsText(options, "rejected"))
-	for _, text := range []string{"unsupported", "Recovery verification", "borq am postgres env"} {
-		if !strings.Contains(body, text) {
-			t.Errorf("missing database UI text %q", text)
-		}
+}
+
+// TestManagedPostgresDeletionProgress keeps accepted deletion visible after its database record disappears and rejects another space's operation.
+func TestManagedPostgresDeletionProgress(t *testing.T) {
+	for _, operationSpace := range []string{"dev", "other"} {
+		t.Run(operationSpace, func(t *testing.T) {
+			assert := is.New(t)
+			web, err := NewHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var output any
+				switch request.URL.Path {
+				case "/api/v1/organizations":
+					output = []appapi.Organization{{Name: "team"}}
+				case "/api/v1/organizations/team/spaces":
+					output = []appapi.Space{{ID: "dev", Name: "dev", Cluster: "local"}}
+				case "/api/v1/organizations/team/clusters":
+					output = []appapi.Cluster{}
+				case "/api/v1/organizations/team/spaces/dev/managed-addons/postgres":
+					output = []appapi.Postgres{}
+				case "/api/v1/postgres-operations/deletion":
+					output = appapi.Operation{ID: "deletion", SpaceID: operationSpace, Status: "running", Message: "Removing database volumes"}
+				default:
+					t.Errorf("unexpected API request %s", request.URL.Path)
+					http.NotFound(writer, request)
+					return
+				}
+				_ = json.NewEncoder(writer).Encode(output)
+			}))
+			assert.NoErr(err)
+			response := httptest.NewRecorder()
+			web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?view=postgres&organization=team&space=dev&postgresOperation=deletion", nil))
+			if operationSpace != "dev" {
+				assert.Equal(response.Code, http.StatusNotFound)
+				return
+			}
+			assert.Equal(response.Code, http.StatusOK)
+			body := response.Body.String()
+			assert.True(strings.Contains(body, "Removing database volumes"))
+			assert.True(strings.Contains(body, `hx-get="/ui/postgres/operations/deletion"`))
+			assert.True(strings.Contains(body, "postgresOperation=deletion"))
+		})
 	}
-	assert.True(!strings.Contains(body, "PGPASSWORD"))
 }
 
 // TestManagedSettingsAndLogBoundaries protects blank credential fields, explicit grants and inert untrusted database log output.
@@ -84,6 +191,8 @@ func TestManagedSettingsAndLogBoundaries(t *testing.T) {
 		case "/api/v1/organizations/team/spaces/dev/managed-addons/postgres/database/logs":
 			assert.Equal(request.URL.Query().Get("limit"), "200")
 			assert.Equal(request.URL.Query().Get("search"), "error")
+			assert.Equal(request.URL.Query().Get("range"), "12h")
+			assert.Equal(request.URL.Query().Get("end"), "2026-10-24T12:00:00Z")
 			output = appapi.AppLogs{Entries: []appapi.AppLogEntry{{Message: "<script>private log</script>"}}}
 		default:
 			t.Errorf("unexpected API request %s", request.URL.Path)
@@ -112,29 +221,72 @@ func TestManagedSettingsAndLogBoundaries(t *testing.T) {
 		}
 	}
 	response = httptest.NewRecorder()
-	web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/postgres?organization=team&space=dev&postgres=database&panel=logs&search=error", nil))
+	web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/postgres?organization=team&space=dev&postgres=database&panel=logs&search=error&range=12h&end=2026-10-24T12%3A00%3A00Z", nil))
 	assert.Equal(response.Code, http.StatusOK)
 	assert.True(!strings.Contains(response.Body.String(), "<script>"))
 	assert.True(strings.Contains(response.Body.String(), "&lt;script&gt;private log&lt;/script&gt;"))
 }
 
-// TestManagedBrowserMutationForwardsTypedIntent keeps database creation name-only and storage secrets in the explicit write request.
+// TestManagedBrowserMutationForwardsTypedIntent normalizes editable destination names and returns each mutation to its relevant section.
 func TestManagedBrowserMutationForwardsTypedIntent(t *testing.T) {
-	assert := is.New(t)
-	web := handler{api: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		var input appapi.PostgresInput
-		assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
-		assert.Equal(request.URL.Path, "/api/v1/organizations/team/spaces/dev/managed-addons/postgres/database")
-		assert.True(input.Instances == nil && input.Storage == nil)
-		writer.WriteHeader(http.StatusAccepted)
-		_ = json.NewEncoder(writer).Encode(appapi.Postgres{Name: "database"})
-	})}
-	request := httptest.NewRequest(http.MethodPost, "/ui/actions", strings.NewReader(url.Values{"action": {"put-postgres"}, "organization": {"team"}, "space": {"dev"}, "name": {"database"}}.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	assert.NoErr(request.ParseForm())
-	result, err := web.execute(request)
-	assert.NoErr(err)
-	assert.Equal(result.selection.Get("postgres"), "database")
+	for _, test := range []struct {
+		name, action, destination, forwarded, method, view, tab string
+		apply                                                   bool
+	}{
+		{name: "create", action: "put-postgres", destination: "DataBASE", forwarded: "database", method: http.MethodPut, view: "postgres-detail", tab: "overview"},
+		{name: "restore", action: "restore-postgres", destination: "ReSTored", forwarded: "restored", method: http.MethodPost, view: "postgres-detail", tab: "overview"},
+		{name: "preserve invalid characters", action: "put-postgres", destination: "DÄTA_Name!", forwarded: "dÄta_name!", method: http.MethodPut, view: "postgres-detail", tab: "overview"},
+		{name: "apply immutable name", action: "put-postgres", destination: "Existing", forwarded: "Existing", method: http.MethodPut, apply: true, view: "postgres-detail", tab: "configuration"},
+		{name: "delete immutable name", action: "delete-postgres", destination: "Existing", forwarded: "Existing", method: http.MethodDelete, view: "postgres"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := is.New(t)
+			web := handler{api: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				assert.Equal(request.Method, test.method)
+				path := "/api/v1/organizations/team/spaces/dev/managed-addons/postgres/" + test.forwarded
+				if test.action == "restore-postgres" {
+					path += "/restore"
+					var input appapi.PostgresRestoreInput
+					assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
+					assert.Equal(input.BackupID, "approved")
+				} else if test.action == "put-postgres" {
+					var input appapi.PostgresInput
+					assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
+					assert.True(input.Instances == nil && input.Storage == nil)
+					if test.apply {
+						assert.True(input.Database != nil && input.Username != nil)
+						assert.Equal(*input.Database, "AppDB")
+						assert.Equal(*input.Username, "SQLUser")
+					}
+				}
+				assert.Equal(request.URL.Path, path)
+				assert.Equal(request.URL.Query().Get("apply") == "true", test.apply)
+				writer.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(writer).Encode(appapi.Postgres{Name: test.forwarded, Operation: "change"})
+			})}
+			form := url.Values{"action": {test.action}, "organization": {"team"}, "space": {"dev"}, "name": {test.destination}, "backup": {"approved"}, "tab": {"backups"}, "subtab": {"logs"}}
+			if test.apply {
+				form.Set("apply", "true")
+				form.Set("configuration", "database: AppDB\nusername: SQLUser\n")
+			}
+			request := httptest.NewRequest(http.MethodPost, "/ui/actions", strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			assert.NoErr(request.ParseForm())
+			result, err := web.execute(request)
+			assert.NoErr(err)
+			assert.Equal(result.selection.Get("view"), test.view)
+			assert.Equal(result.selection.Get("tab"), test.tab)
+			assert.Equal(result.selection.Get("subtab"), "")
+			assert.Equal(result.selection.Get("organization"), "team")
+			assert.Equal(result.selection.Get("space"), "dev")
+			if test.action == "delete-postgres" {
+				assert.Equal(result.selection.Get("postgres"), "")
+				assert.Equal(result.selection.Get("postgresOperation"), "change")
+			} else {
+				assert.Equal(result.selection.Get("postgres"), test.forwarded)
+			}
+		})
+	}
 }
 
 // TestManagedMetricsAvailability distinguishes unavailable SQL observations from measured zero activity.
