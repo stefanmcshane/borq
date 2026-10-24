@@ -20,16 +20,18 @@ import (
 	"github.com/stefanmcshane/borq/foundations/kubeapps"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
+	"github.com/stefanmcshane/borq/foundations/observability"
 	"github.com/stefanmcshane/borq/foundations/sqlite"
 	"sigs.k8s.io/yaml"
 )
 
 // Stable identities expose domain failures consistently across HTTP, CLI, and future MCP clients.
 var (
-	ErrNotFound           = errors.New("not found")
-	ErrConflict           = errors.New("conflict")
-	ErrInvalid            = errors.New("invalid request")
-	ErrComponentsNotReady = errors.New("deployment target components are not ready")
+	ErrTelemetryUnavailable = errors.New("application telemetry unavailable")
+	ErrNotFound             = errors.New("not found")
+	ErrConflict             = errors.New("conflict")
+	ErrInvalid              = errors.New("invalid request")
+	ErrComponentsNotReady   = errors.New("deployment target components are not ready")
 )
 
 // ClusterInput identifies a server-side connection; credentials are returned only
@@ -117,12 +119,14 @@ type Operation struct {
 type spaceRecord struct {
 	Space Space `json:"space"`
 	// EnvironmentGroupPrefix preserves existing default vault names when migrating legacy targets.
-	EnvironmentGroupPrefix string                  `json:"environmentGroupPrefix,omitempty"`
-	ActiveOperation        string                  `json:"activeOperation"`
-	Manifests              []map[string]any        `json:"manifests"`
-	EnvSnapshots           []EnvSnapshot           `json:"envSnapshots"`
-	EnvSelectors           map[string]EnvReference `json:"envSelectors"`
-	Queue                  []string                `json:"queue"`
+	EnvironmentGroupPrefix string `json:"environmentGroupPrefix,omitempty"`
+	ActiveOperation        string `json:"activeOperation"`
+	// LatestOperation retains unfinished predeploy requirements after terminal failures or cancellation.
+	LatestOperation string                  `json:"latestOperation,omitempty"`
+	Manifests       []map[string]any        `json:"manifests"`
+	EnvSnapshots    []EnvSnapshot           `json:"envSnapshots"`
+	EnvSelectors    map[string]EnvReference `json:"envSelectors"`
+	Queue           []string                `json:"queue"`
 }
 
 type planRecord struct {
@@ -135,9 +139,11 @@ type planRecord struct {
 
 // NewInput contains only the application manager's persistence and operation settings.
 type NewInput struct {
-	DatabasePath   string
-	RolloutTimeout time.Duration
-	PollInterval   time.Duration
+	// PrometheusQueryUrl and LokiQueryUrl override the private management query stores.
+	PrometheusQueryUrl, LokiQueryUrl string
+	DatabasePath                     string
+	RolloutTimeout                   time.Duration
+	PollInterval                     time.Duration
 	// InfrastructureEnabled runs durable reconciliation for registered deployment targets.
 	InfrastructureEnabled bool
 	// ManagementEnabled defers target credential renewal until management setup succeeds.
@@ -156,6 +162,8 @@ type Manager struct {
 }
 
 type managerRuntime struct {
+	addonSlots               chan struct{}
+	observability            observability.Client
 	context                  context.Context
 	cancel                   context.CancelFunc
 	workers                  sync.WaitGroup
@@ -175,6 +183,7 @@ type managerRuntime struct {
 	deferredOperations       []Operation
 	deferredQueue            []Operation
 	operationsResumed        bool
+	operationCancels         map[string]context.CancelFunc
 }
 
 // NewManager opens persistent state and resumes unfinished, idempotent apply operations.
@@ -200,9 +209,27 @@ func NewManager(ctx context.Context, input NewInput) (Manager, error) {
 	if input.PollInterval <= 0 {
 		input.PollInterval = time.Second
 	}
+	telemetry := observability.Client{PrometheusUrl: input.PrometheusQueryUrl, LokiUrl: input.LokiQueryUrl}
+	if input.InfrastructureEnabled {
+		managementTelemetry, err := observability.NewManagementClient(input.ManagementKubeconfigPath, input.PlatformSettings.Namespace)
+		if err != nil {
+			_ = database.Close()
+			return Manager{}, err
+		}
+		telemetry = managementTelemetry
+		// Explicit private endpoints use their own transport and never receive Kubernetes credentials.
+		if input.PrometheusQueryUrl != "" {
+			telemetry.PrometheusUrl = input.PrometheusQueryUrl
+		}
+		if input.LokiQueryUrl != "" {
+			telemetry.LokiUrl = input.LokiQueryUrl
+		}
+	}
 	workerContext, cancel := context.WithCancel(ctx)
 	manager := Manager{database: database, runtime: &managerRuntime{
-		context: workerContext, cancel: cancel,
+		addonSlots: make(chan struct{}, 3),
+		context:    workerContext, cancel: cancel,
+		observability:  telemetry,
 		rolloutTimeout: input.RolloutTimeout, pollInterval: input.PollInterval,
 		credentialsDir:           filepath.Join(filepath.Dir(input.DatabasePath), "clusters"),
 		infrastructureEnabled:    input.InfrastructureEnabled,
@@ -219,6 +246,11 @@ func NewManager(ctx context.Context, input NewInput) (Manager, error) {
 		cancel()
 		_ = database.Close()
 		return Manager{}, fmt.Errorf("migrate environment groups: %w", err)
+	}
+	if err := manager.retireUnusedManagementSpace(ctx); err != nil {
+		cancel()
+		_ = database.Close()
+		return Manager{}, fmt.Errorf("retire unused management space: %w", err)
 	}
 	operations, err := database.List(ctx, "operation")
 	if err != nil {
@@ -239,7 +271,7 @@ func NewManager(ctx context.Context, input NewInput) (Manager, error) {
 			queued = append(queued, operation)
 			continue
 		}
-		if operation.Status == "succeeded" || operation.Status == "failed" {
+		if operationFinished(operation.Status) {
 			continue
 		}
 		pending = append(pending, operation)
@@ -273,9 +305,18 @@ func (manager Manager) resumeOperationWorkers(ctx context.Context) error {
 	}
 	pending := append(manager.runtime.deferredOperations, resumed...)
 	for _, operation := range pending {
-		manager.startOperation(operation)
+		current, err := manager.GetOperation(ctx, operation.ID)
+		if err != nil {
+			return err
+		}
+		if !operationFinished(current.Status) {
+			manager.startOperation(current)
+		}
 	}
 	manager.runtime.deferredOperations, manager.runtime.deferredQueue = nil, nil
+	if err := manager.resumeAddonOperations(ctx); err != nil {
+		return err
+	}
 	manager.runtime.operationsResumed = true
 	return nil
 }
@@ -299,6 +340,12 @@ func (manager Manager) CheckHealth(ctx context.Context) error {
 func (manager Manager) RegisterCluster(ctx context.Context, input ClusterInput) (Cluster, error) {
 	manager.runtime.registrationMutex.Lock()
 	defer manager.runtime.registrationMutex.Unlock()
+	return manager.registerCluster(ctx, input, nil)
+}
+
+// registerCluster commits any accompanying space writes with the registration.
+// The caller holds registrationMutex across name allocation and persistence.
+func (manager Manager) registerCluster(ctx context.Context, input ClusterInput, writes []sqlite.Write) (Cluster, error) {
 	reconcile := manager.runtime.infrastructureEnabled && (input.Reconcile == nil || *input.Reconcile)
 	input.Reconcile = nil
 	if err := validateNames(input.Organization, input.Name); err != nil {
@@ -356,7 +403,6 @@ func (manager Manager) RegisterCluster(ctx context.Context, input ClusterInput) 
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return Cluster{}, err
 	}
-	writes := []sqlite.Write{}
 	if err == nil {
 		storedClientApiServer := existing.ClientApiServer
 		if input.ClientApiServer == "" {
@@ -382,12 +428,7 @@ func (manager Manager) RegisterCluster(ctx context.Context, input ClusterInput) 
 		}
 		writes = append(writes, write)
 	}
-	spaceWrites, err := manager.clusterSpaceWrites(ctx, input)
-	if err != nil {
-		return Cluster{}, err
-	}
-	writes = append(writes, spaceWrites...)
-	// Persist the registration, its initial space and reconciliation request together. No
+	// Persist the registration and reconciliation request together. No
 	// target installation or management-vault access belongs in this request.
 	if err := manager.commitClusterRegistration(ctx, input, writes, reconcile); err != nil {
 		return Cluster{}, err
@@ -434,7 +475,42 @@ func (manager Manager) Plan(ctx context.Context, input PlanInput) (Plan, error) 
 	if err != nil {
 		return Plan{}, err
 	}
-	rendered, err := RenderWithEnv(configuration, stored.Space.Namespace, stored.Space.ID, id, stored.Space.CertificateIssuer, envSnapshots(secrets), ResourceScope{Organization: stored.Space.Organization, Space: stored.Space.Name, Cluster: stored.Space.Cluster})
+	var predeployApps []string
+	if input.Patch.Apps != nil {
+		predeployApps = make([]string, 0, len(*input.Patch.Apps))
+		for _, application := range *input.Patch.Apps {
+			predeployApps = append(predeployApps, application.Name)
+		}
+		latest, err := manager.latestAcceptedOperation(ctx, stored)
+		if err != nil {
+			return Plan{}, err
+		}
+		// Desired state survives termination, so its unfinished barriers must too.
+		for _, operationID := range append([]string{latest, stored.ActiveOperation}, stored.Queue...) {
+			if operationID == "" {
+				continue
+			}
+			operation, err := manager.GetOperation(ctx, operationID)
+			if err != nil {
+				return Plan{}, err
+			}
+			if operation.Phase == "applications" {
+				continue
+			}
+			previous, _, err := loadDocument[planRecord](ctx, manager.database, "plan", operation.PlanID)
+			if err != nil {
+				return Plan{}, err
+			}
+			jobs, _ := splitPlanManifests(previous.Plan.Manifests)
+			for _, job := range jobs {
+				metadata, _ := job["metadata"].(map[string]any)
+				labels, _ := metadata["labels"].(map[string]any)
+				name, _ := labels["app.kubernetes.io/name"].(string)
+				predeployApps = append(predeployApps, name)
+			}
+		}
+	}
+	rendered, err := renderWithEnv(configuration, stored.Space.Namespace, stored.Space.ID, id, stored.Space.CertificateIssuer, envSnapshots(secrets), ResourceScope{Organization: stored.Space.Organization, Space: stored.Space.Name, Cluster: stored.Space.Cluster}, predeployApps)
 	if err != nil {
 		return Plan{}, fmt.Errorf("render apps: %w", err)
 	}
@@ -471,7 +547,7 @@ func (manager Manager) GetPlan(ctx context.Context, id string) (Plan, error) {
 	return record.Plan, err
 }
 
-// Apply durably queues an exact saved plan in server acceptance order for its environment.
+// Apply accepts an exact saved plan, superseding unfinished work in its environment.
 func (manager Manager) Apply(ctx context.Context, id string) (Operation, error) {
 	manager.runtime.mutex.Lock()
 	closing := manager.runtime.closing
@@ -511,18 +587,31 @@ func (manager Manager) GetOperation(ctx context.Context, id string) (Operation, 
 }
 
 func (manager Manager) startOperation(operation Operation) {
+	// Callers hold the runtime mutex, so cancellation is registered before acceptance returns.
+	ctx, cancel := context.WithDeadline(manager.runtime.context, manager.operationDeadline(operation))
+	if manager.runtime.operationCancels == nil {
+		manager.runtime.operationCancels = map[string]context.CancelFunc{}
+	}
+	manager.runtime.operationCancels[operation.ID] = cancel
+	if operation.Status == "canceling" {
+		cancel()
+	}
 	manager.runtime.workers.Add(1)
 	go func() {
 		defer manager.runtime.workers.Done()
-		manager.runOperation(operation)
+		defer cancel()
+		defer func() {
+			manager.runtime.mutex.Lock()
+			delete(manager.runtime.operationCancels, operation.ID)
+			manager.runtime.mutex.Unlock()
+		}()
+		manager.runOperation(ctx, operation)
 	}()
 }
 
-func (manager Manager) runOperation(operation Operation) {
-	// Recovery retains the original deadline, including time spent in predeploy.
-	ctx, cancel := context.WithDeadline(manager.runtime.context, manager.operationDeadline(operation))
-	defer cancel()
-	saved, _, err := loadDocument[planRecord](ctx, manager.database, "plan", operation.PlanID)
+func (manager Manager) runOperation(ctx context.Context, operation Operation) {
+	// Load saved jobs even after cancellation so recovery can stop them.
+	saved, _, err := loadDocument[planRecord](manager.runtime.context, manager.database, "plan", operation.PlanID)
 	if err != nil {
 		manager.finishOperation(operation, "failed", err.Error())
 		return
@@ -694,8 +783,13 @@ func (manager Manager) failOperation(operation Operation, client kubeapps.Client
 		return // Graceful shutdown leaves active Jobs running for recovery.
 	}
 	message := err.Error()
+	status := "failed"
 	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "context deadline") {
 		message = "rollout deadline exceeded: " + operation.Message
+	}
+	state, _, stateError := loadDocument[operationState](manager.runtime.context, manager.database, "operation-state", operation.ID)
+	if stateError == nil && state.StopStatus != "" {
+		status, message = state.StopStatus, state.StopMessage
 	}
 	if operation.Phase == "predeploy" {
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -706,13 +800,18 @@ func (manager Manager) failOperation(operation Operation, client kubeapps.Client
 			}
 		}
 	}
-	manager.finishOperation(operation, "failed", message)
+	manager.finishOperation(operation, status, message)
 }
 
 func (manager Manager) saveOperation(ctx context.Context, operation Operation) error {
-	_, record, err := loadDocument[Operation](ctx, manager.database, "operation", operation.ID)
+	manager.runtime.mutex.Lock()
+	defer manager.runtime.mutex.Unlock()
+	current, record, err := loadDocument[Operation](ctx, manager.database, "operation", operation.ID)
 	if err != nil {
 		return err
+	}
+	if current.Status == "canceling" || operationFinished(current.Status) {
+		return context.Canceled
 	}
 	operation.UpdatedAt = time.Now().UTC()
 	write, err := documentWrite("operation", operation.ID, operation, record.Revision)

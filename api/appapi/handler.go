@@ -53,9 +53,20 @@ func NewHandler(manager apps.Manager) (http.Handler, error) {
 		},
 	})
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// Keep existing HTTP clients on the same saved installations after the public rename.
+		parts := strings.Split(request.URL.Path, "/")
+		if len(parts) >= 8 && parts[1] == "api" && parts[2] == "v1" && parts[3] == "organizations" && parts[5] == "spaces" && parts[7] == "addons" {
+			parts[7] = "custom-charts"
+		} else if len(parts) == 5 && parts[1] == "api" && parts[2] == "v1" && parts[3] == "addon-operations" {
+			parts[3] = "custom-chart-operations"
+		}
+		if path := strings.Join(parts, "/"); path != request.URL.Path {
+			request = request.Clone(request.Context())
+			request.URL.Path, request.URL.RawPath = path, ""
+		}
 		// Set this before generated parameter binding and path validation so
-		// error responses from the credential endpoint are never cached either.
-		if strings.HasPrefix(request.URL.Path, "/api/v1/organizations/") && strings.HasSuffix(request.URL.Path, "/kubeconfig") {
+		// credential and metric errors are never cached either.
+		if strings.HasPrefix(request.URL.Path, "/api/v1/organizations/") && (strings.HasSuffix(request.URL.Path, "/kubeconfig") || strings.HasSuffix(request.URL.Path, "/metrics")) {
 			writer.Header().Set("Cache-Control", "no-store")
 		}
 		routes.ServeHTTP(writer, request)
@@ -76,8 +87,10 @@ func (server handler) validatePath(next http.Handler) http.Handler {
 			}
 		}
 		for parameter, schema := range map[string]*openapi3.Schema{
-			"group":   server.schemas["CloneEnvironmentGroupInput"].Value.Properties["sourceName"].Value,
-			"version": server.schemas["CloneEnvironmentGroupInput"].Value.Properties["sourceVersion"].Value,
+			"customChart": server.schemas["CustomChart"].Value.Properties["name"].Value,
+			"application": server.schemas["App"].Value.Properties["name"].Value,
+			"group":       server.schemas["CloneEnvironmentGroupInput"].Value.Properties["sourceName"].Value,
+			"version":     server.schemas["CloneEnvironmentGroupInput"].Value.Properties["sourceVersion"].Value,
 		} {
 			if value := request.PathValue(parameter); value != "" {
 				if err := schema.VisitJSON(value); err != nil {
@@ -115,6 +128,22 @@ func (server handler) ListClusters(writer http.ResponseWriter, request *http.Req
 func (server handler) ListSpaces(writer http.ResponseWriter, request *http.Request, organization string) {
 	result, err := server.manager.ListSpaces(request.Context(), organization)
 	respond[[]Space](writer, http.StatusOK, result, err)
+}
+
+// LinkCluster allocates a cluster name and its initial space together.
+func (server handler) LinkCluster(writer http.ResponseWriter, request *http.Request, organization string) {
+	var body LinkClusterInput
+	if !server.decodeBody(writer, request, "LinkClusterInput", &body) {
+		return
+	}
+	input, err := convert[apps.ClusterInput](body.Connection)
+	if err != nil {
+		writeProblem(writer, http.StatusInternalServerError, "unable to decode cluster configuration")
+		return
+	}
+	input.Organization, input.Name = organization, body.Name
+	result, err := server.manager.LinkCluster(request.Context(), input)
+	respond[Cluster](writer, http.StatusOK, result, err)
 }
 
 // PutCluster registers a connection using credentials available to this server.
@@ -276,6 +305,15 @@ func (server handler) GetOperation(writer http.ResponseWriter, request *http.Req
 	respond[Operation](writer, http.StatusOK, result, err)
 }
 
+// CancelOperation interrupts unfinished work without rolling back accepted settings.
+func (server handler) CancelOperation(writer http.ResponseWriter, request *http.Request, operation string) {
+	if !emptyBody(writer, request) {
+		return
+	}
+	result, err := server.manager.CancelOperation(request.Context(), operation)
+	respond[Operation](writer, http.StatusOK, result, err)
+}
+
 // decodeBody validates before decoding so null and omitted fields cannot collapse
 // to the same Go representation. Its output pointer is necessary for decoding.
 func (server handler) decodeBody(writer http.ResponseWriter, request *http.Request, schemaName string, output any) bool {
@@ -327,10 +365,15 @@ func emptyBody(writer http.ResponseWriter, request *http.Request) bool {
 func respond[Model any](writer http.ResponseWriter, status int, result any, err error) {
 	if err != nil {
 		switch {
+		case errors.Is(err, apps.ErrTelemetryUnavailable):
+			writer.Header().Set("Retry-After", "15")
+			writeProblem(writer, http.StatusServiceUnavailable, "Management telemetry is unavailable. Check Prometheus, Loki, and the target collector, then retry.")
 		case errors.Is(err, apps.ErrNotFound):
 			writeProblem(writer, http.StatusNotFound, "requested resource was not found")
 		case errors.Is(err, apps.ErrComponentsNotReady):
 			writeProblem(writer, http.StatusConflict, "target components are not ready; inspect cluster components or run cluster reconcile before planning applications")
+		case errors.Is(err, apps.ErrAddonExists):
+			writeProblem(writer, http.StatusConflict, "A custom addon with this name already exists in this space. Open it to update its settings, or use apply.")
 		case errors.Is(err, apps.ErrConflict):
 			writeProblem(writer, http.StatusConflict, "request conflicts with current state; create a new plan if needed")
 		case errors.Is(err, apps.ErrInvalid):

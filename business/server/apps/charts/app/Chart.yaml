@@ -2,4 +2,4 @@ apiVersion: v2
 name: borq-app
 description: Resolved Borq applications rendered into Kubernetes resources.
 type: application
-version: 0.9.0
+version: 0.12.0

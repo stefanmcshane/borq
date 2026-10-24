@@ -19,7 +19,7 @@ import (
 func TestRenderVersionedEnvironment(t *testing.T) {
 	assert := is.New(t)
 	configuration, rendered := renderEnvFixture(t)
-	assert.Equal(rendered.RendererVersion, "0.9.0")
+	assert.Equal(rendered.RendererVersion, "0.12.0")
 	encoded, err := json.Marshal(rendered)
 	assert.NoErr(err)
 	assert.True(!strings.Contains(string(encoded), "sensitive-literal"))

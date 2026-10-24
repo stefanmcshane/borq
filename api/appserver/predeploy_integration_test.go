@@ -423,7 +423,7 @@ func waitPredeployOperation(t *testing.T, ctx context.Context, client *appapi.Cl
 			t.Fatal("operation response did not contain progress")
 		}
 		operation := *response.JSON200
-		if operation.Status == appapi.Succeeded || operation.Status == appapi.Failed {
+		if operation.Status == appapi.Succeeded || operation.Status == appapi.Failed || operation.Status == appapi.Canceled || operation.Status == appapi.Superseded {
 			if operation.Status != expected {
 				t.Fatalf("predeploy operation ended %s, expected %s: %s", operation.Status, expected, operation.Message)
 			}

@@ -59,6 +59,12 @@ func RenderForPlan(configuration Configuration, namespace string, targetID strin
 // RenderWithEnv renders immutable vault references supplied by the server. A nil
 // snapshot list creates preview bindings without writing to a vault or cluster.
 func RenderWithEnv(configuration Configuration, namespace, targetID, planID, certificateIssuer string, snapshots []EnvSnapshot, scope ResourceScope) (Rendered, error) {
+	return renderWithEnv(configuration, namespace, targetID, planID, certificateIssuer, snapshots, scope, nil)
+}
+
+// A nil task selection renders all configured tasks; an explicit list limits
+// execution without discarding the other applications' desired task settings.
+func renderWithEnv(configuration Configuration, namespace, targetID, planID, certificateIssuer string, snapshots []EnvSnapshot, scope ResourceScope, predeployApps []string) (Rendered, error) {
 	if problems := validation.IsDNS1123Label(namespace); len(problems) > 0 {
 		return Rendered{}, fmt.Errorf("invalid namespace %q: %s", namespace, strings.Join(problems, "; "))
 	}
@@ -96,10 +102,15 @@ func RenderWithEnv(configuration Configuration, namespace, targetID, planID, cer
 		return Rendered{}, err
 	}
 	values["certificateIssuer"] = certificateIssuer
-	for _, application := range canonical.Apps {
-		if application.Predeploy.Command != "" {
+	for index, value := range values["apps"].([]any) {
+		application := value.(map[string]any)
+		selected := predeployApps == nil || slices.Contains(predeployApps, canonical.Apps[index].Name)
+		application["runPredeploy"] = selected
+		if !selected && canonical.Apps[index].Predeploy.Command != "" {
+			application["retainedPredeploy"] = canonical.Apps[index].Predeploy
+		}
+		if selected && canonical.Apps[index].Predeploy.Command != "" {
 			values["planID"] = planID
-			break
 		}
 	}
 	files, err := embeddedChartFiles()
@@ -143,8 +154,9 @@ func renderValues(configuration Configuration, namespace, targetID string, snaps
 	for _, snapshot := range snapshots {
 		bindings[snapshot.AppName] = snapshot
 	}
-	for _, entry := range values["apps"].([]any) {
+	for index, entry := range values["apps"].([]any) {
 		application := entry.(map[string]any)
+		application["revision"] = applicationRevision(configuration.Apps[index])
 		metadata := maps.Clone(identity)
 		metadata["borq.run/app-name"] = application["name"].(string)
 		metadata["borq.run/app-id"] = stableId(targetID + "/" + application["name"].(string))

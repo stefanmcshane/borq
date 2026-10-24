@@ -67,6 +67,16 @@ func TestAtomicRevisionChecks(t *testing.T) {
 	assert.NoErr(err)
 	assert.Equal(len(records), 1)
 	assert.Equal(records[0].Key, "winner")
+	err = database.Commit(ctx, []Write{
+		{Collection: "operation", Key: "rolled-back-delete", Value: json.RawMessage(`{}`)},
+		{Collection: "environment", Key: "one", ExpectedRevision: 1, Delete: true},
+	})
+	assert.True(errors.Is(err, ErrConflict))
+	_, err = database.Get(ctx, "operation", "rolled-back-delete")
+	assert.True(errors.Is(err, ErrNotFound))
+	assert.NoErr(database.Commit(ctx, []Write{{Collection: "environment", Key: "one", ExpectedRevision: 2, Delete: true}}))
+	_, err = database.Get(ctx, "environment", "one")
+	assert.True(errors.Is(err, ErrNotFound))
 }
 
 // TestConcurrentCompareAndSwap proves concurrent callers cannot accept the same base revision twice.
@@ -113,6 +123,8 @@ func TestInvalidDocumentsFailWithoutWrites(t *testing.T) {
 		{Collection: "environment", Key: "", Value: json.RawMessage(`{}`)},
 		{Collection: "environment", Key: "one", Value: json.RawMessage(`bad`)},
 		{Collection: "environment", Key: "one", Value: json.RawMessage(`{}`), ExpectedRevision: -1},
+		{Collection: "environment", Key: "one", Delete: true},
+		{Collection: "environment", Key: "one", Delete: true, ExpectedRevision: 1, Value: json.RawMessage(`{}`)},
 	} {
 		assert.True(database.Commit(ctx, []Write{write}) != nil)
 	}

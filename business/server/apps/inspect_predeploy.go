@@ -13,23 +13,31 @@ import (
 )
 
 func inspectDisabledPredeploy(annotation string) (Predeploy, error) {
+	task, err := inspectPredeploySettings(annotation)
+	if err != nil {
+		return Predeploy{}, err
+	}
+	if task.Command != "" {
+		return Predeploy{}, fmt.Errorf("disabled-predeploy annotation cannot enable a missing Job")
+	}
+	return task, nil
+}
+
+func inspectPredeploySettings(annotation string) (Predeploy, error) {
 	task := Predeploy{TimeoutSeconds: 300}
 	if annotation == "" {
 		return task, nil
 	}
 	if !strings.HasPrefix(strings.TrimSpace(annotation), "{") {
-		return Predeploy{}, fmt.Errorf("disabled-predeploy annotation must be a JSON object")
+		return Predeploy{}, fmt.Errorf("predeploy annotation must be a JSON object")
 	}
 	decoder := json.NewDecoder(strings.NewReader(annotation))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&task); err != nil {
-		return Predeploy{}, fmt.Errorf("invalid disabled-predeploy annotation: %w", err)
+		return Predeploy{}, fmt.Errorf("invalid predeploy annotation: %w", err)
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return Predeploy{}, fmt.Errorf("disabled-predeploy annotation must contain one JSON object")
-	}
-	if task.Command != "" {
-		return Predeploy{}, fmt.Errorf("disabled-predeploy annotation cannot enable a missing Job")
+		return Predeploy{}, fmt.Errorf("predeploy annotation must contain one JSON object")
 	}
 	return task, validatePredeploy(task)
 }

@@ -58,11 +58,20 @@ _dev-bootstrap:
 # The Air server keeps the authoritative dev database under DEV_DIR/data.
 _dev-configure:
 	"$(DEV_BORQ)" org create "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)" >/dev/null
-	@node="$$(kubectl --kubeconfig "$(DEV_KUBECONFIG)" get nodes -l node-role.kubernetes.io/control-plane -o 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}')"; \
-		test -n "$$node" && "$(DEV_BORQ)" cluster link "$(DEV_CLUSTER)" --kubeconfig "$(DEV_KUBECONFIG)" \
-		--api-server "https://$$node:6443" --organization "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)"
-	"$(DEV_BORQ)" cluster reconcile "$(DEV_CLUSTER)" --organization "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)" >/dev/null
-	"$(DEV_BORQ)" space create "$(DEV_SPACE)" --cluster "$(DEV_CLUSTER)" --organization "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)" >/dev/null
+	@set -e; linked_name="$(DEV_CLUSTER)"; \
+		if test -s "$(DEV_DIR)/target-cluster"; then linked_name="$$(cat "$(DEV_DIR)/target-cluster")"; fi; \
+		if ! curl --fail --silent --show-error "$(DEV_API_URL)/api/v1/organizations/$(DEV_ORGANIZATION)/clusters/$$linked_name/components" >/dev/null; then \
+			node="$$(kubectl --kubeconfig "$(DEV_KUBECONFIG)" get nodes -l node-role.kubernetes.io/control-plane -o 'jsonpath={.items[0].status.addresses[?(@.type=="InternalIP")].address}')"; \
+			test -n "$$node"; \
+			"$(DEV_BORQ)" cluster link "$(DEV_CLUSTER)" --kubeconfig "$(DEV_KUBECONFIG)" \
+				--api-server "https://$$node:6443" --organization "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)" \
+				--reconcile=false --diff=false --output yaml > "$(DEV_DIR)/target-link.yaml"; \
+			linked_name="$$(sed -n 's/^name: //p' "$(DEV_DIR)/target-link.yaml")"; \
+			test -n "$$linked_name"; \
+		fi; \
+		printf '%s\n' "$$linked_name" > "$(DEV_DIR)/target-cluster"
+	"$(DEV_BORQ)" cluster reconcile "$$(cat "$(DEV_DIR)/target-cluster")" --organization "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)" >/dev/null
+	"$(DEV_BORQ)" space create "$(DEV_SPACE)" --cluster "$$(cat "$(DEV_DIR)/target-cluster")" --organization "$(DEV_ORGANIZATION)" --api-url "$(DEV_API_URL)" >/dev/null
 	"$(DEV_BORQ)" config set --profile "$(DEV_PROFILE)" --api-url "$(DEV_API_URL)" \
-		--organization "$(DEV_ORGANIZATION)" --cluster "$(DEV_CLUSTER)" --space "$(DEV_SPACE)" >/dev/null
+		--organization "$(DEV_ORGANIZATION)" --cluster "$$(cat "$(DEV_DIR)/target-cluster")" --space "$(DEV_SPACE)" >/dev/null
 	"$(DEV_BORQ)" config use "$(DEV_PROFILE)" >/dev/null

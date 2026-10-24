@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+data:
+  message: {{ .Values.message | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      fixture: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        fixture: {{ .Release.Name }}
+        role: api
+    spec:
+      containers:
+        - name: server
+          image: {{ .Values.image | quote }}
+          command: [/bin/sh, -ec]
+          args: ["echo addon-started; exec nginx -g 'daemon off;'"]
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-maintenance
+spec:
+  schedule: "0 0 * * *"
+  suspend: true
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            role: maintenance
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: maintenance
+              image: {{ .Values.image | quote }}
+              command: [/bin/true]

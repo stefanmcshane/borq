@@ -161,9 +161,12 @@ func TestComponentValuesDiffRedactsExistingSecrets(t *testing.T) {
 	assert := is.New(t)
 	desired := map[string]any{"alloy": map[string]any{"configMap": map[string]any{"content": "bearer_token = sys.env(\"TELEMETRY_TOKEN\")"}, "envFrom": []any{map[string]any{"secretRef": map[string]any{"name": "borq-telemetry"}}}}, "replicas": float64(1)}
 	installed := map[string]any{"alloy": map[string]any{"configMap": map[string]any{"content": "bearer_token = \"inline-private-token\""}, "envFrom": []any{map[string]any{"secretRef": map[string]any{"name": "borq-telemetry"}}}}, "extraEnv": []any{map[string]any{"name": "SENSITIVE", "value": "private-env"}}, "replicas": float64(2), "password": "private-password"}
+	desired["volume"] = map[string]any{"secret": map[string]any{"secretName": "borq-telemetry"}}
+	installed["volume"] = map[string]any{"secret": map[string]any{"secretName": "borq-telemetry", "unexpected": "private-volume-value"}}
+
 	diff, err := componentValuesDiff(installed, desired)
 	assert.NoErr(err)
-	for _, secret := range []string{"inline-private-token", "private-env", "private-password"} {
+	for _, secret := range []string{"inline-private-token", "private-env", "private-password", "private-volume-value"} {
 		assert.True(!strings.Contains(diff, secret))
 	}
 	assert.True(strings.Contains(diff, "[redacted existing configuration]"))
@@ -189,7 +192,10 @@ func diffTestRelease(t *testing.T, definition component, input TargetInput) rele
 	values, err := renderComponentValues(definition, valuesInput{Settings: settings, ClusterID: input.ID})
 	assert.NoErr(err)
 	// Persist the chart provenance label written by the real SDK reconciliation.
-	encoded, err := json.Marshal(struct{ Chart, Repository, Version string }{definition.Chart, definition.Repository, definition.Version})
+	encoded, err := json.Marshal(struct {
+		Chart, Repository, Version, Owner      string
+		ResourceLabels, PodLabels, PodSelector map[string]string
+	}{definition.Chart, definition.Repository, definition.Version, "", nil, componentPodLabels(), nil})
 	assert.NoErr(err)
 	digest := sha256.Sum256(encoded)
 	// Helm uses pointers for chart metadata and release status.

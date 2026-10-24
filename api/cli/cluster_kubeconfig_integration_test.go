@@ -5,6 +5,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/api/appapi"
 	localcluster "github.com/stefanmcshane/borq/business/cli/cluster"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -79,12 +81,17 @@ func TestApplicationCliIntegrationClusterKubeconfig(t *testing.T) {
 	environment = append(environment, "HOME="+clientHome, "XDG_CONFIG_HOME="+filepath.Join(clientHome, ".config"), "KUBECONFIG="+missingConfig, "BORQ_KUBECONFIG="+missingConfig)
 	for _, arguments := range [][]string{
 		{"org", "create", organization, "--api-url", serverUrl},
-		{"config", "set", "--profile", "downloaded-target", "--api-url", serverUrl, "--organization", organization, "--cluster", "target"},
-		{"cluster", "link", "target", "--profile", "downloaded-target", "--kubeconfig", sourcePath, "--context", selectedName, "--api-server", serverApi, "--reconcile=false", "--diff=false"},
+		{"config", "set", "--profile", "downloaded-target", "--api-url", serverUrl, "--organization", organization},
 	} {
 		_, err := runClusterDownloadBinary(ctx, binary, environment, arguments...)
 		assert.NoErr(err)
 	}
+	linked, err := runClusterDownloadBinary(ctx, binary, environment, "cluster", "link", "target", "--profile", "downloaded-target", "--kubeconfig", sourcePath, "--context", selectedName, "--api-server", serverApi, "--reconcile=false", "--diff=false", "--output", "json")
+	assert.NoErr(err)
+	var cluster appapi.Cluster
+	assert.NoErr(json.Unmarshal(linked, &cluster))
+	_, err = runClusterDownloadBinary(ctx, binary, environment, "config", "set", "--profile", "downloaded-target", "--cluster", cluster.Name)
+	assert.NoErr(err)
 	assert.NoErr(os.Remove(sourcePath))
 	_, err = os.Stat(missingConfig)
 	assert.True(os.IsNotExist(err))
@@ -107,7 +114,7 @@ func TestApplicationCliIntegrationClusterKubeconfig(t *testing.T) {
 	assertDownloadedClusterAccess(t, ctx, written, selectedName, clientApiServer)
 
 	t.Log("an explicit client endpoint override does not change the saved registration")
-	override, err := runClusterDownloadBinary(ctx, binary, environment, "cluster", "kubeconfig", "target", "--profile", "downloaded-target", "--api-server", "https://127.0.0.1:1")
+	override, err := runClusterDownloadBinary(ctx, binary, environment, "cluster", "kubeconfig", cluster.Name, "--profile", "downloaded-target", "--api-server", "https://127.0.0.1:1")
 	assert.NoErr(err)
 	configuration, err := clientcmd.Load(override)
 	assert.NoErr(err)
@@ -115,7 +122,7 @@ func TestApplicationCliIntegrationClusterKubeconfig(t *testing.T) {
 	stdout, err = runClusterDownloadBinary(ctx, binary, environment, "cluster", "kubeconfig", "--profile", "downloaded-target")
 	assert.NoErr(err)
 	assertDownloadedClusterAccess(t, ctx, stdout, selectedName, clientApiServer)
-	stdout, err = runClusterDownloadBinary(ctx, binary, environment, "cluster", "kubeconfig", "target", "--profile", "downloaded-target", "--organization", organization+"-other")
+	stdout, err = runClusterDownloadBinary(ctx, binary, environment, "cluster", "kubeconfig", cluster.Name, "--profile", "downloaded-target", "--organization", organization+"-other")
 	assert.True(err != nil)
 	assert.Equal(len(stdout), 0)
 	unchanged, err := clientcmd.NewDefaultClientConfigLoadingRules().Load()

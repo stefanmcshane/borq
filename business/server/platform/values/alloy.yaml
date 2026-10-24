@@ -1,7 +1,9 @@
 alloy:
-  envFrom:
-    - secretRef:
-        name: borq-telemetry
+  mounts:
+    extra:
+      - name: telemetry-token
+        mountPath: /var/run/borq-telemetry
+        readOnly: true
   resources:
     requests:
       cpu: 50m
@@ -18,7 +20,7 @@ alloy:
       loki.write "management" {
         endpoint {
           url = {{ .LokiURL | quote }}
-          bearer_token = sys.env("TELEMETRY_TOKEN")
+          bearer_token_file = "/var/run/borq-telemetry/TELEMETRY_TOKEN"
         }
       }
 
@@ -28,6 +30,32 @@ alloy:
 
       discovery.relabel "pod_logs" {
         targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_logs", "__meta_kubernetes_pod_label_borq_run_app_name", "__meta_kubernetes_pod_label_app_kubernetes_io_managed_by"]
+          // Existing Borq apps predate collection flags. Explicit false still opts out.
+          regex = "true;.*;.*|;.+;borq"
+          action = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_addon_name"]
+          target_label = "borq_addon"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_app_name"]
+          target_label = "borq_app"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_space_id"]
+          target_label = "borq_space"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_organization"]
+          target_label = "borq_organization"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_phase"]
+          target_label = "phase"
+        }
         rule {
           source_labels = ["__meta_kubernetes_namespace"]
           target_label = "namespace"
@@ -41,6 +69,18 @@ alloy:
           target_label = "container"
         }
         rule {
+          source_labels = ["__meta_kubernetes_pod_label_borq_run_revision"]
+          target_label = "borq_revision"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_pod_template_hash"]
+          target_label = "replica_set"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_image"]
+          target_label = "image"
+        }
+        rule {
           target_label = "borq_cluster"
           replacement = {{ .ClusterID | quote }}
         }
@@ -51,17 +91,38 @@ alloy:
         forward_to = [loki.write.management.receiver]
       }
 
+      // Persist lifecycle events so restarts and rollouts remain visible after pods disappear.
+      loki.source.kubernetes_events "lifecycle" {
+        job_name = "borq-kubernetes-events"
+        log_format = "json"
+        forward_to = [loki.relabel.lifecycle.receiver]
+      }
+
+      loki.relabel "lifecycle" {
+        forward_to = [loki.write.management.receiver]
+        rule {
+          source_labels = ["namespace"]
+          regex = {{ printf "borq-[a-f0-9]{24}|%s" .Namespace | quote }}
+          action = "keep"
+        }
+        rule {
+          target_label = "borq_cluster"
+          replacement = {{ .ClusterID | quote }}
+        }
+      }
+
+      // A named metrics port is an explicit endpoint opt-in.
       discovery.relabel "pod_metrics" {
         targets = discovery.kubernetes.pods.targets
         rule {
-          action = "keep"
           source_labels = ["__meta_kubernetes_pod_container_port_name"]
           regex = "metrics"
+          action = "keep"
         }
         rule {
-          action = "keep"
           source_labels = ["__meta_kubernetes_pod_ready"]
           regex = "true"
+          action = "keep"
         }
         rule {
           source_labels = ["__meta_kubernetes_namespace"]
@@ -75,14 +136,193 @@ alloy:
 
       prometheus.scrape "pod_metrics" {
         targets = discovery.relabel.pod_metrics.output
+        scrape_interval = "30s"
         forward_to = [prometheus.remote_write.management.receiver]
       }
 
-      prometheus.exporter.self "alloy" {}
+      // Service annotations also opt in charts whose metrics port has another name.
+      discovery.kubernetes "services" {
+        role = "service"
+      }
 
-      prometheus.scrape "self" {
-        targets = prometheus.exporter.self.alloy.targets
-        scrape_interval = "15s"
+      discovery.relabel "service_metrics" {
+        targets = discovery.kubernetes.services.targets
+        rule {
+          source_labels = ["__meta_kubernetes_service_annotation_prometheus_io_scrape"]
+          regex = "true"
+          action = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_service_annotation_prometheus_io_path"]
+          regex = "/.+|/"
+          action = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_service_annotation_prometheus_io_port"]
+          regex = "[0-9]+"
+          action = "keep"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_service_port_number"]
+          target_label = "__meta_kubernetes_service_annotation_prometheus_io_port"
+          action = "keepequal"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_service_annotation_prometheus_io_path"]
+          target_label = "__metrics_path__"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_service_name"]
+          target_label = "service"
+        }
+      }
+
+      prometheus.scrape "service_metrics" {
+        targets = discovery.relabel.service_metrics.output
+        scrape_interval = "30s"
+        forward_to = [prometheus.remote_write.management.receiver]
+      }
+
+      // cAdvisor is read per node, but only selected pods' two usage series
+      // survive enrichment and filtering before persistent remote write.
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      discovery.relabel "cadvisor" {
+        targets = discovery.kubernetes.nodes.targets
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label = "node"
+        }
+        rule {
+          target_label = "__address__"
+          replacement = "kubernetes.default.svc:443"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label = "__metrics_path__"
+          replacement = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
+        }
+      }
+
+      prometheus.scrape "cadvisor" {
+        targets = discovery.relabel.cadvisor.output
+        job_name = "borq-cadvisor"
+        scheme = "https"
+        scrape_interval = "30s"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        tls_config {
+          ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          server_name = "kubernetes.default.svc"
+        }
+        forward_to = [prometheus.relabel.container_usage.receiver]
+      }
+
+      prometheus.relabel "container_usage" {
+        forward_to = [otelcol.receiver.prometheus.container_usage.receiver]
+        rule {
+          source_labels = ["__name__"]
+          regex = "container_cpu_usage_seconds_total|container_memory_working_set_bytes"
+          action = "keep"
+        }
+        rule {
+          source_labels = ["container"]
+          regex = "|POD"
+          action = "drop"
+        }
+      }
+
+      // Group per pod before Kubernetes enrichment; cAdvisor starts with
+      // many pods under one node resource. Keep metric names and pod labels.
+      otelcol.receiver.prometheus "container_usage" {
+        output {
+          metrics = [otelcol.processor.transform.pod_identity.input]
+        }
+      }
+
+      otelcol.processor.transform "pod_identity" {
+        error_mode = "ignore"
+        metric_statements {
+          context = "datapoint"
+          statements = [
+            `set(attributes["k8s.namespace.name"], attributes["namespace"])`,
+            `set(attributes["k8s.pod.name"], attributes["pod"])`,
+          ]
+        }
+        output {
+          metrics = [otelcol.processor.groupbyattrs.pods.input]
+        }
+      }
+
+      otelcol.processor.groupbyattrs "pods" {
+        keys = ["k8s.namespace.name", "k8s.pod.name"]
+        output {
+          metrics = [otelcol.processor.k8sattributes.selected_pods.input]
+        }
+      }
+
+      otelcol.processor.k8sattributes "selected_pods" {
+        extract {
+          metadata = ["k8s.namespace.name", "k8s.pod.name"]
+          label {
+            from = "pod"
+            key = "borq.run/metrics"
+            tag_name = "borq_metrics"
+          }
+          label {
+            from = "pod"
+            key = "app.kubernetes.io/managed-by"
+            tag_name = "borq_managed"
+          }
+          label {
+            from = "pod"
+            key = "borq.run/addon-name"
+            tag_name = "borq_addon"
+          }
+          label {
+            from = "pod"
+            key = "borq.run/app-name"
+            tag_name = "borq_app"
+          }
+          label {
+            from = "pod"
+            key = "borq.run/space-id"
+            tag_name = "borq_space"
+          }
+        }
+        pod_association {
+          source {
+            from = "resource_attribute"
+            name = "k8s.namespace.name"
+          }
+          source {
+            from = "resource_attribute"
+            name = "k8s.pod.name"
+          }
+        }
+        output {
+          metrics = [otelcol.processor.filter.selected_pods.input]
+        }
+      }
+
+      otelcol.processor.filter "selected_pods" {
+        error_mode = "propagate"
+        metrics {
+          // Keep legacy Borq apps until their next deployment adds explicit flags.
+          datapoint = [`resource.attributes["borq_metrics"] != "true" and not (resource.attributes["borq_metrics"] == nil and resource.attributes["borq_managed"] == "borq" and resource.attributes["borq_app"] != nil)`]
+        }
+        output {
+          metrics = [otelcol.exporter.prometheus.selected_pods.input]
+        }
+      }
+
+      otelcol.exporter.prometheus "selected_pods" {
+        resource_to_telemetry_conversion = true
         forward_to = [prometheus.remote_write.management.receiver]
       }
 
@@ -92,9 +332,27 @@ alloy:
         }
         endpoint {
           url = {{ .PrometheusURL | quote }}
-          bearer_token = sys.env("TELEMETRY_TOKEN")
+          bearer_token_file = "/var/run/borq-telemetry/TELEMETRY_TOKEN"
         }
       }
 controller:
   type: deployment
   replicas: 1
+  volumes:
+    extra:
+      - name: telemetry-token
+        secret:
+          secretName: borq-telemetry
+
+# The API-server proxy authenticates cAdvisor reads with Alloy's service account.
+rbac:
+  clusterRules:
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["nodes"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["nodes/proxy"]
+      verbs: ["get"]

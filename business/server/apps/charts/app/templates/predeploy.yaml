@@ -1,7 +1,7 @@
 {{- range .Values.apps }}
 {{- $app := . }}
 {{- with .predeploy }}
-{{- if .command }}
+{{- if and .command $app.runPredeploy }}
 {{- $identity := printf "%s/%s/%s/%s" $.Values.namespace $.Values.targetID $app.name $.Values.planID }}
 ---
 apiVersion: batch/v1
@@ -29,6 +29,9 @@ spec:
         {{- toYaml $app.resourceMetadata.annotations | nindent 8 }}
       labels:
         {{- toYaml $app.resourceMetadata.labels | nindent 8 }}
+        borq.run/logs: "true"
+        borq.run/metrics: "true"
+        borq.run/revision: {{ $app.revision | quote }}
         app.kubernetes.io/managed-by: borq
         borq.run/target-id: {{ $.Values.targetID | quote }}
         borq.run/phase: predeploy

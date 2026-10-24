@@ -250,8 +250,8 @@ func waitForApplicationOperation(ctx context.Context, client *appapi.ClientWithR
 		switch operation.Status {
 		case appapi.Succeeded:
 			return operation, nil
-		case appapi.Failed:
-			return operation, fmt.Errorf("operation %s failed: %s", operation.ID, operation.Message)
+		case appapi.Failed, appapi.Canceled, appapi.Superseded:
+			return operation, fmt.Errorf("operation %s %s: %s", operation.ID, operation.Status, operation.Message)
 		}
 		select {
 		case <-ctx.Done():
@@ -340,9 +340,9 @@ func loadApplicationPlan(ctx context.Context, client *appapi.ClientWithResponses
 		// Accepted plans remain available by ID. A normal apply starts fresh after
 		// completion, while an unchanged retry can follow its existing rollout.
 		switch response.JSON200.Status {
-		case appapi.Pending, appapi.Queued, appapi.Applying, appapi.Waiting:
+		case appapi.Pending, appapi.Queued, appapi.Applying, appapi.Waiting, appapi.Canceling:
 			return metadata.PlanID, nil
-		case appapi.Succeeded, appapi.Failed:
+		case appapi.Succeeded, appapi.Failed, appapi.Canceled, appapi.Superseded:
 		default:
 			return "", errors.New("saved plan returned an invalid operation status")
 		}

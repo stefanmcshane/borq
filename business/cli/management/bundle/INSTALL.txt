@@ -7,11 +7,12 @@ Extract this bundle and run:
   ./borq org create example
   ./borq cluster link management --organization example --kubeconfig /path/to/k3s.yaml
   ./borq cluster reconcile management --organization example
-  ./borq config set --organization example --cluster management --space management
+  # Linking creates default. Use the generated cluster name printed above.
+  ./borq config set --organization example --cluster management-xxxxx --space default
   ./borq apply -f apps.yaml --wait
 
 Management bootstrap installs Borq and its management components on the existing
-cluster. Linking creates the same-named deployment space and queues target components.
+cluster. Linking queues target components; deployment spaces are created separately.
 Kubernetes installation, machines and networking are managed separately.
 
 Bootstrap pulls ghcr.io/stefanmcshane/borq:latest by default. --server-image accepts

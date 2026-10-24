@@ -13,6 +13,8 @@ import (
 )
 
 type applicationEditorData struct {
+	// Organization and Space scope navigation between configuration views.
+	Organization, Space string
 	// Format selects the guided form or a single application YAML document.
 	Format string
 	// Draft supplies the editable application fields.
@@ -181,11 +183,12 @@ func (web handler) applicationEditor(writer http.ResponseWriter, request *http.R
 		return
 	}
 	editor.GroupNames, editor.Namespace = form["environmentChoice"], form.Get("serviceNamespace")
+	editor.Organization, editor.Space = form.Get("organization"), form.Get("space")
 	editor.EnvironmentUrl = pageUrl("environment", form.Get("organization"), form.Get("space"))
 	if form.Get("editorAction") == "add-ingress" {
 		editor.Ingresses = append(editor.Ingresses, applicationIngressData{Route: appapi.ExpandedIngress{Path: "/"}, Focus: true})
 	}
-	if form.Get("yamlMode") == "on" {
+	if form.Get("editorFormat") == "yaml" || (form.Get("editorFormat") == "" && form.Get("yamlMode") == "on") {
 		editor.Format = "yaml"
 		data, err := yaml.JSONToYAML(document)
 		if err != nil {
@@ -198,7 +201,7 @@ func (web handler) applicationEditor(writer http.ResponseWriter, request *http.R
 		web.render(writer, request, "application-editor", editor, http.StatusOK)
 		return
 	}
-	page, err := web.loadPage(request, url.Values{"view": {"application"}, "organization": {form.Get("organization")}, "space": {form.Get("space")}, "app": {editor.ExistingName}})
+	page, err := web.loadPage(request, url.Values{"view": {"application"}, "organization": {form.Get("organization")}, "space": {form.Get("space")}, "app": {editor.ExistingName}, "tab": {"configuration"}, "subtab": {editor.Format}})
 	if err != nil {
 		web.problem(writer, request, err)
 		return

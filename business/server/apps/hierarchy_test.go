@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -11,8 +12,64 @@ import (
 	"github.com/stefanmcshane/borq/foundations/sqlite"
 )
 
-// TestClusterSpacesAndBinding verifies organizations start empty, registrations
-// create isolated bound spaces, and automatic settings survive a database reopen.
+// TestLinkClusterAllocatesSpace verifies unique names and atomic initial spaces
+// survive a restart without moving existing organization-wide space bindings.
+func TestLinkClusterAllocatesSpace(t *testing.T) {
+	assert := is.New(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "borq.sqlite")
+	manager := openTestManager(t, path, 0)
+	_, err := manager.CreateOrganization(ctx, "acme")
+	assert.NoErr(err)
+	_, err = manager.LinkCluster(ctx, ClusterInput{Organization: "acme", Name: "local", KubeconfigPath: "missing"})
+	assert.True(err != nil)
+	spaces, err := manager.ListSpaces(ctx, "acme")
+	assert.NoErr(err)
+	assert.Equal(len(spaces), 0)
+	clusters, err := manager.ListClusters(ctx, "acme")
+	assert.NoErr(err)
+	assert.Equal(len(clusters), 0)
+	cluster := newManagerCluster(t, managerClusterOptions{})
+	first, err := manager.LinkCluster(ctx, ClusterInput{Organization: "acme", Name: "local", KubeconfigPath: cluster.kubeconfig})
+	assert.NoErr(err)
+	assert.True(regexp.MustCompile(`^local-[a-f0-9]{5}$`).MatchString(first.Name))
+	initial, err := manager.GetSpace(ctx, "acme", "default")
+	assert.NoErr(err)
+	assert.Equal(initial.Cluster, first.Name)
+	second, err := manager.LinkCluster(ctx, ClusterInput{Organization: "acme", Name: "local", KubeconfigPath: cluster.kubeconfig})
+	assert.NoErr(err)
+	assert.True(regexp.MustCompile(`^local-[a-f0-9]{5}$`).MatchString(second.Name))
+	assert.True(first.Name != second.Name)
+	assert.True(first.ID != second.ID)
+	later, err := manager.GetSpace(ctx, "acme", "default-"+second.Name)
+	assert.NoErr(err)
+	assert.Equal(later.Cluster, second.Name)
+	assert.True(later.Namespace != initial.Namespace)
+	_, err = manager.CreateSpace(ctx, SpaceInput{Organization: "acme", Name: "default", Cluster: second.Name})
+	assert.True(errors.Is(err, ErrConflict))
+	long, err := manager.LinkCluster(ctx, ClusterInput{Organization: "acme", Name: strings.Repeat("a", 63), KubeconfigPath: cluster.kubeconfig})
+	assert.NoErr(err)
+	assert.True(len("default-"+long.Name) <= 63)
+	_, err = manager.CreateOrganization(ctx, "another")
+	assert.NoErr(err)
+	other, err := manager.LinkCluster(ctx, ClusterInput{Organization: "another", Name: "local", KubeconfigPath: cluster.kubeconfig})
+	assert.NoErr(err)
+	assert.Equal(cluster.namespaceAttempts(), 0)
+	assert.NoErr(manager.Close())
+	reopened := openTestManager(t, path, 0)
+	for name, expected := range map[string]Space{"default": initial, later.Name: later} {
+		saved, err := reopened.GetSpace(ctx, "acme", name)
+		assert.NoErr(err)
+		assert.Equal(saved, expected)
+	}
+	saved, err := reopened.GetSpace(ctx, "another", "default")
+	assert.NoErr(err)
+	assert.Equal(saved.Cluster, other.Name)
+	assert.True(saved.Namespace != initial.Namespace)
+}
+
+// TestClusterSpacesAndBinding verifies registrations leave space creation explicit,
+// while isolated namespace bindings survive a database reopen.
 func TestClusterSpacesAndBinding(t *testing.T) {
 	assert := is.New(t)
 	ctx := context.Background()
@@ -41,7 +98,12 @@ func TestClusterSpacesAndBinding(t *testing.T) {
 		_, err = manager.RegisterCluster(ctx, ClusterInput{Organization: "acme", Name: name, KubeconfigPath: cluster.kubeconfig})
 		assert.NoErr(err)
 	}
-	initial, err := manager.GetSpace(ctx, "acme", "local")
+	spaces, err = manager.ListSpaces(ctx, "acme")
+	assert.NoErr(err)
+	assert.Equal(spaces, []Space{})
+	_, err = manager.GetSpace(ctx, "acme", "local")
+	assert.True(errors.Is(err, ErrNotFound))
+	initial, err := manager.CreateSpace(ctx, SpaceInput{Organization: "acme", Name: "local", Cluster: "local"})
 	assert.NoErr(err)
 	assert.Equal(initial.Cluster, "local")
 	assert.True(strings.HasPrefix(initial.Namespace, "borq-"))
@@ -57,9 +119,12 @@ func TestClusterSpacesAndBinding(t *testing.T) {
 	_, err = manager.CreateSpace(ctx, SpaceInput{Organization: "acme", Name: "staging", Cluster: "remote"})
 	assert.True(errors.Is(err, ErrConflict))
 	_, err = manager.RegisterCluster(ctx, ClusterInput{Organization: "acme", Name: "staging", KubeconfigPath: cluster.kubeconfig})
-	assert.True(errors.Is(err, ErrConflict))
+	assert.NoErr(err)
 	_, _, err = loadDocument[Cluster](ctx, manager.database, "cluster", "acme/staging")
-	assert.True(errors.Is(err, ErrNotFound)) // A conflicting initial space cannot leave a partial registration.
+	assert.NoErr(err)
+	preserved, err := manager.GetSpace(ctx, "acme", "staging")
+	assert.NoErr(err)
+	assert.Equal(preserved, bound)
 	legacy := spaceRecord{Space: Space{ID: "legacy-id", Organization: "acme", Name: "legacy", Namespace: bound.Namespace, CertificateIssuer: "existing-issuer", Configuration: Configuration{Apps: []App{}}}}
 	write, err := documentWrite("space", "acme/legacy", legacy, 0)
 	assert.NoErr(err)
@@ -88,7 +153,7 @@ func TestClusterSpacesAndBinding(t *testing.T) {
 	assert.Equal(savedInitial, initial)
 	spaces, err = reopened.ListSpaces(ctx, "acme")
 	assert.NoErr(err)
-	assert.Equal(len(spaces), 4)
+	assert.Equal(len(spaces), 3)
 	for _, space := range spaces {
 		assert.True(space.Cluster != "")
 	}

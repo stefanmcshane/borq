@@ -30,7 +30,7 @@ loki:
           prefix: index_
           period: 24h
   limits_config:
-    retention_period: {{ if eq .Profile "dev" }}24h{{ else }}168h{{ end }}
+    retention_period: {{ if eq .Profile "dev" }}96h{{ else }}168h{{ end }}
   compactor:
     retention_enabled: true
     delete_request_store: {{ if eq .Profile "dev" }}s3{{ else }}filesystem{{ end }}

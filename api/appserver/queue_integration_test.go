@@ -3,7 +3,6 @@
 package appserver_test
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -20,13 +19,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/remotecommand"
 )
 
-// TestApplicationIntegrationQueue verifies applies run in accepted order, survive
-// restart, and allow another space to deploy while the first is gated.
+// TestApplicationIntegrationQueue proves replacement and manual cancellation stop
+// real predeploy Jobs, preserve live apps, and remain terminal after server restart.
 func TestApplicationIntegrationQueue(t *testing.T) {
 	assert := is.New(t)
 	kubeconfigPath := os.Getenv("BORQ_KUBECONFIG")
@@ -86,16 +83,11 @@ func TestApplicationIntegrationQueue(t *testing.T) {
 	}}}))
 	// An abandoned plan takes no place in the execution queue.
 	_ = createApplicationPlan(t, ctx, client, organization, "production", predeployPatch(t, map[string]any{"apps": []any{map[string]any{"name": "worker", "replicas": 4}}}))
-	b := createApplicationPlan(t, ctx, client, organization, "production", predeployPatch(t, map[string]any{"apps": []any{map[string]any{
-		"name": "worker", "replicas": 1, "predeploy": map[string]any{"command": ""},
-	}}}))
 	operationA := startPredeployOperation(t, ctx, client, a.ID)
-	_, pod := waitPredeployRunning(t, ctx, kube, namespace)
-	operationB := startPredeployOperation(t, ctx, client, b.ID)
-	assert.Equal(string(operationB.Status), "queued")
+	jobA, _ := waitPredeployRunning(t, ctx, kube, namespace)
 	assertPredeployAppsUnchanged(t, baseline, predeployDeployments(t, ctx, kube, namespace))
 
-	t.Log("a different space can finish while A gates B")
+	t.Log("a different space can finish while the first is waiting")
 	zero := 0
 	otherApps := []appapi.AppPatch{{Name: "worker", Image: &image, Replicas: &zero}}
 	otherPlan, err := client.PostPlanWithResponse(ctx, organization, "staging", appapi.Patch{Apps: &otherApps})
@@ -103,11 +95,35 @@ func TestApplicationIntegrationQueue(t *testing.T) {
 	assertApplicationResponse(t, otherPlan.StatusCode(), otherPlan.Body, http.StatusCreated)
 	otherNamespace = otherPlan.JSON201.Values["namespace"].(string)
 	applyApplicationPlan(t, ctx, client, otherPlan.JSON201.ID)
-	stillQueued, err := client.GetOperationWithResponse(ctx, operationB.ID)
-	assert.NoErr(err)
-	assert.Equal(string(stillQueued.JSON200.Status), "queued")
 
-	t.Log("both active and queued exact plans survive server restart")
+	t.Log("a new apply replaces the blocked predeploy and completes")
+	b := createApplicationPlan(t, ctx, client, organization, "production", predeployPatch(t, map[string]any{"apps": []any{map[string]any{
+		"name": "worker", "replicas": 1, "predeploy": map[string]any{"command": ""},
+	}}}))
+	operationB := startPredeployOperation(t, ctx, client, b.ID)
+	waitPredeployOperation(t, ctx, client, operationA.ID, appapi.Superseded)
+	waitPredeployOperation(t, ctx, client, operationB.ID, appapi.Succeeded)
+	waitQueueJobStopped(t, ctx, kube, namespace, jobA.Name)
+	deployment, err := kube.AppsV1().Deployments(namespace).Get(ctx, "worker", metav1.GetOptions{})
+	assert.NoErr(err)
+	assert.Equal(deployment.Spec.Replicas, int32Pointer(1))
+
+	t.Log("manual cancellation releases a hung deployment without changing live apps")
+	c := createApplicationPlan(t, ctx, client, organization, "production", predeployPatch(t, map[string]any{"apps": []any{map[string]any{
+		"name": "worker", "replicas": 2, "predeploy": map[string]any{"command": predeployShellCommand("sleep 120"), "timeoutSeconds": 180},
+	}}}))
+	operationC := startPredeployOperation(t, ctx, client, c.ID)
+	jobC, _ := waitPredeployRunning(t, ctx, kube, namespace)
+	canceled, err := client.CancelOperationWithResponse(ctx, operationC.ID)
+	assert.NoErr(err)
+	assertApplicationResponse(t, canceled.StatusCode(), canceled.Body, http.StatusOK)
+	waitPredeployOperation(t, ctx, client, operationC.ID, appapi.Canceled)
+	waitQueueJobStopped(t, ctx, kube, namespace, jobC.Name)
+	deployment, err = kube.AppsV1().Deployments(namespace).Get(ctx, "worker", metav1.GetOptions{})
+	assert.NoErr(err)
+	assert.Equal(deployment.Spec.Replicas, int32Pointer(1))
+
+	t.Log("canceled and superseded operations remain terminal after restart")
 	server.Close()
 	assert.NoErr(manager.Close())
 	manager, err = apps.NewManager(ctx, apps.NewInput{DatabasePath: path, RolloutTimeout: 70 * time.Second, PollInterval: 100 * time.Millisecond})
@@ -117,24 +133,41 @@ func TestApplicationIntegrationQueue(t *testing.T) {
 	server = httptest.NewServer(handler)
 	client, err = appapi.NewClientWithResponses(server.URL)
 	assert.NoErr(err)
-	repeated := startPredeployOperation(t, ctx, client, b.ID)
-	assert.Equal(repeated.ID, operationB.ID)
-	assert.Equal(string(repeated.Status), "queued")
-	request := kube.CoreV1().RESTClient().Post().Resource("pods").Namespace(namespace).Name(pod.Name).SubResource("exec").VersionedParams(&corev1.PodExecOptions{
-		Container: "worker", Command: []string{"touch", "/tmp/borq-continue"}, Stdout: true, Stderr: true,
-	}, scheme.ParameterCodec)
-	executor, err := remotecommand.NewSPDYExecutor(config, http.MethodPost, request.URL())
-	assert.NoErr(err)
-	var output bytes.Buffer
-	assert.NoErr(executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &output, Stderr: &output}))
-	waitPredeployOperation(t, ctx, client, operationA.ID, appapi.Succeeded)
-	waitPredeployOperation(t, ctx, client, operationB.ID, appapi.Succeeded)
+	for id, status := range map[string]appapi.OperationStatus{operationA.ID: appapi.Superseded, operationC.ID: appapi.Canceled} {
+		repeated := startPredeployOperation(t, ctx, client, id)
+		assert.Equal(repeated.Status, status)
+	}
 	final, err := client.GetSpaceWithResponse(ctx, organization, "production")
 	assert.NoErr(err)
-	assert.Equal(final.JSON200.Revision, 3)
+	assert.Equal(final.JSON200.Revision, 4)
 	assert.Equal(final.JSON200.LastSuccessfulRevision, 3)
-	assert.Equal(final.JSON200.Configuration, b.Configuration)
-	deployment, err := kube.AppsV1().Deployments(namespace).Get(ctx, "worker", metav1.GetOptions{})
-	assert.NoErr(err)
-	assert.Equal(deployment.Spec.Replicas, int32Pointer(1))
+	assert.Equal(final.JSON200.Configuration, c.Configuration)
+}
+
+// SDK clients share transports through pointers. Controller readback proves the
+// suspended Job has stopped its active pods, rather than only accepting a patch.
+func waitQueueJobStopped(t *testing.T, ctx context.Context, kube *kubernetes.Clientset, namespace, name string) {
+	t.Helper()
+	for {
+		job, err := kube.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pods, err := kube.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "batch.kubernetes.io/job-name=" + name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active := false
+		for _, pod := range pods.Items {
+			active = active || pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending
+		}
+		if job.Spec.Suspend != nil && *job.Spec.Suspend && job.Status.Active == 0 && !active {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("canceled predeploy Job did not stop its pods")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

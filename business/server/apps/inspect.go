@@ -56,6 +56,7 @@ func InspectWithEnv(manifests []map[string]any, snapshots []EnvSnapshot) (Config
 		deployments[application.Name] = resource
 	}
 	services := make(map[string]bool)
+	jobs := make(map[string]bool)
 	for _, resource := range resources {
 		if resource.kind == "Deployment" {
 			continue
@@ -75,7 +76,7 @@ func InspectWithEnv(manifests []map[string]any, snapshots []EnvSnapshot) (Config
 			continue
 		}
 		if resource.kind == "Job" {
-			if application.Predeploy.Command != "" {
+			if jobs[application.Name] {
 				return Configuration{}, fmt.Errorf("app %q has duplicate predeploy Jobs", application.Name)
 			}
 			task, err := inspectPredeploy(resource, application, environments[resource.app], deployments[resource.app])
@@ -84,6 +85,7 @@ func InspectWithEnv(manifests []map[string]any, snapshots []EnvSnapshot) (Config
 			}
 			application.Predeploy = task
 			applications[application.Name] = application
+			jobs[application.Name] = true
 			continue
 		}
 		ingress, err := inspectIngress(resource, application)
@@ -215,6 +217,15 @@ func inspectDeployment(resource inspectedResource, environment inspectedEnvironm
 	application.Predeploy, err = inspectDisabledPredeploy(deployment.Annotations["borq.run/disabled-predeploy-v1"])
 	if err != nil {
 		return App{}, fmt.Errorf("predeploy: %w", err)
+	}
+	if retained := deployment.Annotations["borq.run/retained-predeploy-v1"]; retained != "" {
+		if deployment.Annotations["borq.run/disabled-predeploy-v1"] != "" {
+			return App{}, fmt.Errorf("predeploy cannot be both retained and disabled")
+		}
+		application.Predeploy, err = inspectPredeploySettings(retained)
+		if err != nil {
+			return App{}, fmt.Errorf("predeploy: %w", err)
+		}
 	}
 	return application, nil
 }

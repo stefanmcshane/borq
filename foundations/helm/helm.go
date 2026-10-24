@@ -81,6 +81,14 @@ type InstallOrUpgradeInput struct {
 	RecoverPending bool
 	// SkipWait lets a caller initialize sealed services before their readiness gate.
 	SkipWait bool
+	// Owner identifies the caller's release and prevents adoption of unrelated releases.
+	Owner string
+	// ResourceLabels are applied to rendered resources and included in definition comparisons.
+	ResourceLabels map[string]string
+	// PodLabels are applied to native Pod templates matching PodSelector.
+	PodLabels map[string]string
+	// PodSelector narrows the Pod templates receiving collection labels; empty selects all.
+	PodSelector map[string]string
 }
 
 // ReleaseState reports persisted Helm history without exposing rendered secrets.
@@ -187,6 +195,9 @@ func (manager ReleaseManager) Reconcile(ctx context.Context, input InstallOrUpgr
 			return ReleaseState{}, err
 		}
 		state := releaseState(live)
+		if input.Owner != "" && live.Labels["borq.run/owner"] != input.Owner {
+			return state, fmt.Errorf("Helm release %q belongs to another owner", input.ReleaseName)
+		}
 		if live.Info != nil && live.Info.Status.IsPending() {
 			if !input.RecoverPending {
 				return state, fmt.Errorf("Helm release %q has a pending operation; its owning process must finish or recover it", input.ReleaseName)
@@ -372,6 +383,12 @@ func sameReleaseDefinition(live *releasev1.Release, input InstallOrUpgradeInput)
 
 func definitionHash(input InstallOrUpgradeInput) string {
 	definition, _ := json.Marshal(struct{ Chart, Repository, Version string }{input.ChartRef, input.RepositoryUrl, input.Version})
+	if input.Owner != "" || len(input.ResourceLabels)+len(input.PodLabels)+len(input.PodSelector) > 0 {
+		definition, _ = json.Marshal(struct {
+			Chart, Repository, Version, Owner      string
+			ResourceLabels, PodLabels, PodSelector map[string]string
+		}{input.ChartRef, input.RepositoryUrl, input.Version, input.Owner, input.ResourceLabels, input.PodLabels, input.PodSelector})
+	}
 	digest := sha256.Sum256(definition)
 	return hex.EncodeToString(digest[:])[:32]
 }
@@ -401,6 +418,10 @@ func (manager ReleaseManager) install(
 	install.ChartPathOptions.Version = strings.TrimSpace(input.Version)
 	install.SetRegistryClient(registryClient)
 	install.Labels = map[string]string{"borq.run/definition": definitionHash(input)}
+	if input.Owner != "" {
+		install.Labels["borq.run/owner"] = input.Owner
+	}
+	install.PostRenderer = metadataRenderer{input: input}
 
 	if _, err := install.RunWithContext(ctx, chart, valuesOrEmpty(input.Values)); err != nil {
 		return fmt.Errorf("install helm release %q from %q: %w", input.ReleaseName, chartPath, err)
@@ -431,6 +452,10 @@ func (manager ReleaseManager) upgrade(
 	upgrade.ChartPathOptions.Version = strings.TrimSpace(input.Version)
 	upgrade.SetRegistryClient(registryClient)
 	upgrade.Labels = map[string]string{"borq.run/definition": definitionHash(input)}
+	if input.Owner != "" {
+		upgrade.Labels["borq.run/owner"] = input.Owner
+	}
+	upgrade.PostRenderer = metadataRenderer{input: input}
 
 	if _, err := upgrade.RunWithContext(ctx, input.ReleaseName, chart, valuesOrEmpty(input.Values)); err != nil {
 		return fmt.Errorf("upgrade helm release %q from %q: %w", input.ReleaseName, chartPath, err)
@@ -457,6 +482,9 @@ func locateChart(
 	chart, err := loader.Load(chartPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("load helm chart %q: %w", chartPath, err)
+	}
+	if input.Version != "" && strings.TrimPrefix(chart.Metadata.Version, "v") != strings.TrimPrefix(input.Version, "v") {
+		return "", nil, fmt.Errorf("chart version %q does not match requested version %q", chart.Metadata.Version, input.Version)
 	}
 
 	return chartPath, chart, nil

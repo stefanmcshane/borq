@@ -11,7 +11,32 @@ import (
 
 	"github.com/matryer/is"
 	"github.com/stefanmcshane/borq/business/server/apps"
+	"github.com/stefanmcshane/borq/business/server/platform"
 )
+
+// TestClusterSetupCatalog exposes configured installation metadata before an
+// organization or cluster exists, without requiring Kubernetes credentials.
+func TestClusterSetupCatalog(t *testing.T) {
+	assert := is.New(t)
+	manager, err := apps.NewManager(context.Background(), apps.NewInput{DatabasePath: filepath.Join(t.TempDir(), "catalog.sqlite"), PlatformSettings: platform.Settings{Namespace: "custom-target"}})
+	assert.NoErr(err)
+	t.Cleanup(func() { assert.NoErr(manager.Close()) })
+	api, err := NewHandler(manager)
+	assert.NoErr(err)
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/cluster-setup", nil))
+	assert.Equal(response.Code, http.StatusOK)
+	assert.Equal(response.Header().Get("Cache-Control"), "no-store")
+	var setup ClusterSetup
+	assert.NoErr(json.Unmarshal(response.Body.Bytes(), &setup))
+	assert.Equal(setup.Namespace, "custom-target")
+	assert.True(len(setup.Components) > 0)
+	for _, component := range setup.Components {
+		assert.True(component.Name != "")
+		assert.True(component.Version != "")
+		assert.True(component.Description != "")
+	}
+}
 
 // TestClusterReconcileRequestPresence preserves explicit registration-only
 // requests without changing the default for clients that omit the option.

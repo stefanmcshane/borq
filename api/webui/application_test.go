@@ -21,14 +21,22 @@ func TestApplicationPages(t *testing.T) {
 		status                 int
 	}{
 		{"view=applications", "Add an application", "Accepted configuration", 200},
-		{"view=application", "Paste application as YAML instead", "Plan from apps.yaml", 200},
-		{"view=application&app=web", "Edit application as YAML instead", "Applications in dev", 200},
+		{"view=application", "Configuration editor", "Plan from apps.yaml", 200},
+		{"view=application&app=web&tab=general", "Configuration editor", "Applications in dev", 200},
 		{"view=application&app=web", "http://web.borq-fixture-dev.svc:8080", "do-not-render-environment-value", 200},
+		{"view=application&app=web&tab=observability", "Resource usage", "Application logs", 200},
+		{"view=application&app=web&tab=observability&subtab=metrics", `value="30m" type="submit">30 minutes</button>`, "Configuration editor", 200},
+		{"view=application&app=web&tab=logs", `<option value="30m">Last 30 minutes</option>`, "do-not-render-environment-value", 200},
+		{"view=application&app=web&tab=deployments", "Loading deployment history", "do-not-render-environment-value", 200},
 		{"view=application&app=worker", "No network service", "http://worker.borq-fixture-dev.svc:0", 200},
-		{"view=application&app=web&tab=configuration", "web-image", "worker-image", 200},
-		{"view=application&app=web&tab=manifests", "web-deployment", "worker-deployment", 200},
-		{"view=application&app=web&tab=manifests", "web-deployment", "shared-namespace", 200},
+		{"view=application&app=web&tab=configuration", "Application configuration", "worker-image", 200},
+		{"view=application&app=web&tab=configuration&subtab=manifests", "web-deployment", "worker-deployment", 200},
+		{"view=application&app=web&tab=configuration&subtab=manifests", "web-deployment", "shared-namespace", 200},
+		{"view=application&app=web&tab=manifests", "web-deployment", "Review changes", 200},
 		{"view=application&app=planned&plan=new-plan", "<h1>planned</h1>", "Applications in dev", 200},
+		{"view=application&app=planned&tab=configuration&draft=new-plan", "new-image", "Review deployment plan", 200},
+		{"view=application&app=web&tab=configuration&draft=new-plan", "selected application was not found in this plan", "web-image", 404},
+		{"view=application&app=web&tab=configuration&draft=foreign-plan", "draft belongs to another space", "foreign-image", 404},
 		{"view=application&app=missing", "selected application was not found", "web-image", 404},
 		{"view=application&app=web&tab=missing", "page was not found", "web-image", 404},
 	} {
@@ -116,6 +124,8 @@ func applicationTestHandler(t *testing.T) http.Handler {
 			output = state
 		case "/api/v1/organizations/team/spaces/dev/environment-groups":
 			output = []appapi.EnvironmentGroup{{Name: "web-config", Version: 4, Values: []appapi.Variable{{Name: "PRIVATE", Value: "do-not-render-environment-value"}}}}
+		case "/api/v1/plans/foreign-plan":
+			output = appapi.Plan{ID: "foreign-plan", Space: appapi.Space{ID: "other-space"}, Configuration: appapi.Configuration{Apps: []appapi.App{{Name: "web", Image: "foreign-image"}}}}
 		case "/api/v1/plans/new-plan":
 			output = appapi.Plan{ID: "new-plan", Space: appapi.Space{ID: "space-id"}, Configuration: appapi.Configuration{Apps: []appapi.App{{Name: "planned", Image: "new-image"}}}}
 		default:
@@ -221,6 +231,19 @@ func TestApplicationEditorRoundTrip(t *testing.T) {
 	assert.Equal(*disabled.Predeploy.TimeoutSeconds, 601)
 	assert.Equal(*disabled.Checks.Readiness.Enabled, true)
 	assert.Equal(*disabled.Checks.Readiness.Port, 8082)
+	// Submit both an empty command and an omitted successful control against an
+	// existing nonempty hidden document. Neither may resurrect the saved task.
+	for _, omitted := range []bool{false, true} {
+		fields := url.Values{"action": {"plan-app"}, "organization": {"team"}, "space": {"dev"}, "application": {"web"}, "name": {"web"}, "document": {baseline}, "image": {"new-image"}, "port": {"8080"}, "replicas": {"1"}, "predeployCommand": {""}}
+		if omitted {
+			fields.Del("predeployCommand")
+		}
+		response := postForm(web, fields, false)
+		assert.Equal(response.Code, http.StatusSeeOther)
+		assert.True((*submitted.Apps)[0].Predeploy.Command != nil)
+		assert.Equal(*(*submitted.Apps)[0].Predeploy.Command, "")
+	}
+
 }
 
 // TestApplicationRouteDrafts exercises route addition and removal through the
@@ -403,4 +426,45 @@ func applicationEditorFields(t *testing.T, source string) url.Values {
 		values.Add(attributes["name"], value)
 	}
 	return values
+}
+
+// TestApplicationPlanReviewSections keeps review exclusive and returns Cancel to
+// its originating section, including the selected editor or observability view.
+func TestApplicationPlanReviewSections(t *testing.T) {
+	for _, input := range []struct{ tab, subtab string }{{"overview", ""}, {"configuration", "yaml"}, {"observability", "metrics"}} {
+		t.Run(input.tab, func(t *testing.T) {
+			assert := is.New(t)
+			web := applicationTestHandler(t)
+			response := httptest.NewRecorder()
+			query := url.Values{"view": {"application"}, "organization": {"team"}, "space": {"dev"}, "app": {"web"}, "tab": {input.tab}, "subtab": {input.subtab}, "plan": {"new-plan"}}
+			web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?"+query.Encode(), nil))
+			assert.Equal(response.Code, http.StatusOK)
+			body := response.Body.String()
+			assert.True(strings.Contains(body, "Review deployment plan"))
+			assert.True(!strings.Contains(body, `id="application-editor"`))
+			assert.True(!strings.Contains(body, `panel=metrics`))
+			assert.True(!strings.Contains(body, `class="scale-form"`))
+			document, err := html.Parse(strings.NewReader(body))
+			assert.NoErr(err)
+			found := false
+			for node := range document.Descendants() {
+				if node.Data != "a" || node.FirstChild == nil || node.FirstChild.Data != "Cancel" {
+					continue
+				}
+				for _, attribute := range node.Attr {
+					if attribute.Key != "href" {
+						continue
+					}
+					target, err := url.Parse(attribute.Val)
+					assert.NoErr(err)
+					assert.Equal(target.Query().Get("tab"), input.tab)
+					assert.Equal(target.Query().Get("subtab"), input.subtab)
+					assert.Equal(target.Query().Get("app"), "web")
+					assert.Equal(target.Query().Get("plan"), "")
+					found = true
+				}
+			}
+			assert.True(found)
+		})
+	}
 }

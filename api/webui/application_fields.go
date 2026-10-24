@@ -48,20 +48,20 @@ func applicationFields(form url.Values) (appapi.AppPatch, error) {
 		return patch, err
 	}
 	patch.Checks.Readiness, patch.Checks.Startup = &readiness, &startup
-	if form.Has("predeployCommand") {
-		if patch.Predeploy == nil {
-			patch.Predeploy = &appapi.PredeployPatch{}
-		}
-		command := form.Get("predeployCommand")
-		patch.Predeploy.Command = &command
-		patch.Predeploy.TimeoutSeconds, err = applicationInteger(form, "predeployTimeoutSeconds", "Predeploy timeout", 1, 2147483647, patch.Predeploy.TimeoutSeconds)
-		if err != nil {
-			return patch, err
-		}
-		patch.Predeploy.BackoffLimit, err = applicationInteger(form, "predeployBackoffLimit", "Predeploy retries", 0, 2147483647, patch.Predeploy.BackoffLimit)
-		if err != nil {
-			return patch, err
-		}
+	// The guided form describes the entire optional task. An absent or cleared
+	// command must send an explicit empty string instead of retaining the saved task.
+	if patch.Predeploy == nil {
+		patch.Predeploy = &appapi.PredeployPatch{}
+	}
+	predeployCommand := form.Get("predeployCommand")
+	patch.Predeploy.Command = &predeployCommand
+	patch.Predeploy.TimeoutSeconds, err = applicationInteger(form, "predeployTimeoutSeconds", "Predeploy timeout", 1, 2147483647, patch.Predeploy.TimeoutSeconds)
+	if err != nil {
+		return patch, err
+	}
+	patch.Predeploy.BackoffLimit, err = applicationInteger(form, "predeployBackoffLimit", "Predeploy retries", 0, 2147483647, patch.Predeploy.BackoffLimit)
+	if err != nil {
+		return patch, err
 	}
 	if form.Has("ingressFields") {
 		names, hosts, paths := form["ingressName"], form["ingressHost"], form["ingressPath"]

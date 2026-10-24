@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,6 +11,37 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
+
+// TestPredeploySelection renders execution only for selected apps while keeping
+// the other apps' task configuration available for subsequent updates.
+func TestPredeploySelection(t *testing.T) {
+	for _, input := range []struct {
+		name     string
+		selected []string
+		jobs     []string
+	}{
+		{name: "whole space", jobs: []string{"backend", "frontend"}},
+		{name: "one app", selected: []string{"backend"}, jobs: []string{"backend"}},
+		{name: "no tasks", selected: []string{}, jobs: []string{}},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			assert := is.New(t)
+			configuration, err := Merge(Configuration{}, patchFromJson(t, `{"apps":[{"name":"backend","image":"backend:v1","predeploy":{"command":"/app migrate"}},{"name":"frontend","image":"frontend:v1","predeploy":{"command":"/app verify","timeoutSeconds":601,"backoffLimit":2}}]}`))
+			assert.NoErr(err)
+			rendered, err := renderWithEnv(configuration, "shop", "prod", "plan-1", "borq", nil, ResourceScope{}, input.selected)
+			assert.NoErr(err)
+			jobs, _ := splitPlanManifests(rendered.Manifests)
+			assert.Equal(len(jobs), len(input.jobs))
+			for _, manifest := range jobs {
+				job := decodeResource[batchv1.Job](t, manifest)
+				assert.True(slices.Contains(input.jobs, job.Labels["app.kubernetes.io/name"]))
+			}
+			inspected, err := InspectWithEnv(rendered.Manifests, rendered.EnvSnapshots)
+			assert.NoErr(err)
+			assert.Equal(inspected, configuration)
+		})
+	}
+}
 
 // TestPredeployMerge preserves omitted task settings and permits command clearing
 // and a zero retry budget without mutating stored state.
@@ -195,6 +227,8 @@ func TestInspectPredeployDrift(t *testing.T) {
 	job := predeployManifest(t, rendered)
 	setManifestField(t, job, int64(19), "spec", "activeDeadlineSeconds")
 	mutatePredeployContainer(t, job, "command", []any{"/migrate"})
+	// Actual Job settings win over retained settings from an earlier partial plan.
+	setManifestField(t, findManifest(t, rendered, "Deployment", "backend"), `{"command":"old-task","timeoutSeconds":300}`, "metadata", "annotations", "borq.run/retained-predeploy-v1")
 	inspected, err := InspectWithEnv(rendered.Manifests, rendered.EnvSnapshots)
 	assert.NoErr(err)
 	assert.Equal(inspected.Apps[0].Predeploy.Command, "/migrate")

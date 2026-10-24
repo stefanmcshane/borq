@@ -118,8 +118,8 @@ func TestManagerFailedApplyRetainsDesired(t *testing.T) {
 	assert.Equal(cluster.namespaceAttempts(), 1)
 }
 
-// TestManagerConcurrentApply verifies later applies queue behind the active
-// rollout while simultaneous retries of its plan share the original operation.
+// TestManagerConcurrentApply verifies retries share the original operation, stale
+// plans cannot discard accepted changes, and a fresh plan interrupts a blocked apply.
 func TestManagerConcurrentApply(t *testing.T) {
 	assert := is.New(t)
 	ctx := context.Background()
@@ -153,15 +153,20 @@ func TestManagerConcurrentApply(t *testing.T) {
 		assert.NoErr(retry.err)
 		assert.Equal(retry.operation.ID, accepted.ID)
 	}
+	_, err = manager.Apply(ctx, competitor.ID)
+	assert.True(errors.Is(err, ErrConflict))
+	competitor, err = manager.Plan(ctx, managerPlanInput(t, "production", `{"apps":[{"name":"backend","replicas":2}]}`))
+	assert.NoErr(err)
 	queued, err := manager.Apply(ctx, competitor.ID)
 	assert.NoErr(err)
 	assert.Equal(queued.Status, "queued")
 	desired, err := manager.GetSpace(ctx, "acme", "production")
 	assert.NoErr(err)
 	assert.Equal(desired.Revision, 2)
-	assert.Equal(cluster.namespaceAttempts(), 1)
+	waitManagerOperation(t, manager, plan.ID, "superseded")
+	waitManagerNamespace(t, cluster)
+	assert.Equal(cluster.namespaceAttempts(), 2)
 	release()
-	waitManagerOperation(t, manager, plan.ID, "failed")
 	waitManagerOperation(t, manager, competitor.ID, "failed")
 }
 
@@ -363,7 +368,7 @@ func waitManagerOperation(t *testing.T, manager Manager, id, state string) Opera
 		if operation.Status == state {
 			return operation
 		}
-		if operation.Status == "failed" || operation.Status == "succeeded" {
+		if operationFinished(operation.Status) {
 			t.Fatalf("operation finished %s while waiting for %s: %s", operation.Status, state, operation.Message)
 		}
 		select {
@@ -396,6 +401,7 @@ type managerClusterOptions struct {
 	forbidNamespace bool
 	namespaceGate   <-chan struct{}
 	applicationGate <-chan struct{}
+	jobStopGate     <-chan struct{}
 }
 
 // The fixture is shared by concurrent HTTP handlers, so pointer ownership keeps
@@ -444,6 +450,13 @@ func (cluster *managerCluster) serve(writer http.ResponseWriter, request *http.R
 		case <-request.Context().Done():
 			return
 		case <-cluster.options.applicationGate:
+		}
+	}
+	if cluster.options.jobStopGate != nil && request.Method == http.MethodPatch && strings.Contains(request.URL.Path, "/jobs/") && strings.HasPrefix(request.Header.Get("Content-Type"), "application/merge-patch+json") {
+		select {
+		case <-request.Context().Done():
+			return
+		case <-cluster.options.jobStopGate:
 		}
 	}
 	cluster.mutex.Lock()

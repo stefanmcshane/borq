@@ -18,7 +18,7 @@ import (
 // TestApplyReplansAcceptedSidecars covers older sidecars as well as new ones:
 // completed applies never block another apply, and unchanged active retries reuse their operation.
 func TestApplyReplansAcceptedSidecars(t *testing.T) {
-	for _, status := range []appapi.OperationStatus{appapi.Pending, appapi.Queued, appapi.Applying, appapi.Waiting, appapi.Succeeded, appapi.Failed} {
+	for _, status := range []appapi.OperationStatus{appapi.Pending, appapi.Queued, appapi.Applying, appapi.Waiting, appapi.Canceling, appapi.Succeeded, appapi.Failed, appapi.Canceled, appapi.Superseded} {
 		for _, changed := range []bool{false, true} {
 			name := string(status) + "/unchanged"
 			if changed {
@@ -28,7 +28,7 @@ func TestApplyReplansAcceptedSidecars(t *testing.T) {
 				assert := is.New(t)
 				var paths []string
 				var diagnostics strings.Builder
-				fresh := changed || status == appapi.Succeeded || status == appapi.Failed
+				fresh := changed || status == appapi.Succeeded || status == appapi.Failed || status == appapi.Canceled || status == appapi.Superseded
 				server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 					paths = append(paths, request.URL.Path)
 					writer.Header().Set("Content-Type", "application/json")

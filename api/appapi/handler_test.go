@@ -151,6 +151,7 @@ func TestBodylessOperationsRejectPayloads(t *testing.T) {
 	for _, input := range []struct{ method, path string }{
 		{http.MethodPut, "/api/v1/organizations/team"},
 		{http.MethodPost, "/api/v1/plans/plan-1/apply"},
+		{http.MethodPost, "/api/v1/operations/op-1/cancel"},
 	} {
 		writer := httptest.NewRecorder()
 		transport.ServeHTTP(writer, httptest.NewRequest(input.method, input.path, strings.NewReader(`{"unexpected":true}`)))
@@ -166,6 +167,7 @@ func TestPathAndRegistrationValidation(t *testing.T) {
 	is.NoErr(err)
 	for _, input := range []struct{ method, path, body string }{
 		{http.MethodGet, "/api/v1/operations/INVALID", ""},
+		{http.MethodPost, "/api/v1/operations/INVALID/cancel", ""},
 		{http.MethodPut, "/api/v1/organizations/INVALID", ""},
 		{http.MethodPut, "/api/v1/organizations/team/clusters/dev", `{"inCluster":null}`},
 		{http.MethodPut, "/api/v1/organizations/team/spaces/dev", `{}`},
@@ -245,12 +247,10 @@ func TestApplicationApiLifecycle(t *testing.T) {
 	is.Equal(registered.JSON200.Name, "dev")
 	initialSpace, err := client.GetSpaceWithResponse(ctx, "team", "dev")
 	is.NoErr(err)
-	is.Equal(initialSpace.StatusCode(), http.StatusOK)
-	is.Equal(initialSpace.JSON200.Cluster, "dev")
+	is.Equal(initialSpace.StatusCode(), http.StatusNotFound)
 	initialApps, err = client.ListAppsWithResponse(ctx, "team", "dev")
 	is.NoErr(err)
-	is.Equal(initialApps.StatusCode(), http.StatusOK)
-	is.Equal(*initialApps.JSON200, ApplicationState{Configuration: Configuration{Apps: []App{}}, Manifests: []Manifest{}})
+	is.Equal(initialApps.StatusCode(), http.StatusNotFound)
 	clusters, err := client.ListClustersWithResponse(ctx, "team")
 	is.NoErr(err)
 	is.Equal(clusters.StatusCode(), http.StatusOK)
@@ -272,13 +272,11 @@ func TestApplicationApiLifecycle(t *testing.T) {
 	storedSpace, err := manager.GetSpace(ctx, "team", "dev")
 	is.NoErr(err)
 	is.Equal(space.JSON200.Namespace, storedSpace.Namespace)
-	for _, body := range [][]byte{space.Body, initialSpace.Body} {
-		var response map[string]any
-		is.NoErr(json.Unmarshal(body, &response))
-		_, issuerExposed := response["certificateIssuer"]
-		is.Equal(response["namespace"], storedSpace.Namespace)
-		is.True(!issuerExposed)
-	}
+	var spaceResponse map[string]any
+	is.NoErr(json.Unmarshal(space.Body, &spaceResponse))
+	_, issuerExposed := spaceResponse["certificateIssuer"]
+	is.Equal(spaceResponse["namespace"], storedSpace.Namespace)
+	is.True(!issuerExposed)
 	spaces, err := client.ListSpacesWithResponse(ctx, "team")
 	is.NoErr(err)
 	is.Equal(len(*spaces.JSON200), 1)

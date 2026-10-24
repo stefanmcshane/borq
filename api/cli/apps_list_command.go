@@ -8,7 +8,7 @@ type appsListOptions struct {
 }
 
 func newAppsCommand() *cobra.Command {
-	group := &cobra.Command{Use: "apps", Short: "Inspect saved applications in a space."}
+	group := &cobra.Command{Use: "apps", Short: "Inspect applications and manage their deployments."}
 	options := appsListOptions{}
 	list := &cobra.Command{Use: "list", Short: "Print the space's expanded app YAML or saved Kubernetes manifests.", Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, arguments []string) error {
@@ -19,7 +19,7 @@ func newAppsCommand() *cobra.Command {
 	list.Flags().StringVar(&options.scope.organization, "organization", "", "Organization owning the space.")
 	list.Flags().StringVar(&options.scope.space, "space", "", "Space whose apps to read.")
 	list.Flags().BoolVar(&options.manifest, "manifest", false, "Print the exact Kubernetes manifests saved by the latest accepted apply.")
-	group.AddCommand(list)
+	group.AddCommand(list, newAppsHistoryCommand(), newAppsCancelCommand())
 	return group
 }
 

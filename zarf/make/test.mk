@@ -1,10 +1,17 @@
-.PHONY: test-dev test-unit test-pod-history test-ui test-apps test-apps-e2e generate-api dev-cluster dev-certificates dev-secrets test-integration-server test-bootstrap test-platform-sdk test-platform-vault test-integration-bootstrap fmt
+.PHONY: pre-commit test-slow test-dev test-unit test-pod-history test-ui test-apps test-apps-e2e generate-api dev-cluster dev-certificates dev-secrets test-integration-server test-bootstrap test-platform-sdk test-platform-vault test-integration-bootstrap test-custom-charts test-telemetry test-chart-defaults fmt
 
 # The older application acceptance fixture stays separate from the full dev installation.
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
 DEV_KUBECONFIG_PATH ?= $(CURDIR)/tmp/dev/kubeconfig
 K3D ?= $(if $(wildcard $(CURDIR)/tmp/tools/k3d),$(CURDIR)/tmp/tools/k3d,$(if $(shell command -v k3d 2>/dev/null),k3d,$(CURDIR)/tmp/tools/k3d))
 export K3D
+
+pre-commit: ## Run formatting, unit tests, and slow cluster checks before committing.
+	$(MAKE) fmt
+	$(MAKE) test-unit
+	$(MAKE) test-slow
+
+test-slow: test-integration-server ## Run the slow server cluster suite; required before committing.
 
 test-dev: ## Verify hot reload, restart persistence, full cleanup, and fresh setup on an isolated dev cluster.
 	@$(GO_TEST_ENV) bash zarf/dev/test-session.sh
@@ -63,6 +70,15 @@ test-bootstrap: ## Run management bootstrap unit tests, optionally with ARGS.
 
 test-platform-sdk: ## Verify Helm SDK install, unchanged reconciliation, and explicit upgrades on local k3d.
 	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./foundations/helm -run TestReleaseLifecycleIntegration -v -count=1
+
+test-custom-charts: ## Verify custom chart defaults, real Helm installation, upgrade, CRDs, persistence, and uninstall.
+	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./api/appserver -run TestApplicationIntegrationCustomCharts -v -count=1 $(ARGS)
+
+test-telemetry: ## Verify selected collection against the local management cluster and stores.
+	BORQ_MANAGEMENT_KUBECONFIG="$(CURDIR)/tmp/management/kubeconfig" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestSelectiveTelemetryIntegration -v -count=1 -timeout=5m $(ARGS)
+
+test-chart-defaults: ## Verify matching pinned public HTTP and OCI chart defaults without Kubernetes access.
+	$(GO_TEST_ENV) go test -tags=integration ./foundations/helm -run TestPublicChartDefaultsIntegration -v -count=1 -timeout=2m $(ARGS)
 
 test-platform-vault: ## Verify persistent production OpenBao initialization, unsealing, and recovery on local k3d.
 	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestPersistentVaultIntegration -v -count=1 -timeout=6m

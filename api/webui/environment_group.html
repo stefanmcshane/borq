@@ -1,7 +1,10 @@
 {{define "view-environment-group"}}
-<div class="application-navigation"><a class="text-link" href="{{pageUrl "environment" .Organization .Space.Name}}" hx-get="{{pageUrl "environment" .Organization .Space.Name}}">← All environment groups</a>{{if .GroupLatestVersion}}<span class="badge" data-variant="outline">Latest v{{.GroupLatestVersion}}</span>{{end}}</div>
 {{if not .Space.Cluster}}{{template "environment-space-required" .}}{{else}}
   {{if .GroupLatestVersion}}
+  <section class="application-identity environment-group-identity" aria-label="Environment group details">
+    <div class="app-avatar">{{template "ui-icon" "terminal"}}</div>
+    <div><p class="app-image">{{.Group.Name}}</p><p class="field-help">Environment group · Latest v{{.GroupLatestVersion}} · Used by {{len .GroupApplications}} {{if eq (len .GroupApplications) 1}}application{{else}}applications{{end}}</p></div>
+  </section>
   <nav class="application-tabs" aria-label="Environment group sections">
     <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name}}" {{if eq .GroupTab "variables"}}aria-current="page"{{end}}>Variables</a>
     <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "versions"}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "versions"}}" {{if eq .GroupTab "versions"}}aria-current="page"{{end}}>Versions</a>
@@ -36,13 +39,13 @@
 
 {{define "environment-group-versions"}}
 <section class="card management-panel environment-group-settings"><header><h2>Published versions</h2><p>Each version is immutable. Open a version to inspect its variables or publish those values as a new version.</p></header><section>
-  <div class="table-scroll"><table class="table"><thead><tr><th>Version</th><th>Status</th><th></th></tr></thead><tbody>{{range .GroupVersions}}<tr><td class="mono">v{{.}}</td><td>{{if eq . $.GroupLatestVersion}}<span class="badge" data-variant="secondary">Latest</span>{{else}}<span class="field-help">Previous</span>{{end}}</td><td><a class="text-link" href="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}" hx-get="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}">View variables</a></td></tr>{{end}}</tbody></table></div>
+  <div class="table-scroll"><table class="table"><thead><tr><th>Version</th><th>Status</th><th></th></tr></thead><tbody>{{range .GroupVersions}}<tr class="resource-row"><td class="mono">v{{.}}</td><td>{{if eq . $.GroupLatestVersion}}<span class="badge" data-variant="secondary">Latest</span>{{else}}<span class="field-help">Previous</span>{{end}}</td><td><a class="text-link resource-row-link" href="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}" hx-get="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}">View variables</a></td></tr>{{end}}</tbody></table></div>
 </section></section>
 {{end}}
 
 {{define "environment-group-applications"}}
-<section class="card management-panel environment-group-settings"><header><h2>Applications using this group</h2><p>Change a group or its version from the application’s General page. Publishing variables leaves existing deployment pins in place.</p></header><section>
-  {{if .GroupApplications}}<div class="table-scroll"><table class="table"><thead><tr><th>Application</th><th>Pinned version</th><th>Image</th></tr></thead><tbody>{{range .GroupApplications}}<tr><td><a class="text-link" href="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}" hx-get="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}">{{.Name}}</a></td><td><span class="badge" data-variant="outline">v{{.Env.Version}}</span></td><td class="mono">{{.Image}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="resource-empty">{{template "ui-icon" "applications"}}<h3>No applications are using this group</h3><p>Select this group from an application’s environment dropdown, then review and deploy the change.</p><a class="btn" data-variant="outline" href="{{pageUrl "applications" .Organization .Space.Name}}" hx-get="{{pageUrl "applications" .Organization .Space.Name}}">View applications</a></div>{{end}}
+<section class="card management-panel environment-group-settings"><header><h2>Applications using this group</h2><p>Change a group or its version from the application’s Configuration page. Publishing variables leaves existing deployment pins in place.</p></header><section>
+  {{if .GroupApplications}}<div class="table-scroll"><table class="table"><thead><tr><th>Application</th><th>Pinned version</th><th>Image</th></tr></thead><tbody>{{range .GroupApplications}}<tr class="resource-row"><td><a class="text-link resource-row-link" href="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}" hx-get="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}">{{.Name}}</a></td><td><span class="badge" data-variant="outline">v{{.Env.Version}}</span></td><td class="mono">{{.Image}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="resource-empty">{{template "ui-icon" "applications"}}<h3>No applications are using this group</h3><p>Select this group from an application’s environment dropdown, then review and deploy the change.</p><a class="btn" data-variant="outline" href="{{pageUrl "applications" .Organization .Space.Name}}" hx-get="{{pageUrl "applications" .Organization .Space.Name}}">View applications</a></div>{{end}}
 </section></section>
 {{end}}
 

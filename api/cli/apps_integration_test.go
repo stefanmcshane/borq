@@ -76,9 +76,17 @@ func TestApplicationCliIntegration(t *testing.T) {
 		{"org", "create", organization},
 		{"org", "list"},
 		{"space", "list"},
-		{"cluster", "link", "local", "--kubeconfig", kubeconfigPath},
+	} {
+		_, err := runApplicationBinary(ctx, binary, arguments...)
+		assert.NoErr(err)
+	}
+	linked, err := runApplicationBinary(ctx, binary, "cluster", "link", "local", "--kubeconfig", kubeconfigPath, "--output", "json")
+	assert.NoErr(err)
+	var cluster appapi.Cluster
+	assert.NoErr(json.Unmarshal(linked, &cluster))
+	for _, arguments := range [][]string{
 		{"cluster", "list"},
-		{"space", "create", "dev", "--cluster", "local"},
+		{"space", "create", "dev", "--cluster", cluster.Name},
 	} {
 		_, err := runApplicationBinary(ctx, binary, arguments...)
 		assert.NoErr(err)
@@ -87,10 +95,10 @@ func TestApplicationCliIntegration(t *testing.T) {
 	assert.NoErr(err)
 	assert.True(spaces.JSON200 != nil)
 	assert.Equal(len(*spaces.JSON200), 2)
-	emptyApps, err := runApplicationBinary(ctx, binary, "apps", "list", "--space", "local")
+	emptyApps, err := runApplicationBinary(ctx, binary, "apps", "list", "--space", "default")
 	assert.NoErr(err)
 	assert.Equal(string(emptyApps), "apps: []\n")
-	emptyManifests, err := runApplicationBinary(ctx, binary, "apps", "list", "--space", "local", "--manifest")
+	emptyManifests, err := runApplicationBinary(ctx, binary, "apps", "list", "--space", "default", "--manifest")
 	assert.NoErr(err)
 	assert.Equal(len(emptyManifests), 0)
 

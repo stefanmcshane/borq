@@ -206,23 +206,27 @@ func TestApplicationYamlRoundTrip(t *testing.T) {
 // TestApplyWaitReturnsFailure verifies the command's exit status reflects the
 // server's failed rollout when waiting, including when applying an explicit ID.
 func TestApplyWaitReturnsFailure(t *testing.T) {
-	is := is.New(t)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		if request.Method == http.MethodPost {
-			writer.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(writer).Encode(appapi.Operation{ID: "operation-1", Status: appapi.Pending})
-			return
-		}
-		_ = json.NewEncoder(writer).Encode(appapi.Operation{ID: "operation-1", Status: appapi.Failed, Message: "deployment exceeded its progress deadline"})
-	}))
-	defer server.Close()
-	_, _, err := runApplicationCommand(t, "apply", "--server", server.URL, "--plan", "plan-1", "--wait")
-	is.True(err != nil)
-	is.True(strings.Contains(err.Error(), "progress deadline"))
-	_, _, err = runApplicationCommand(t, "apply", "--server", server.URL, "--plan", "plan-1", "--wait", "--timeout", "0s")
-	is.True(err != nil)
-	is.True(strings.Contains(err.Error(), "greater than zero"))
+	for _, status := range []appapi.OperationStatus{appapi.Failed, appapi.Canceled, appapi.Superseded} {
+		t.Run(string(status), func(t *testing.T) {
+			is := is.New(t)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.Method == http.MethodPost {
+					writer.WriteHeader(http.StatusAccepted)
+					_ = json.NewEncoder(writer).Encode(appapi.Operation{ID: "operation-1", Status: appapi.Pending})
+					return
+				}
+				_ = json.NewEncoder(writer).Encode(appapi.Operation{ID: "operation-1", Status: status, Message: "deployment exceeded its progress deadline"})
+			}))
+			defer server.Close()
+			_, _, err := runApplicationCommand(t, "apply", "--server", server.URL, "--plan", "plan-1", "--wait")
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), "progress deadline"))
+			_, _, err = runApplicationCommand(t, "apply", "--server", server.URL, "--plan", "plan-1", "--wait", "--timeout", "0s")
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), "greater than zero"))
+		})
+	}
 }
 
 // TestOrganizationCommandsUseGeneratedClient keeps organization creation and
@@ -287,8 +291,9 @@ users:
     client-key: client.key
 `), 0o600))
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		var input appapi.ClusterInput
-		assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
+		var link appapi.LinkClusterInput
+		assert.NoErr(json.NewDecoder(request.Body).Decode(&link))
+		input := link.Connection
 		assert.True(input.KubeconfigPath == nil)
 		assert.True(input.Kubeconfig != nil)
 		configuration, err := clientcmd.Load([]byte(*input.Kubeconfig))
@@ -340,7 +345,7 @@ func TestApplicationCommandsUseSpaceScope(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"plan", "--help"}, {"apply", "--help"}, {"space", "create", "--help"},
 		{"environment-group", "list", "--help"}, {"environment-group", "create", "--help"},
-		{"apps", "list", "--help"},
+		{"apps", "list", "--help"}, {"apps", "history", "--help"}, {"apps", "cancel", "--help"},
 	} {
 		assert := is.New(t)
 		output, _, err := runApplicationCommand(t, arguments...)
@@ -350,7 +355,7 @@ func TestApplicationCommandsUseSpaceScope(t *testing.T) {
 	}
 	for _, arguments := range [][]string{
 		{"cluster", "link", "dev"}, {"cluster", "link", "dev", "--organization="},
-		{"cluster", "list"}, {"space", "list"}, {"space", "create", "dev"},
+		{"cluster", "list"}, {"space", "list"}, {"space", "create", "dev"}, {"apps", "history", "api"},
 	} {
 		assert := is.New(t)
 		_, _, err := runApplicationCommand(t, arguments...)

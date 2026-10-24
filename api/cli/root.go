@@ -26,6 +26,7 @@ func NewRootCommand(ctx context.Context, log logger.Logger, cfg Config) *cobra.C
 	command.AddCommand(newApplicationServerCommand(cfg))
 	command.AddCommand(newApplicationCommands()...)
 	command.AddCommand(newEnvironmentGroupCommand())
+	command.AddCommand(newAddonCommand())
 	command.AddCommand(newClientConfigCommand())
 
 	command.SetOut(os.Stdout)

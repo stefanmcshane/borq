@@ -90,34 +90,6 @@ func initialSpace(organization, name string) Space {
 	return Space{ID: id, Organization: organization, Name: name, Namespace: "borq-" + id[:24], CertificateIssuer: "borq", Configuration: Configuration{Apps: []App{}}}
 }
 
-// clusterSpaceWrites reserves a cluster's initial space in the registration transaction.
-func (manager Manager) clusterSpaceWrites(ctx context.Context, cluster Cluster) ([]sqlite.Write, error) {
-	key := spaceKey(cluster.Organization, cluster.Name)
-	stored, previous, err := loadDocument[spaceRecord](ctx, manager.database, "space", key)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	if err == nil && stored.Space.Cluster != "" {
-		if stored.Space.Cluster != cluster.Name {
-			return nil, fmt.Errorf("%w: cluster's initial space already belongs to another cluster", ErrConflict)
-		}
-		return nil, nil
-	}
-	if errors.Is(err, ErrNotFound) {
-		stored = spaceRecord{Space: initialSpace(cluster.Organization, cluster.Name), Manifests: []map[string]any{}}
-	}
-	stored.Space.Cluster = cluster.Name
-	spaceWrite, err := documentWrite("space", key, stored, previous.Revision)
-	if err != nil {
-		return nil, err
-	}
-	bindingWrite, err := documentWrite("namespace", cluster.Organization+"/"+cluster.Name+"/"+stored.Space.Namespace, map[string]string{"spaceId": stored.Space.ID}, 0)
-	if err != nil {
-		return nil, err
-	}
-	return []sqlite.Write{spaceWrite, bindingWrite}, nil
-}
-
 // CreateSpace binds a space to one cluster with an automatic namespace and issuer.
 // Namespace ownership is persisted here; Kubernetes resources are created during apply.
 func (manager Manager) CreateSpace(ctx context.Context, input SpaceInput) (Space, error) {

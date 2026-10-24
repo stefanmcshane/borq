@@ -27,7 +27,7 @@ func TestRenderExample(t *testing.T) {
 	assert.NoErr(err)
 	rendered, err := Render(configuration, "borq-shop", "env-shop-prod")
 	assert.NoErr(err)
-	assert.Equal(rendered.RendererVersion, "0.9.0")
+	assert.Equal(rendered.RendererVersion, "0.12.0")
 	assert.Equal(rendered.Values["namespace"], "borq-shop")
 	assert.Equal(rendered.Values["targetID"], "env-shop-prod")
 	assert.Equal(len(rendered.Manifests), 5)
@@ -41,6 +41,8 @@ func TestRenderExample(t *testing.T) {
 	assert.Equal(*frontend.Spec.Replicas, int32(1))
 	assert.Equal(frontend.Spec.Selector.MatchLabels["borq.run/target-id"], "env-shop-prod")
 	assert.Equal(frontend.Spec.Template.Labels["app.kubernetes.io/name"], "frontend")
+	assert.Equal(frontend.Spec.Template.Labels["borq.run/logs"], "true")
+	assert.Equal(frontend.Spec.Template.Labels["borq.run/metrics"], "true")
 	container := frontend.Spec.Template.Spec.Containers[0]
 	assert.Equal(container.Image, "nginx:1.27.5")
 	assert.Equal(container.Ports[0].ContainerPort, int32(80))
@@ -304,4 +306,37 @@ func decodeResource[Resource any](t *testing.T, manifest map[string]any) Resourc
 		t.Fatal(err)
 	}
 	return resource
+}
+
+// TestRuntimeRevisionLabels connects logs to rendered runtime settings while
+// ensuring scaling or updating another app does not roll unchanged replicas.
+func TestRuntimeRevisionLabels(t *testing.T) {
+	assert := is.New(t)
+	initial, err := Merge(Configuration{}, patchFromJson(t, `{"apps":[{"name":"web","image":"nginx:1"},{"name":"worker","image":"nginx:1","port":0}]}`))
+	assert.NoErr(err)
+	first, err := RenderForPlan(initial, "production", "target", "first", "borq")
+	assert.NoErr(err)
+	before := decodeResource[appsv1.Deployment](t, findManifest(t, first, "Deployment", "web"))
+	worker := decodeResource[appsv1.Deployment](t, findManifest(t, first, "Deployment", "worker"))
+	assert.Equal(len(before.Spec.Template.Labels["borq.run/revision"]), 12)
+	scaled, err := Merge(initial, patchFromJson(t, `{"apps":[{"name":"web","replicas":3}]}`))
+	assert.NoErr(err)
+	second, err := RenderForPlan(scaled, "production", "target", "second", "borq")
+	assert.NoErr(err)
+	after := decodeResource[appsv1.Deployment](t, findManifest(t, second, "Deployment", "web"))
+	assert.Equal(before.Spec.Template, after.Spec.Template)
+	updated, err := Merge(scaled, patchFromJson(t, `{"apps":[{"name":"web","image":"nginx:2","predeploy":{"command":"/app migrate"}}]}`))
+	assert.NoErr(err)
+	third, err := RenderForPlan(updated, "production", "target", "third", "borq")
+	assert.NoErr(err)
+	release := decodeResource[appsv1.Deployment](t, findManifest(t, third, "Deployment", "web"))
+	assert.True(before.Spec.Template.Labels["borq.run/revision"] != release.Spec.Template.Labels["borq.run/revision"])
+	assert.Equal(worker.Spec.Template, decodeResource[appsv1.Deployment](t, findManifest(t, third, "Deployment", "worker")).Spec.Template)
+	for _, manifest := range third.Manifests {
+		if manifest["kind"] != "Job" {
+			continue
+		}
+		job := decodeResource[batchv1.Job](t, manifest)
+		assert.Equal(job.Spec.Template.Labels["borq.run/revision"], release.Spec.Template.Labels["borq.run/revision"])
+	}
 }

@@ -87,7 +87,7 @@ func readComponents(ctx context.Context, connection kubernetes.Connection, kubec
 		if err != nil {
 			return result, err
 		}
-		installed, err := releases.Inspect(ctx, helm.InstallOrUpgradeInput{Namespace: input.Namespace, ReleaseName: definition.Name, ChartRef: definition.Chart, RepositoryUrl: definition.Repository, Version: definition.Version, Values: values})
+		installed, err := releases.Inspect(ctx, helm.InstallOrUpgradeInput{Namespace: input.Namespace, ReleaseName: definition.Name, ChartRef: definition.Chart, RepositoryUrl: definition.Repository, Version: definition.Version, Values: values, PodLabels: componentPodLabels()})
 		if err != nil {
 			return result, err
 		}
@@ -157,6 +157,7 @@ func reconcileComponent(ctx context.Context, releases helm.ReleaseManager, defin
 		Namespace: input.Namespace, ReleaseName: definition.Name, ChartRef: definition.Chart, RepositoryUrl: definition.Repository,
 		Version: definition.Version, Values: values, Timeout: input.Timeout, Upgrade: upgrade,
 		RecoverPending: recoverPending,
+		PodLabels:      componentPodLabels(),
 		SkipWait:       definition.Name == "openbao" && input.Profile == "production",
 	})
 	if installed.Version != "" {
@@ -353,4 +354,10 @@ func waitForSecret(ctx context.Context, connection kubernetes.Connection, namesp
 		case <-ticker.C:
 		}
 	}
+}
+
+// Collection labels are added after rendering so every chart, including hooks
+// and charts without podLabels values, follows the same selection policy.
+func componentPodLabels() map[string]string {
+	return map[string]string{"borq.run/logs": "true", "borq.run/metrics": "true"}
 }

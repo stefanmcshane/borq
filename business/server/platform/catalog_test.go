@@ -74,9 +74,15 @@ func TestCatalogValuesResolveWithoutSecrets(t *testing.T) {
 		alloy, err := renderComponentValues(targetCatalog(false)[3], valuesInput{Settings: settings, ClusterID: "cluster-1"})
 		is.NoErr(err)
 		content := alloy["alloy"].(map[string]any)["configMap"].(map[string]any)["content"].(string)
-		is.True(strings.Contains(content, `sys.env("TELEMETRY_TOKEN")`))
+		is.True(strings.Contains(content, `bearer_token_file = "/var/run/borq-telemetry/TELEMETRY_TOKEN"`))
+		is.True(!strings.Contains(content, `sys.env("TELEMETRY_TOKEN")`))
+		volumes := alloy["controller"].(map[string]any)["volumes"].(map[string]any)["extra"].([]any)
+		is.Equal(volumes[0].(map[string]any)["secret"].(map[string]any)["secretName"], "borq-telemetry")
 		is.True(strings.Contains(content, `borq_cluster = "cluster-1"`))
-		is.True(strings.Contains(content, `prometheus.exporter.self`))
+		is.True(strings.Contains(content, `prometheus.scrape "cadvisor"`))
+		is.True(strings.Contains(content, `loki.source.kubernetes_events "lifecycle"`))
+		is.True(strings.Contains(content, `target_label = "borq_revision"`))
+		is.True(strings.Contains(content, `target_label = "image"`))
 	}
 }
 

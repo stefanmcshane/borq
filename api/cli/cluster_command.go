@@ -37,7 +37,7 @@ func newClusterCommand() *cobra.Command {
 
 func newClusterLinkCommand() *cobra.Command {
 	options := clusterLinkOptions{reconcile: true, diff: true, output: "cli"}
-	link := &cobra.Command{Use: "link [NAME]", Short: "Link a cluster, preview component changes, and queue setup without waiting.", Args: cobra.MaximumNArgs(1),
+	link := &cobra.Command{Use: "link [NAME]", Short: "Link a cluster as NAME-xxxxx, create its initial space, and queue setup.", Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, arguments []string) error {
 			if options.output != "cli" && options.output != "json" && options.output != "yaml" {
 				return errors.New("--output must be cli, json, or yaml")
@@ -159,13 +159,14 @@ func executeClusterLinkRegistration(command *cobra.Command, options clusterLinkO
 	// Linking registers first so a preview or later setup failure cannot undo it.
 	reconcile := false
 	body := appapi.ClusterInput{Context: &options.contextName, Kubeconfig: &source, ClientApiServer: &clientApiServer, Reconcile: &reconcile}
-	response, err := client.PutClusterWithResponse(command.Context(), options.scope.organization, name, body)
+	response, err := client.LinkClusterWithResponse(command.Context(), options.scope.organization, appapi.LinkClusterInput{Name: name, Connection: body})
 	if err != nil {
 		return err
 	}
 	if response.JSON200 == nil {
 		return applicationFailure(response.StatusCode(), response.Body)
 	}
+	name = response.JSON200.Name
 	if options.diff {
 		preview, err := client.DiffClusterComponentsWithResponse(command.Context(), options.scope.organization, name, &appapi.DiffClusterComponentsParams{})
 		if err != nil {

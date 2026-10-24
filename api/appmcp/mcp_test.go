@@ -40,6 +40,13 @@ func TestToolDiscovery(t *testing.T) {
 		arguments string
 		valid     bool
 	}{
+		{"PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"body":{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.3","values":{"replicas":0},"logs":false}}`, true},
+		{"PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"body":{"repository":"https://charts.example.com","chart":"redis"}}`, false},
+		{"GetChartDefaults", `{"body":{"repository":"https://charts.example.com","name":"redis","version":"1.2.3"}}`, true},
+		{"GetAppMetrics", `{"path":{"organization":"team","space":"dev","application":"web"},"query":{"range":"3d"}}`, true},
+		{"GetAppMetrics", `{"path":{"organization":"team","space":"dev","application":"web"},"query":{"range":"90d"}}`, false},
+		{"GetAppLogs", `{"path":{"organization":"team","space":"dev","application":"web"},"query":{"search":"error","limit":1001}}`, false},
+		{"PlanAppRollback", `{"path":{"organization":"team","space":"dev","application":"web"},"body":{"deployment":"release-1"}}`, true},
 		{"ListOrganizations", `{}`, true},
 		{"ListOrganizations", `{"extra":true}`, false},
 		{"PutOrganization", `{"path":{"organization":"team"}}`, true},
@@ -68,6 +75,13 @@ func TestToolDiscovery(t *testing.T) {
 	assert.True(tools["CreateCluster"] == nil)
 	assert.True(tools["ListClusterCreations"] == nil)
 	assert.True(!tools["ApplyPlan"].Annotations.ReadOnlyHint)
+	assert.True(tools["ApplyPlan"].Annotations.IdempotentHint)
+	assert.True(*tools["RestartApp"].Annotations.DestructiveHint)
+	assert.True(!tools["RestartApp"].Annotations.IdempotentHint)
+	assert.True(!*tools["PlanAppRollback"].Annotations.DestructiveHint)
+	assert.True(tools["GetAppMetrics"].Annotations.ReadOnlyHint)
+	assert.True(tools["GetChartDefaults"].Annotations.ReadOnlyHint)
+	assert.True(*tools["DeleteCustomChart"].Annotations.DestructiveHint)
 }
 
 // TestToolRequests owns the MCP-to-HTTP mapping, raw patch preservation, array
@@ -78,6 +92,10 @@ func TestToolRequests(t *testing.T) {
 		status                                   int
 		response                                 string
 	}{
+		{"custom chart install", "PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"body":{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.3","logs":false,"values":{"replicas":0}}}`, "PUT", "/api/v1/organizations/team/spaces/dev/custom-charts/cache", `{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.3","logs":false,"values":{"replicas":0}}`, 202, `{"operation":"addon-1"}`},
+		{"custom chart apply", "PutCustomChart", `{"path":{"organization":"team","space":"dev","customChart":"cache"},"query":{"apply":true},"body":{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.4"}}`, "PUT", "/api/v1/organizations/team/spaces/dev/custom-charts/cache?apply=true", `{"repository":"oci://registry.example.com/charts","chart":"redis","version":"1.2.4"}`, 202, `{"operation":"addon-2"}`},
+		{"app logs", "GetAppLogs", `{"path":{"organization":"team","space":"dev","application":"web"},"query":{"range":"12h","search":"error timeout","limit":20}}`, "GET", "/api/v1/organizations/team/spaces/dev/apps/web/logs?limit=20&range=12h&search=error+timeout", "", 200, `{"entries":[]}`},
+		{"app restart", "RestartApp", `{"path":{"organization":"team","space":"dev","application":"web"}}`, "POST", "/api/v1/organizations/team/spaces/dev/apps/web/restart", "", 202, `{"state":"running"}`},
 		{"no arguments", "ListOrganizations", ``, "GET", "/api/v1/organizations", "", 200, `[]`},
 		{"path", "PutOrganization", `{"path":{"organization":"team"}}`, "PUT", "/api/v1/organizations/team", "", 200, `{"name":"team"}`},
 		{"raw patch", "ExpandApps", `{"body":{"apps":[{"name":"api","replicas":0,"predeploy":{},"env":{}}]}}`, "POST", "/api/v1/apps/expand", `{"apps":[{"name":"api","replicas":0,"predeploy":{},"env":{}}]}`, 200, `{"apps":[]}`},

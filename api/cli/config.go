@@ -10,6 +10,10 @@ import (
 
 // Config describes borq server runtime configuration read from the environment.
 type Config struct {
+	// PrometheusQueryUrl selects the private metrics query endpoint; empty uses management service discovery.
+	PrometheusQueryUrl string `env:"BORQ_PROMETHEUS_QUERY_URL"`
+	// LokiQueryUrl selects the private logs query endpoint; empty uses management service discovery.
+	LokiQueryUrl string `env:"BORQ_LOKI_QUERY_URL"`
 	// ApiUrl is the management API address used to default managed service endpoints.
 	ApiUrl string `env:"BORQ_API_URL"`
 	Port   int
@@ -90,6 +94,8 @@ func Load() (Config, error) {
 		destination *string
 	}{
 		{"BORQ_API_URL", &cfg.ApiUrl},
+		{"BORQ_PROMETHEUS_QUERY_URL", &cfg.PrometheusQueryUrl},
+		{"BORQ_LOKI_QUERY_URL", &cfg.LokiQueryUrl},
 		{"BORQ_INFRASTRUCTURE_PROFILE", &cfg.InfrastructureProfile},
 		{"BORQ_MANAGEMENT_KUBECONFIG", &cfg.ManagementKubeconfigPath},
 		{"BORQ_MANAGEMENT_OPENBAO_URL", &cfg.ManagementOpenBaoURL},

@@ -157,7 +157,7 @@ func TestEnvironmentEditorWithoutJavascript(t *testing.T) {
 	assert.True(strings.Contains(response.Body.String(), "- name: LOG_LEVEL\n  value: info"))
 }
 
-// TestEnvironmentGroupPages owns resource navigation, scoped application links,
+// TestEnvironmentGroupPages owns resource navigation, shared group identity,
 // version readback, and the separation of list metadata from editable values.
 func TestEnvironmentGroupPages(t *testing.T) {
 	for _, input := range []struct {
@@ -189,6 +189,22 @@ func TestEnvironmentGroupPages(t *testing.T) {
 			assert.True(strings.Contains(response.Body.String(), input.present))
 			assert.True(!strings.Contains(response.Body.String(), input.absent))
 			assert.Equal(response.Header().Get("Cache-Control"), "no-store")
+			selection, err := url.ParseQuery(input.query)
+			assert.NoErr(err)
+			if input.status != http.StatusOK || selection.Get("group") == "" {
+				return
+			}
+			document, err := html.Parse(strings.NewReader(response.Body.String()))
+			assert.NoErr(err)
+			var groupDetails []string
+			for node := range document.Descendants() {
+				for _, attribute := range node.Attr {
+					if attribute.Key == "aria-label" && attribute.Val == "Environment group details" {
+						groupDetails = append(groupDetails, navigationText(node))
+					}
+				}
+			}
+			assert.Equal(groupDetails, []string{"web-config Environment group · Latest v4 · Used by 1 application"})
 		})
 	}
 }

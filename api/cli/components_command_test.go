@@ -31,17 +31,20 @@ func TestClusterLinkPreviewsThenQueues(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				requests = append(requests, request.Method+" "+request.URL.Path)
 				writer.Header().Set("Content-Type", "application/json")
-				switch request.Method {
-				case http.MethodPut:
-					var body appapi.ClusterInput
-					assert.NoErr(json.NewDecoder(request.Body).Decode(&body))
+				switch {
+				case strings.HasSuffix(request.URL.Path, "/clusters"):
+					var link appapi.LinkClusterInput
+					assert.NoErr(json.NewDecoder(request.Body).Decode(&link))
+					assert.Equal(link.Name, "target")
+					assert.Equal(request.Method, http.MethodPost)
+					body := link.Connection
 					assert.True(body.Reconcile != nil)
 					assert.Equal(*body.Reconcile, false)
-					_ = json.NewEncoder(writer).Encode(appapi.Cluster{Organization: "team", Name: "target"})
-				case http.MethodGet:
+					_ = json.NewEncoder(writer).Encode(appapi.Cluster{Organization: "team", Name: "target-abc12"})
+				case request.Method == http.MethodGet:
 					assert.True(strings.HasSuffix(request.URL.Path, "/components/diff"))
 					_ = json.NewEncoder(writer).Encode(clusterTestDiff())
-				case http.MethodPost:
+				case request.Method == http.MethodPost:
 					assert.True(strings.HasSuffix(request.URL.Path, "/components/reconcile"))
 					_ = json.NewEncoder(writer).Encode(appapi.ComponentInstallation{ID: "run-1", Status: "queued"})
 				}
@@ -50,17 +53,17 @@ func TestClusterLinkPreviewsThenQueues(t *testing.T) {
 			flags := []string{"cluster", "link", "target", "--organization", "team", "--server", server.URL, "--kubeconfig", clusterLinkTestKubeconfig(t)}
 			output, diagnostics, err := runApplicationCommand(t, append(flags, input.flags...)...)
 			assert.NoErr(err)
-			expected := []string{"PUT /api/v1/organizations/team/clusters/target"}
+			expected := []string{"POST /api/v1/organizations/team/clusters"}
 			if input.diff {
-				expected = append(expected, "GET /api/v1/organizations/team/clusters/target/components/diff")
+				expected = append(expected, "GET /api/v1/organizations/team/clusters/target-abc12/components/diff")
 				assert.True(strings.Contains(diagnostics, "Missing target component:"))
 				assert.True(!strings.Contains(diagnostics, "valuesDiff:"))
 			}
 			if input.reconcile {
-				expected = append(expected, "POST /api/v1/organizations/team/clusters/target/components/reconcile")
+				expected = append(expected, "POST /api/v1/organizations/team/clusters/target-abc12/components/reconcile")
 				assert.True(strings.Contains(output, "target components queued"))
 			} else {
-				assert.True(strings.Contains(output, "Cluster target linked"))
+				assert.True(strings.Contains(output, "Cluster target-abc12 linked"))
 			}
 			assert.Equal(requests, expected)
 		})
@@ -68,16 +71,16 @@ func TestClusterLinkPreviewsThenQueues(t *testing.T) {
 }
 
 // TestClusterLinkDoesNotEnqueueAfterPreviewFailure leaves a successful link
-// intact while surfacing conflicts and comparison failures without another PUT.
+// intact while surfacing conflicts and comparison failures without another registration.
 func TestClusterLinkDoesNotEnqueueAfterPreviewFailure(t *testing.T) {
 	for _, conflict := range []bool{false, true} {
 		assert := is.New(t)
 		var registrations, posts atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
-			if request.Method == http.MethodPut {
+			if strings.HasSuffix(request.URL.Path, "/clusters") {
 				registrations.Add(1)
-				_ = json.NewEncoder(writer).Encode(appapi.Cluster{Organization: "team", Name: "target"})
+				_ = json.NewEncoder(writer).Encode(appapi.Cluster{Organization: "team", Name: "target-abc12"})
 				return
 			}
 			if request.Method == http.MethodPost {
@@ -93,8 +96,8 @@ func TestClusterLinkDoesNotEnqueueAfterPreviewFailure(t *testing.T) {
 		flags := []string{"cluster", "link", "target", "--organization", "team", "--server", server.URL, "--kubeconfig", clusterLinkTestKubeconfig(t), "--output", "yaml"}
 		output, _, err := runApplicationCommand(t, flags...)
 		assert.True(err != nil)
-		assert.True(strings.Contains(err.Error(), "cluster target is linked"))
-		assert.True(strings.Contains(output, "name: target"))
+		assert.True(strings.Contains(err.Error(), "cluster target-abc12 is linked"))
+		assert.True(strings.Contains(output, "name: target-abc12"))
 		assert.Equal(registrations.Load(), int32(1))
 		assert.Equal(posts.Load(), int32(0))
 		server.Close()
@@ -117,8 +120,8 @@ func TestClusterLinkOnlySkipsPreviewForDisabledInfrastructure(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
 			switch {
-			case request.Method == http.MethodPut:
-				_ = json.NewEncoder(writer).Encode(appapi.Cluster{Organization: "team", Name: "target"})
+			case strings.HasSuffix(request.URL.Path, "/clusters"):
+				_ = json.NewEncoder(writer).Encode(appapi.Cluster{Organization: "team", Name: "target-abc12"})
 			case strings.HasSuffix(request.URL.Path, "/diff"):
 				writer.WriteHeader(input.status)
 				_, _ = writer.Write([]byte(`{"message":"comparison unavailable"}`))

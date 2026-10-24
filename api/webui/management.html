@@ -1,4 +1,0 @@
-{{define "view-management"}}
-<section class="card management-panel"><header><h2>Management components</h2><p>Inspect and upgrade the components that run Borq.</p></header><section><form action="/ui/management/actions" method="post" hx-post="/ui/management/actions" hx-disabled-elt="find button" hx-sync="this:drop" hx-confirm="Upgrade the management components to the current Borq catalog?"><button class="btn" data-variant="outline" name="action" value="upgrade-management" type="submit">Upgrade management components</button></form></section></section>
-<div hx-get="/ui/management/components" hx-trigger="load" hx-target="this" hx-swap="outerHTML"><p class="field-help">Loading management components…</p></div>
-{{end}}

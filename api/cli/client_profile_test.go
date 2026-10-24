@@ -159,11 +159,12 @@ func TestClientProfilesRouteAndProtectSavedPlans(t *testing.T) {
 		{"config", "use", "dev"},
 		{"environment-group", "list", "--organization", "other"},
 		{"environment-group", "list", "--organization", "other", "--space", "preview"},
+		{"addons", "custom", "list", "--profile", "prod"},
 	} {
 		_, _, err := runConfiguredApplicationCommand(arguments...)
 		assert.NoErr(err)
 	}
-	assert.Equal(paths, []string{"/api/v1/organizations/other/spaces/default/environment-groups", "/api/v1/organizations/other/spaces/preview/environment-groups"})
+	assert.Equal(paths, []string{"/api/v1/organizations/other/spaces/default/environment-groups", "/api/v1/organizations/other/spaces/preview/environment-groups", "/api/v1/organizations/team/spaces/production/custom-charts"})
 	file := filepath.Join(t.TempDir(), "apps.yaml")
 	assert.NoErr(os.WriteFile(file, []byte("apps: []\n"), 0600))
 	_, _, err := runConfiguredApplicationCommand("plan", "-f", file)

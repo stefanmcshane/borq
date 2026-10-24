@@ -10,7 +10,8 @@ import (
 
 func newApplicationServerCommand(configuration Config) *cobra.Command {
 	input := appserver.NewInput{Port: configuration.Port, TelemetryPort: configuration.TelemetryPort, DataDir: configuration.DataDir,
-		ManagementEnabled:     configuration.ManagementEnabled,
+		ManagementEnabled:  configuration.ManagementEnabled,
+		PrometheusQueryUrl: configuration.PrometheusQueryUrl, LokiQueryUrl: configuration.LokiQueryUrl,
 		InfrastructureEnabled: configuration.InfrastructureEnabled, ManagementKubeconfigPath: configuration.ManagementKubeconfigPath,
 		PlatformSettings: platform.Settings{ApiUrl: configuration.ApiUrl, Profile: configuration.InfrastructureProfile, Namespace: "borq", OpenBaoURL: configuration.ManagementOpenBaoURL, TelemetryURL: configuration.ManagementTelemetryURL, LokiURL: configuration.ManagementLokiURL, PrometheusURL: configuration.ManagementPrometheusURL, StorageClass: configuration.InfrastructureStorageClass},
 	}
@@ -26,6 +27,8 @@ func newApplicationServerCommand(configuration Config) *cobra.Command {
 	}
 	command.Flags().IntVar(&input.Port, "port", input.Port, "HTTP listen port.")
 	command.Flags().IntVar(&input.TelemetryPort, "telemetry-port", input.TelemetryPort, "Public authenticated ingestion port; administrative routes are excluded.")
+	command.Flags().StringVar(&input.PrometheusQueryUrl, "prometheus-query-url", input.PrometheusQueryUrl, "Private Prometheus query URL; empty uses management service discovery.")
+	command.Flags().StringVar(&input.LokiQueryUrl, "loki-query-url", input.LokiQueryUrl, "Private Loki query URL; empty uses management service discovery.")
 	command.Flags().StringVar(&input.ListenHost, "listen", "127.0.0.1", "HTTP listen interface.")
 	command.Flags().StringVar(&input.DataDir, "data-dir", input.DataDir, "Persistent application state directory.")
 	command.Flags().StringVar(&input.PlatformSettings.ApiUrl, "api-url", input.PlatformSettings.ApiUrl, "Advertised management API address; component endpoints default automatically.")

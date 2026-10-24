@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/stefanmcshane/borq/api/appapi"
@@ -37,43 +38,90 @@ func (web handler) action(writer http.ResponseWriter, request *http.Request) {
 
 func (web handler) execute(request *http.Request) (actionResult, error) {
 	form := request.PostForm
-	if request.URL.Path == "/ui/management/actions" {
-		if form.Get("action") != "upgrade-management" {
-			return actionResult{}, apiProblem{status: http.StatusBadRequest, message: "Choose a supported management action."}
-		}
-		_, err := requestApi[appapi.ComponentInstallation](request.Context(), web.api, http.MethodPost, "/api/v1/management/components/upgrade", nil)
-		if err != nil {
-			return actionResult{}, err
-		}
-		return actionResult{selection: url.Values{"view": {"management"}}, notice: "Management components upgraded."}, nil
-	}
 	organization, space := form.Get("organization"), form.Get("space")
 	result := actionResult{selection: url.Values{"view": {form.Get("view")}, "organization": {organization}, "space": {space}}}
 	if result.selection.Get("view") == "" {
 		result.selection.Set("view", "overview")
 	}
 	name := form.Get("name")
+	if form.Get("application") != "" || form.Get("action") == "plan-app" {
+		result.selection.Set("tab", form.Get("tab"))
+		result.selection.Set("subtab", form.Get("subtab"))
+	}
 	base := organizationPath(organization)
 	switch form.Get("action") {
+	case "cancel-deployment":
+		id := form.Get("deployment")
+		operation, err := requestApi[appapi.Operation](request.Context(), web.api, http.MethodGet, "/api/v1/operations/"+url.PathEscape(id), nil)
+		if err != nil {
+			return result, err
+		}
+		target, err := requestApi[appapi.Space](request.Context(), web.api, http.MethodGet, spacePath(organization, space), nil)
+		if err != nil {
+			return result, err
+		}
+		if operation.SpaceID != target.ID {
+			return result, apiProblem{status: http.StatusConflict, message: "Select the deployment’s organization and space before canceling it."}
+		}
+		if _, err := requestApi[appapi.Operation](request.Context(), web.api, http.MethodPost, "/api/v1/operations/"+url.PathEscape(id)+"/cancel", nil); err != nil {
+			return result, err
+		}
+		result.selection.Set("view", "application")
+		result.selection.Set("app", form.Get("application"))
+		result.selection.Set("tab", "deployments")
+		result.selection.Set("operation", id)
+		result.notice = "Deployment cancellation requested. Accepted settings are retained."
+	case "put-custom-chart", "delete-custom-chart":
+		path := spacePath(organization, space) + "/custom-charts/" + url.PathEscape(name)
+		method := http.MethodDelete
+		var body any
+		if form.Get("action") == "put-custom-chart" {
+			input, err := customChartFormInput(form)
+			if err != nil {
+				return result, err
+			}
+			body, method = input, http.MethodPut
+			if form.Get("apply") == "true" {
+				path += "?apply=true"
+			}
+		}
+		customChart, err := requestApi[appapi.CustomChart](request.Context(), web.api, method, path, body)
+		if err != nil {
+			return result, err
+		}
+		result.selection.Set("view", "custom-chart")
+		result.selection.Set("customChart", customChart.Name)
+		result.notice = customChart.Message
+		if method == http.MethodDelete {
+			result.selection.Set("view", "custom-charts")
+			result.selection.Del("customChart")
+		}
 	case "create-organization":
 		created, err := requestApi[appapi.Organization](request.Context(), web.api, http.MethodPut, organizationPath(name), nil)
 		if err != nil {
 			return result, err
 		}
-		result.selection = url.Values{"organization": {created.Name}, "view": {"overview"}}
-		result.notice = "Organization created. Link a cluster to create its first space."
+		result.selection = url.Values{"organization": {created.Name}, "view": {"overview"}, "setup": {"cluster"}}
+		result.notice = "Organization created. Link a cluster to create its first deployment space."
 	case "register-cluster":
 		// Generated API models use pointers to preserve omitted options and explicit false values.
-		reconcile := form.Get("reconcile") == "on"
-		context, kubeconfig := form.Get("context"), form.Get("kubeconfig")
-		body := appapi.ClusterInput{Context: &context, Reconcile: &reconcile, Kubeconfig: &kubeconfig}
-		_, err := requestApi[appapi.Cluster](request.Context(), web.api, http.MethodPut, base+"/clusters/"+url.PathEscape(name), body)
+		reconcile := true
+		kubeconfig := form.Get("kubeconfig")
+		body := appapi.ClusterInput{Reconcile: &reconcile, Kubeconfig: &kubeconfig}
+		created, err := requestApi[appapi.Cluster](request.Context(), web.api, http.MethodPost, base+"/clusters", appapi.LinkClusterInput{Name: name, Connection: body})
 		if err != nil {
 			return result, err
 		}
-		result.selection.Set("cluster", name)
-		result.selection.Set("space", name)
-		result.notice = "Cluster linked and its initial space is ready. Component setup runs in the background when enabled."
+		result.selection.Set("cluster", created.Name)
+		result.selection.Del("space")
+		if result.selection.Get("view") == "clusters" {
+			result.selection.Set("view", "cluster")
+			result.selection.Set("tab", "metrics")
+		}
+		if form.Get("setup") == "cluster" {
+			result.selection = url.Values{"organization": {organization}, "view": {"overview"}}
+		}
+		result.notice = "Cluster linked and its initial space created. Required component setup was requested."
 	case "create-space":
 		body := appapi.SpaceInput{Cluster: form.Get("cluster")}
 		created, err := requestApi[appapi.Space](request.Context(), web.api, http.MethodPut, base+"/spaces/"+url.PathEscape(name), body)
@@ -81,6 +129,9 @@ func (web handler) execute(request *http.Request) (actionResult, error) {
 			return result, err
 		}
 		result.selection.Set("space", created.Name)
+		if result.selection.Get("view") == "spaces" {
+			result.selection.Del("space")
+		}
 		result.notice = "Space saved. Its cluster binding is fixed."
 	case "plan-app":
 		document, err := applicationDocument(form)
@@ -102,6 +153,30 @@ func (web handler) execute(request *http.Request) (actionResult, error) {
 		result.selection.Set("app", application)
 		result.selection.Set("plan", plan.ID)
 		result.notice = "Plan saved. Review the changes before applying them."
+	case "restart-app":
+		application := form.Get("application")
+		path := spacePath(organization, space) + "/apps/" + url.PathEscape(application) + "/restart"
+		if _, err := requestApi[appapi.ResourceStatus](request.Context(), web.api, http.MethodPost, path, nil); err != nil {
+			return result, err
+		}
+		result.selection.Set("view", "application")
+		result.selection.Set("app", application)
+		result.selection.Set("tab", "overview")
+		result.notice = "Rolling restart started. Live health updates below."
+	case "scale-app":
+		application := form.Get("application")
+		replicas, parseError := strconv.Atoi(form.Get("replicas"))
+		if parseError != nil || replicas < 0 || int64(replicas) > 2147483647 {
+			return result, apiProblem{status: http.StatusBadRequest, message: "Enter a valid replica count."}
+		}
+		plan, err := requestApi[appapi.Plan](request.Context(), web.api, http.MethodPost, spacePath(organization, space)+"/plans", appapi.Patch{Apps: &[]appapi.AppPatch{{Name: application, Replicas: &replicas}}})
+		if err != nil {
+			return result, err
+		}
+		result.selection.Set("view", "application")
+		result.selection.Set("app", application)
+		result.selection.Set("plan", plan.ID)
+		result.notice = "Review the proposed changes, then deploy when ready."
 	case "apply-plan":
 		plan, err := requestApi[appapi.Plan](request.Context(), web.api, http.MethodGet, "/api/v1/plans/"+url.PathEscape(form.Get("plan")), nil)
 		if err != nil {
@@ -118,9 +193,11 @@ func (web handler) execute(request *http.Request) (actionResult, error) {
 		if application := form.Get("application"); application != "" {
 			result.selection.Set("view", "application")
 			result.selection.Set("app", application)
+			result.selection.Set("tab", "overview")
+			result.selection.Del("subtab")
 		}
 		result.selection.Set("operation", operation.ID)
-		result.notice = "Deployment queued. Progress appears below."
+		result.notice = "Deployment accepted. It replaces unfinished deployments in this space."
 	case "reconcile-cluster", "upgrade-cluster":
 		operation := "reconcile"
 		if form.Get("action") == "upgrade-cluster" {
@@ -131,6 +208,9 @@ func (web handler) execute(request *http.Request) (actionResult, error) {
 			return result, err
 		}
 		result.selection.Set("cluster", form.Get("cluster"))
+		result.selection.Set("view", "cluster")
+		result.selection.Set("tab", "components")
+		result.selection.Del("space")
 		result.notice = "Component run queued. Progress appears below."
 	case "publish-group":
 		body, err := environmentPublication(form)

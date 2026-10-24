@@ -242,6 +242,11 @@ func (manager Manager) GetManagementComponents(ctx context.Context) (ComponentIn
 	return observeComponentState(stored.Installation, result), nil
 }
 
+// GetClusterSetup describes required target components using the configured namespace.
+func (manager Manager) GetClusterSetup() (platform.TargetSetup, error) {
+	return platform.GetTargetSetup(manager.runtime.platformSettings)
+}
+
 // GetClusterComponents returns saved worker state without waiting for the target cluster.
 func (manager Manager) GetClusterComponents(ctx context.Context, organization, name string) (ComponentInstallation, error) {
 	_, _, err := loadDocument[Cluster](ctx, manager.database, "cluster", organization+"/"+name)
@@ -250,6 +255,18 @@ func (manager Manager) GetClusterComponents(ctx context.Context, organization, n
 	}
 	stored, _, err := loadDocument[componentRecord](ctx, manager.database, "components", platform.ClusterID(organization, name))
 	return stored.Installation, err
+}
+
+// GetClusterManagementComponents reads management services on this saved cluster
+// link without falling back to Borq's own hosting cluster or changing releases.
+func (manager Manager) GetClusterManagementComponents(ctx context.Context, organization, name string) (platform.Result, error) {
+	cluster, _, err := loadDocument[Cluster](ctx, manager.database, "cluster", organization+"/"+name)
+	if err != nil {
+		return platform.Result{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return platform.ReadClusterManagement(ctx, platform.TargetInput{KubeconfigPath: cluster.KubeconfigPath, Context: cluster.Context, InCluster: cluster.InCluster, Settings: manager.runtime.platformSettings})
 }
 
 // DiffClusterComponents compares a registered target without scheduling or writing anything.

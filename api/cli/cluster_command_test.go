@@ -78,8 +78,9 @@ users:
 	received := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received = true
-		var body appapi.ClusterInput
-		is.NoErr(json.NewDecoder(r.Body).Decode(&body))
+		var link appapi.LinkClusterInput
+		is.NoErr(json.NewDecoder(r.Body).Decode(&link))
+		body := link.Connection
 		is.True(body.Context != nil)
 		is.Equal(*body.Context, "second")
 		is.True(body.Kubeconfig != nil)
@@ -197,10 +198,11 @@ func TestClusterLinkLocalDiscoveryUploadsInternalAddress(t *testing.T) {
 		}
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			registrations.Add(1)
-			assert.Equal(request.Method, http.MethodPut)
-			assert.Equal(request.URL.Path, "/api/v1/organizations/team/clusters/local")
-			var input appapi.ClusterInput
-			assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
+			assert.Equal(request.Method, http.MethodPost)
+			assert.Equal(request.URL.Path, "/api/v1/organizations/team/clusters")
+			var link appapi.LinkClusterInput
+			assert.NoErr(json.NewDecoder(request.Body).Decode(&link))
+			input := link.Connection
 			assert.True(input.Kubeconfig != nil)
 			uploaded, err := clientcmd.Load([]byte(*input.Kubeconfig))
 			assert.NoErr(err)

@@ -12,7 +12,7 @@ server:
     enabled: true
     size: {{ if eq .Profile "dev" }}1Gi{{ else }}5Gi{{ end }}
     storageClass: {{ .StorageClass | quote }}
-  retention: {{ if eq .Profile "dev" }}24h{{ else }}7d{{ end }}
+  retention: {{ if eq .Profile "dev" }}96h{{ else }}7d{{ end }}
   retentionSize: {{ if eq .Profile "dev" }}768MB{{ else }}4GB{{ end }}
   extraFlags:
     - web.enable-lifecycle
@@ -31,3 +31,9 @@ configmapReload:
         memory: 16Mi
       limits:
         memory: 64Mi
+
+# Alloy owns discovery; the management store only ingests selected remote writes.
+# Replacing the chart's default scrape_configs avoids broad node/service/pod jobs.
+serverFiles:
+  prometheus.yml:
+    scrape_configs: []

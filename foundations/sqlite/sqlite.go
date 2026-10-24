@@ -35,12 +35,15 @@ type Record struct {
 	Revision   int64
 }
 
-// Write compares the previous revision before replacing a document. Revision zero creates it.
+// Write compares the previous revision before replacing or deleting a document.
+// Revision zero creates a new document.
 type Write struct {
 	Collection       string
 	Key              string
 	Value            json.RawMessage
 	ExpectedRevision int64
+	// Delete removes an existing revision instead of storing Value.
+	Delete bool
 }
 
 // New opens a private persistent database. WAL files must remain on the same host as the server.
@@ -185,7 +188,11 @@ func (database Database) List(ctx context.Context, collection string) ([]Record,
 // Commit atomically checks and writes all supplied documents, without holding locks across network calls.
 func (database Database) Commit(ctx context.Context, writes []Write) error {
 	for _, write := range writes {
-		if write.Collection == "" || write.Key == "" || write.ExpectedRevision < 0 || !json.Valid(write.Value) {
+		validValue := json.Valid(write.Value)
+		if write.Delete {
+			validValue = len(write.Value) == 0 && write.ExpectedRevision > 0
+		}
+		if write.Collection == "" || write.Key == "" || write.ExpectedRevision < 0 || !validValue {
 			return errors.New("invalid sqlite document write")
 		}
 	}
@@ -196,7 +203,11 @@ func (database Database) Commit(ctx context.Context, writes []Write) error {
 	defer transaction.Rollback()
 	for _, write := range writes {
 		var result sql.Result
-		if write.ExpectedRevision == 0 {
+		if write.Delete {
+			result, err = transaction.ExecContext(ctx,
+				"DELETE FROM records WHERE collection = ? AND key = ? AND revision = ?",
+				write.Collection, write.Key, write.ExpectedRevision)
+		} else if write.ExpectedRevision == 0 {
 			result, err = transaction.ExecContext(ctx,
 				"INSERT INTO records(collection, key, value, revision) VALUES (?, ?, ?, 1) ON CONFLICT DO NOTHING",
 				write.Collection, write.Key, string(write.Value))

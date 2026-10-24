@@ -36,9 +36,20 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 			if err != nil {
 				return nil, fmt.Errorf("build MCP schema %s: %w", operation.OperationID, err)
 			}
+			// The SDK uses a pointer to distinguish an explicit non-destructive
+			// hint from the protocol's destructive default.
+			destructive := method != http.MethodGet
+			if hint, ok := operation.Extensions["x-mcp-destructive"].(bool); ok {
+				destructive = hint
+			}
+			idempotent, _ := operation.Extensions["x-mcp-idempotent"].(bool)
+			readOnly := method == http.MethodGet
+			if hint, ok := operation.Extensions["x-mcp-read-only"].(bool); ok {
+				readOnly = hint
+			}
 			server.AddTool(&mcp.Tool{
 				Name: operation.OperationID, Description: strings.TrimSpace(operation.Summary + "\n\n" + operation.Description),
-				InputSchema: schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: method == http.MethodGet},
+				InputSchema: schema, Annotations: &mcp.ToolAnnotations{Title: operation.Summary, ReadOnlyHint: readOnly, DestructiveHint: &destructive, IdempotentHint: method == http.MethodGet || idempotent},
 			}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				arguments := request.Params.Arguments
 				if len(arguments) == 0 {

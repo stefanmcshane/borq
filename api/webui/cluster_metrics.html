@@ -1,0 +1,32 @@
+{{define "cluster-metrics"}}
+<div id="cluster-metrics" class="cluster-metrics" hx-indicator="this" hx-get="{{.Location}}" hx-trigger="every 30s" hx-target="this" hx-swap="outerHTML" hx-push-url="false" hx-sync="this:drop">
+{{if .Problem}}<div class="monitoring-empty"><strong>Cluster metrics unavailable</strong><p>{{.Problem}}</p><button class="btn" data-variant="outline" type="button" hx-get="{{.Location}}" hx-target="#cluster-metrics" hx-swap="outerHTML" hx-indicator="this">Try again</button></div>
+{{else}}
+<div class="metrics-grid cluster-health-grid">
+  <div class="card metric"><span>Ready nodes</span><strong>{{.ReadyNodes}} <small>/ {{len .Snapshot.Nodes}}</small></strong><small>Nodes reporting Ready</small></div>
+  <div class="card metric"><span>Active pods</span><strong>{{.ActivePods}}</strong><small>of {{.PodCapacity}} allocatable pod slots</small></div>
+  <div class="card metric"><span>Container restarts</span><strong>{{.Snapshot.Pods.Restarts}}</strong><small>Across current pods</small></div>
+  <div class="card metric"><span>Nodes under pressure</span><strong>{{.PressureNodes}}</strong><small>Memory, disk, processes or network</small></div>
+</div>
+<div class="usage-charts">
+{{template "cluster-capacity" .Cpu}}{{template "cluster-capacity" .Memory}}
+<section class="card usage-card cluster-capacity-card"><header><h3>Disk usage</h3>{{if .Disk.Available}}<span class="field-help">{{printf "%.1f" .Disk.Percent}}% used</span>{{end}}</header>
+<div class="usage-reading"><strong>{{if .Disk.Available}}{{.Disk.Value}}{{else}}Unavailable{{end}}</strong></div>
+{{if .Disk.Available}}<meter class="cluster-capacity-meter" min="0" max="100" value="{{.Disk.Percent}}" aria-label="Disk usage as a percentage of total filesystem capacity">{{printf "%.1f" .Disk.Percent}}%</meter>{{else}}<p class="field-help cluster-capacity-missing">Recent filesystem readings are required from every node.</p>{{end}}
+<footer><span>Total capacity</span><strong>{{.Disk.Capacity}}</strong></footer></section>
+</div>
+<p class="field-help">Disk usage measures space consumed on each node’s root filesystem.</p>
+{{if .Snapshot.UsageNotice}}<p class="field-help" role="status">{{.Snapshot.UsageNotice}}</p>{{end}}
+<section class="card management-panel"><header><h2>Nodes</h2><p>Live readiness, usage, and node disk capacity. Allocatable capacity is the portion available to workloads, not current free space.</p></header><section>{{if .Nodes}}<div class="table-scroll"><table class="table"><thead><tr><th>Node</th><th>Readiness</th><th>CPU</th><th>Memory</th><th>Disk capacity</th><th>Pressure</th></tr></thead><tbody>{{range .Nodes}}<tr><td class="mono">{{.Name}}</td><td><span class="badge" data-variant="{{if eq .State "Ready"}}secondary{{else}}destructive{{end}}">{{.State}}</span>{{if .Unschedulable}}<small class="cluster-capacity-caption">Scheduling paused</small>{{end}}</td><td>{{.Cpu}}<small class="cluster-capacity-caption">of {{.CpuCapacity}}</small></td><td>{{.Memory}}<small class="cluster-capacity-caption">of {{.MemoryCapacity}}</small></td><td>{{.DiskCapacity}}<small class="cluster-capacity-caption">{{.DiskAllocatable}} allocatable</small></td><td>{{if .Pressure}}<span class="cluster-pressure">{{.Pressure}}</span>{{else}}None reported{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<p class="empty-copy">No nodes were reported by this cluster.</p>{{end}}</section></section>
+<section class="card management-panel"><header><h2>Workload state</h2><p>Pod phases across all namespaces, including infrastructure workloads.</p></header><section><dl class="cluster-pod-states"><div><dt>Running</dt><dd>{{.Snapshot.Pods.Running}}</dd></div><div><dt>Pending</dt><dd>{{.Snapshot.Pods.Pending}}</dd></div><div><dt>Failed</dt><dd>{{.Snapshot.Pods.Failed}}</dd></div><div><dt>Completed</dt><dd>{{.Snapshot.Pods.Succeeded}}</dd></div><div><dt>Unknown</dt><dd>{{.Snapshot.Pods.Unknown}}</dd></div></dl></section></section>
+<p class="field-help">Live snapshot read {{timeLabel .Snapshot.ObservedAt}} · CPU and memory measurements are provided by Metrics Server.</p>
+{{end}}
+</div>
+{{end}}
+
+{{define "cluster-capacity"}}
+<section class="card usage-card cluster-capacity-card"><header><h3>{{.Title}}</h3>{{if .Available}}<span class="field-help">{{printf "%.1f" .Percent}}% of allocatable</span>{{end}}</header>
+<div class="usage-reading"><strong>{{if .Available}}{{.Value}}{{else}}Unavailable{{end}}</strong></div>
+{{if .Available}}<meter class="cluster-capacity-meter" min="0" max="100" value="{{.Percent}}" aria-label="{{.Title}} as a percentage of allocatable capacity">{{printf "%.1f" .Percent}}%</meter>{{else}}<p class="field-help cluster-capacity-missing">Recent usage is required from every node to show a cluster total.</p>{{end}}
+<footer><span>Allocatable capacity</span><strong>{{.Capacity}}</strong></footer></section>
+{{end}}

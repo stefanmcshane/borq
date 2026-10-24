@@ -194,16 +194,17 @@ func TestBootstrapIntegration(t *testing.T) {
 	assert.NoErr(err)
 	bootstrapRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap", nil, http.StatusOK)
 	t.Log("registration-only and component diffs leave the target untouched")
-	remote := bootstrapQuickRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/clusters/remote", map[string]any{"kubeconfig": string(internalBytes), "reconcile": false})
+	remote := bootstrapQuickRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/clusters", map[string]any{"name": "remote", "connection": map[string]any{"kubeconfig": string(internalBytes), "reconcile": false}})
 	remoteId := bootstrapString(t, remote, "id")
+	remoteName := bootstrapString(t, remote, "name")
 	assert.True(remote["kubeconfig"] == nil || remote["kubeconfig"] == "")
-	disabled := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/remote/components", nil, http.StatusOK)
+	disabled := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components", nil, http.StatusOK)
 	assert.Equal(disabled["status"], "disabled")
 	bootstrapAssertBareCluster(t, ctx, target)
-	initialDiff := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/remote/components/diff", nil, http.StatusOK)
+	initialDiff := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components/diff", nil, http.StatusOK)
 	bootstrapAssertComponentDiff(t, initialDiff, "install")
 	bootstrapAssertBareCluster(t, ctx, target)
-	unchanged := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/remote/components", nil, http.StatusOK)
+	unchanged := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components", nil, http.StatusOK)
 	assert.Equal(unchanged, disabled)
 	previewContext, previewCancel := context.WithTimeout(ctx, 5*time.Second)
 	previewOutput, previewDiff, previewError := bootstrapClusterCli(t, previewContext, binary, commandEnvironment,
@@ -215,7 +216,8 @@ func TestBootstrapIntegration(t *testing.T) {
 	}
 	var preview map[string]any
 	assert.NoErr(yaml.Unmarshal(previewOutput, &preview))
-	assert.Equal(preview["id"], remoteId)
+	remoteId = bootstrapString(t, preview, "id")
+	remoteName = bootstrapString(t, preview, "name")
 	if !strings.Contains(previewDiff, "Missing target component: cert-manager") {
 		t.Fatalf("registration-only preview omitted the missing component summary:\n%s", previewDiff)
 	}
@@ -232,7 +234,7 @@ func TestBootstrapIntegration(t *testing.T) {
 		},
 	}, metav1.CreateOptions{})
 	assert.NoErr(err)
-	conflictDiff := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/remote/components/diff", nil, http.StatusOK)
+	conflictDiff := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components/diff", nil, http.StatusOK)
 	bootstrapAssertComponentConflict(t, conflictDiff)
 	conflictOutput, conflictText, conflictError := bootstrapClusterCli(t, ctx, binary, commandEnvironment,
 		"cluster", "link", "remote", "--organization", "bootstrap", "--api-url", endpoint,
@@ -242,8 +244,9 @@ func TestBootstrapIntegration(t *testing.T) {
 	}
 	var conflictingCluster map[string]any
 	assert.NoErr(yaml.Unmarshal(conflictOutput, &conflictingCluster))
-	assert.Equal(conflictingCluster["id"], remoteId)
-	blocked := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/remote/components", nil, http.StatusOK)
+	remoteId = bootstrapString(t, conflictingCluster, "id")
+	remoteName = bootstrapString(t, conflictingCluster, "name")
+	blocked := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components", nil, http.StatusOK)
 	assert.Equal(blocked["status"], "disabled")
 	bypassOutput, bypassText, bypassError := bootstrapClusterCli(t, ctx, binary, commandEnvironment,
 		"cluster", "link", "remote", "--organization", "bootstrap", "--api-url", endpoint, "--diff=false",
@@ -253,7 +256,9 @@ func TestBootstrapIntegration(t *testing.T) {
 	}
 	var bypass map[string]any
 	assert.NoErr(yaml.Unmarshal(bypassOutput, &bypass))
-	failed := bootstrapWaitComponentStatus(t, ctx, endpoint, "remote", bootstrapString(t, bypass, "id"), "failed")
+	remoteId = bootstrapString(t, bypass, "clusterId")
+	remoteName = bootstrapLinkedClusterName(t, ctx, endpoint, remoteId)
+	failed := bootstrapWaitComponentStatus(t, ctx, endpoint, remoteName, bootstrapString(t, bypass, "id"), "failed")
 	bootstrapAssertComponentConflict(t, failed["diff"].(map[string]any))
 	bootstrapAssertNoPlatformWrites(t, ctx, target)
 	bootstrapAssertNoClusterVaultMount(t, ctx, management, vaultEndpoint, remoteId)
@@ -264,7 +269,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	bootstrapSetNodeScheduling(t, ctx, target, false)
 	waitContext, waitCancel := context.WithTimeout(ctx, 10*time.Second)
 	waiterResult, waiterOutput, waiterError := bootstrapClusterCli(t, waitContext, binary, commandEnvironment,
-		"cluster", "reconcile", "remote", "--organization", "bootstrap", "--api-url", endpoint, "--timeout", "1s")
+		"cluster", "reconcile", remoteName, "--organization", "bootstrap", "--api-url", endpoint, "--timeout", "1s")
 	assert.True(waitContext.Err() == nil)
 	waitCancel()
 	if waiterError == nil || !strings.Contains(waiterOutput, "deadline") {
@@ -274,7 +279,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	assert.NoErr(yaml.Unmarshal(waiterResult, &detached))
 	installationId := bootstrapString(t, detached, "id")
 	assert.True(installationId != failed["id"])
-	installing := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/remote/components", nil, http.StatusOK)
+	installing := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components", nil, http.StatusOK)
 	assert.Equal(installing["id"], installationId)
 	if status := installing["status"]; status != "queued" && status != "diffing" && status != "installing" {
 		t.Fatalf("short waiter stopped before observing an active installation: %v", status)
@@ -289,7 +294,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	pendingRevision := bootstrapAssertPendingRelease(t, ctx, target, "cert-manager")
 	bootstrapCrash(t, ctx, management, healthURL)
 	bootstrapSetNodeScheduling(t, ctx, target, true)
-	bootstrapWaitComponentStatus(t, ctx, endpoint, "remote", installationId, "ready")
+	bootstrapWaitComponentStatus(t, ctx, endpoint, remoteName, installationId, "ready")
 	bootstrapAssertTarget(t, ctx, target)
 	bootstrapAssertTargetAddresses(t, ctx, target, targetVaultURL, targetTelemetryURL, remoteId)
 	targetRevisions := bootstrapReleaseRevisions(t, ctx, target)
@@ -297,21 +302,21 @@ func TestBootstrapIntegration(t *testing.T) {
 	recoveredRevision, err := strconv.Atoi(targetRevisions["cert-manager"])
 	assert.NoErr(err)
 	assert.True(recoveredRevision > pendingRevision)
-	bootstrapQuickRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/clusters/remote", map[string]any{"kubeconfig": string(internalBytes)})
-	bootstrapWaitComponentStatus(t, ctx, endpoint, "remote", "", "ready")
+	bootstrapQuickRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/clusters/"+remoteName, map[string]any{"kubeconfig": string(internalBytes)})
+	bootstrapWaitComponentStatus(t, ctx, endpoint, remoteName, "", "ready")
 	assert.Equal(bootstrapReleaseRevisions(t, ctx, target), targetRevisions)
-	upgrade := bootstrapQuickRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/clusters/remote/components/upgrade", nil)
-	bootstrapWaitComponentStatus(t, ctx, endpoint, "remote", bootstrapString(t, upgrade, "id"), "ready")
+	upgrade := bootstrapQuickRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/clusters/"+remoteName+"/components/upgrade", nil)
+	bootstrapWaitComponentStatus(t, ctx, endpoint, remoteName, bootstrapString(t, upgrade, "id"), "ready")
 	assert.Equal(bootstrapReleaseRevisions(t, ctx, target), targetRevisions)
 	diffOutput, _, diffError := bootstrapClusterCli(t, ctx, binary, commandEnvironment,
-		"cluster", "diff", "remote", "--organization", "bootstrap", "--api-url", endpoint)
+		"cluster", "diff", remoteName, "--organization", "bootstrap", "--api-url", endpoint)
 	assert.NoErr(diffError)
 	var noChanges map[string]any
 	assert.NoErr(yaml.Unmarshal(diffOutput, &noChanges))
 	bootstrapAssertComponentDiff(t, noChanges, "none")
 	assert.Equal(bootstrapReleaseRevisions(t, ctx, target), targetRevisions)
 
-	bootstrapRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/spaces/dev", map[string]any{"cluster": "remote"}, http.StatusOK)
+	bootstrapRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/spaces/dev", map[string]any{"cluster": remoteName}, http.StatusOK)
 	t.Log("publishing a named config and deploying through the management vault into the remote cluster")
 	bootstrapRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/spaces/dev/environment-groups/bootstrap-config/versions", map[string]any{"values": []any{map[string]any{"name": "BOOTSTRAP_VALUE", "value": "vault-backed"}}}, http.StatusCreated)
 	plan := bootstrapRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/spaces/dev/plans", map[string]any{
@@ -339,9 +344,9 @@ func TestBootstrapIntegration(t *testing.T) {
 	assert.Equal(string(appResponse), "vault-backed")
 
 	t.Log("spaces on one target keep independent app and config state without reinstalling controllers")
-	defaultSpace := bootstrapRequest(t, ctx, endpoint, http.MethodGet, "/api/v1/organizations/bootstrap/spaces/remote", nil, http.StatusOK)
-	assert.Equal(defaultSpace["cluster"], "remote")
-	previewSpace := bootstrapRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/spaces/remote", map[string]any{"cluster": "remote"}, http.StatusOK)
+	defaultSpace := bootstrapRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/spaces/remote", map[string]any{"cluster": remoteName}, http.StatusOK)
+	assert.Equal(defaultSpace["cluster"], remoteName)
+	previewSpace := bootstrapRequest(t, ctx, endpoint, http.MethodPut, "/api/v1/organizations/bootstrap/spaces/remote", map[string]any{"cluster": remoteName}, http.StatusOK)
 	assert.Equal(previewSpace["id"], defaultSpace["id"])
 	bootstrapRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/spaces/remote/environment-groups/bootstrap-config/versions", map[string]any{"values": []any{map[string]any{"name": "BOOTSTRAP_VALUE", "value": "preview"}}}, http.StatusCreated)
 	previewPlan := bootstrapRequest(t, ctx, endpoint, http.MethodPost, "/api/v1/organizations/bootstrap/spaces/remote/plans", map[string]any{
@@ -381,7 +386,7 @@ func TestBootstrapIntegration(t *testing.T) {
 	}
 	localId := bootstrapString(t, linked, "clusterId")
 	assert.True(localId != remoteId)
-	bootstrapWaitComponentStatus(t, ctx, endpoint, "local", bootstrapString(t, linked, "id"), "ready")
+	bootstrapWaitComponentStatus(t, ctx, endpoint, bootstrapLinkedClusterName(t, ctx, endpoint, localId), bootstrapString(t, linked, "id"), "ready")
 	bootstrapAssertTargetAddresses(t, ctx, management, targetVaultURL, targetTelemetryURL, localId)
 	bootstrapAssertVaultIsolation(t, ctx, management, target, vaultEndpoint, localId, remoteId)
 	remoteTelemetry, err := target.CoreV1().Secrets(defaultNamespace).Get(ctx, "borq-telemetry", metav1.GetOptions{})
@@ -499,6 +504,25 @@ func bootstrapLoadBalancer(t *testing.T, ctx context.Context, name string) map[s
 	var loadBalancer map[string]any
 	assert.NoErr(json.Unmarshal([]byte(output), &loadBalancer))
 	return loadBalancer
+}
+
+// bootstrapLinkedClusterName resolves the generated name from queued setup output.
+func bootstrapLinkedClusterName(t *testing.T, ctx context.Context, endpoint, id string) string {
+	t.Helper()
+	assert := is.New(t)
+	client, err := appapi.NewClientWithResponses(endpoint)
+	assert.NoErr(err)
+	response, err := client.ListClustersWithResponse(ctx, "bootstrap")
+	assert.NoErr(err)
+	assert.Equal(response.StatusCode(), http.StatusOK)
+	assert.True(response.JSON200 != nil)
+	for _, cluster := range *response.JSON200 {
+		if cluster.ID != nil && *cluster.ID == id {
+			return cluster.Name
+		}
+	}
+	t.Fatalf("queued setup has no saved cluster: %s", id)
+	return ""
 }
 
 func bootstrapClusterCli(t *testing.T, ctx context.Context, binary string, environment []string, arguments ...string) ([]byte, string, error) {

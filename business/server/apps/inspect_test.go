@@ -222,6 +222,28 @@ func TestInspectRejectsUnsupported(t *testing.T) {
 			})
 			return r.Manifests
 		}, "named http"},
+		{"conflicting predeploy annotations", func(r Rendered) []map[string]any {
+			setManifestField(t, findManifest(t, r, "Deployment", "backend"), `{"command":"migrate","timeoutSeconds":300}`, "metadata", "annotations", "borq.run/retained-predeploy-v1")
+			return r.Manifests
+		}, "both retained and disabled"},
+		{"bad retained predeploy", func(r Rendered) []map[string]any {
+			deployment := findManifest(t, r, "Deployment", "backend")
+			unstructured.RemoveNestedField(deployment, "metadata", "annotations", "borq.run/disabled-predeploy-v1")
+			setManifestField(t, deployment, `{"unknown":true}`, "metadata", "annotations", "borq.run/retained-predeploy-v1")
+			return r.Manifests
+		}, "invalid predeploy annotation"},
+		{"null retained predeploy", func(r Rendered) []map[string]any {
+			deployment := findManifest(t, r, "Deployment", "backend")
+			unstructured.RemoveNestedField(deployment, "metadata", "annotations", "borq.run/disabled-predeploy-v1")
+			setManifestField(t, deployment, `null`, "metadata", "annotations", "borq.run/retained-predeploy-v1")
+			return r.Manifests
+		}, "predeploy annotation must be a JSON object"},
+		{"trailing retained predeploy", func(r Rendered) []map[string]any {
+			deployment := findManifest(t, r, "Deployment", "backend")
+			unstructured.RemoveNestedField(deployment, "metadata", "annotations", "borq.run/disabled-predeploy-v1")
+			setManifestField(t, deployment, `{} {}`, "metadata", "annotations", "borq.run/retained-predeploy-v1")
+			return r.Manifests
+		}, "predeploy annotation must contain one JSON object"},
 		{"bad annotation", func(r Rendered) []map[string]any { disableWithAnnotation(t, r, "not json"); return r.Manifests }, "annotation"},
 		{"null annotation", func(r Rendered) []map[string]any { disableWithAnnotation(t, r, "null"); return r.Manifests }, "annotation"},
 		{"unsupported annotation version", func(r Rendered) []map[string]any {

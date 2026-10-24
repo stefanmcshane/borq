@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/foundations/sqlite"
 )
 
 // TestPredeployCheckpointSkipsFinishedJobs verifies every task blocks apps and
@@ -63,6 +64,12 @@ func TestPredeployCheckpointSkipsFinishedJobs(t *testing.T) {
 	desired, err := reopened.GetSpace(ctx, "acme", "production")
 	assert.NoErr(err)
 	assert.Equal(desired.LastSuccessfulRevision, 1)
+	partial, err := reopened.Plan(ctx, managerPlanInput(t, "production", `{"apps":[{"name":"frontend","replicas":2}]}`))
+	assert.NoErr(err)
+	remaining, _ := splitPlanManifests(partial.Manifests)
+	assert.Equal(len(remaining), 1) // Only frontend runs again after backend's completed checkpoint.
+	metadata := remaining[0]["metadata"].(map[string]any)
+	assert.Equal(metadata["labels"].(map[string]any)["app.kubernetes.io/name"], "frontend")
 }
 
 // TestPredeployRolloutDeadlineStopsJob verifies the server's overall deadline
@@ -71,7 +78,8 @@ func TestPredeployRolloutDeadlineStopsJob(t *testing.T) {
 	assert := is.New(t)
 	ctx := context.Background()
 	cluster := newManagerCluster(t, managerClusterOptions{})
-	manager := openTestManager(t, filepath.Join(t.TempDir(), "borq.sqlite"), time.Second)
+	path := filepath.Join(t.TempDir(), "borq.sqlite")
+	manager := openTestManager(t, path, time.Second)
 	createManagerEnvironment(t, manager, cluster, "production")
 	plan, err := manager.Plan(ctx, managerPlanInput(t, "production", `{"apps":[{"name":"backend","image":"backend:v1","port":8080,"predeploy":{"command":"migrate","timeoutSeconds":300}}]}`))
 	assert.NoErr(err)
@@ -87,6 +95,19 @@ func TestPredeployRolloutDeadlineStopsJob(t *testing.T) {
 	for _, manifest := range applications {
 		assert.True(!managerFixtureHasResource(cluster, manifest))
 	}
+	// Simulate a persisted record from before latest-operation references existed.
+	stored, record, err := loadDocument[spaceRecord](ctx, manager.database, "space", spaceKey("acme", "production"))
+	assert.NoErr(err)
+	stored.LatestOperation = ""
+	write, err := documentWrite("space", record.Key, stored, record.Revision)
+	assert.NoErr(err)
+	assert.NoErr(manager.database.Commit(ctx, []sqlite.Write{write}))
+	assert.NoErr(manager.Close())
+	reopened := openTestManager(t, path, time.Second)
+	retry, err := reopened.Plan(ctx, managerPlanInput(t, "production", `{"apps":[{"name":"frontend","image":"frontend:v1"}]}`))
+	assert.NoErr(err)
+	pending, _ := splitPlanManifests(retry.Manifests)
+	assert.Equal(len(pending), 1) // An unrelated app cannot bypass a failed migration, including legacy records.
 }
 
 // The fixture pointer protects state shared with Kubernetes HTTP handlers.

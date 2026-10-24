@@ -25,6 +25,8 @@ import (
 
 // NewInput describes the application server's local listener and persistent state.
 type NewInput struct {
+	// PrometheusQueryUrl and LokiQueryUrl override private management query endpoints.
+	PrometheusQueryUrl, LokiQueryUrl string
 	// ListenHost defaults to loopback; use an explicit interface when serving remote clients.
 	ListenHost string
 	// Port is the HTTP port on the server host.
@@ -84,6 +86,7 @@ func New(ctx context.Context, input NewInput) (Server, error) {
 		}
 	}
 	manager, err := apps.NewManager(ctx, apps.NewInput{
+		PrometheusQueryUrl: input.PrometheusQueryUrl, LokiQueryUrl: input.LokiQueryUrl,
 		DatabasePath: filepath.Join(input.DataDir, "borq.sqlite"), RolloutTimeout: input.RolloutTimeout,
 		InfrastructureEnabled: input.InfrastructureEnabled, ManagementKubeconfigPath: input.ManagementKubeconfigPath, PlatformSettings: input.PlatformSettings,
 		ManagementEnabled: input.ManagementEnabled,
@@ -167,11 +170,16 @@ func New(ctx context.Context, input NewInput) (Server, error) {
 		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
 	}}
 	if input.InfrastructureEnabled {
-		attachTelemetryGateway(mux, manager, input.PlatformSettings.Namespace)
-		telemetryMux := http.NewServeMux()
-		attachTelemetryGateway(telemetryMux, manager, input.PlatformSettings.Namespace)
+		gateway, err := newTelemetryGateway(manager, input.ManagementKubeconfigPath, input.PlatformSettings.Namespace)
+		if err != nil {
+			cancelManagement()
+			_ = manager.Close()
+			_ = tracing.Shutdown(ctx)
+			return Server{}, err
+		}
+		mux.Handle("/api/v1/ingest/", gateway)
 		server.telemetry = &http.Server{
-			Addr: net.JoinHostPort(input.ListenHost, strconv.Itoa(input.TelemetryPort)), Handler: telemetryMux,
+			Addr: net.JoinHostPort(input.ListenHost, strconv.Itoa(input.TelemetryPort)), Handler: gateway,
 			ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
 		}
 	}

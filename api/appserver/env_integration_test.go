@@ -196,7 +196,7 @@ func TestApplicationIntegrationEnvironmentVault(t *testing.T) {
 
 // TestApplicationIntegrationEnvironmentVersionWindow checks selection and apply
 // reject versions outside the latest plus ten previous versions, even when the
-// vault still retains those values and when a saved apply ages while queued.
+// vault still retains those values and when an accepted apply ages during predeploy.
 func TestApplicationIntegrationEnvironmentVersionWindow(t *testing.T) {
 	assert := is.New(t)
 	kubeconfigPath := os.Getenv("BORQ_KUBECONFIG")
@@ -309,28 +309,21 @@ func TestApplicationIntegrationEnvironmentVersionWindow(t *testing.T) {
 	assertApplicationResponse(t, clone.StatusCode(), clone.Body, http.StatusCreated)
 	assert.Equal(clone.JSON201.Version, 1)
 
-	// Deploy the current config before introducing a queue gate. The active gate
-	// makes no Deployment spec changes, so the final comparison detects any
-	// accidental mutation by the expired queued operation.
+	// Deploy the current config before introducing a predeploy gate. Expire the
+	// accepted version while its real Job runs, then verify the execution-time
+	// check still protects the live Deployment after the barrier completes.
 	currentApps := []appapi.AppPatch{{Name: "backend", Env: applicationEnvPatch(configName, "latest")}}
 	current := createApplicationPlan(t, ctx, client, organization, "production", appapi.Patch{Apps: &currentApps})
 	applyApplicationPlan(t, ctx, client, current.ID)
 	baseline = predeployDeployments(t, ctx, kube, namespace)
 	activePatch := predeployPatch(t, map[string]any{"apps": []any{map[string]any{
-		"name": "backend", "env": map[string]any{"name": configName, "version": "12"},
+		"name": "backend", "replicas": 2, "env": map[string]any{"name": configName, "version": "2"},
 		"predeploy": map[string]any{"command": predeployShellCommand("while [ ! -f /tmp/borq-continue ]; do sleep 1; done"), "timeoutSeconds": 60},
 	}}})
 	active := createApplicationPlan(t, ctx, client, organization, "production", activePatch)
-	queuedPatch := predeployPatch(t, map[string]any{"apps": []any{map[string]any{
-		"name": "backend", "replicas": 2, "env": map[string]any{"name": configName, "version": "2"},
-		"predeploy": map[string]any{"command": ""},
-	}}})
-	queued := createApplicationPlan(t, ctx, client, organization, "production", queuedPatch)
 	activeOperation := startPredeployOperation(t, ctx, client, active.ID)
 	_, pod := waitPredeployRunning(t, ctx, kube, namespace)
-	queuedOperation := startPredeployOperation(t, ctx, client, queued.ID)
-	assert.Equal(string(queuedOperation.Status), "queued")
-	advance(13) // v2 was eligible at acceptance and expires while A is still gated.
+	advance(13) // v2 was eligible at acceptance and expires before the barrier completes.
 	retained, err = vault.ReadKv(ctx, access.Mount, path, 2)
 	assert.NoErr(err)
 	assert.Equal(retained.Values, map[string]string{"RELEASE": "2"})
@@ -341,8 +334,7 @@ func TestApplicationIntegrationEnvironmentVersionWindow(t *testing.T) {
 	assert.NoErr(err)
 	var output bytes.Buffer
 	assert.NoErr(executor.StreamWithContext(ctx, remotecommand.StreamOptions{Stdout: &output, Stderr: &output}))
-	waitPredeployOperation(t, ctx, client, activeOperation.ID, appapi.Succeeded)
-	failed := waitPredeployOperation(t, ctx, client, queuedOperation.ID, appapi.Failed)
+	failed := waitPredeployOperation(t, ctx, client, activeOperation.ID, appapi.Failed)
 	assert.True(strings.Contains(strings.ToLower(failed.Message), "version"))
 	assertPredeployAppsUnchanged(t, baseline, predeployDeployments(t, ctx, kube, namespace))
 	deployment, err := kube.AppsV1().Deployments(namespace).Get(ctx, "backend", metav1.GetOptions{})

@@ -2,6 +2,13 @@ package appapi
 
 import "net/http"
 
+// GetClusterSetup returns the required component catalog before cluster registration.
+func (server handler) GetClusterSetup(writer http.ResponseWriter, request *http.Request) {
+	writer.Header().Set("Cache-Control", "no-store")
+	result, err := server.manager.GetClusterSetup()
+	respond[ClusterSetup](writer, http.StatusOK, result, err)
+}
+
 // GetManagementComponents returns the last management reconciliation state.
 func (server handler) GetManagementComponents(writer http.ResponseWriter, request *http.Request) {
 	result, err := server.manager.GetManagementComponents(request.Context())
@@ -21,6 +28,13 @@ func (server handler) UpgradeManagementComponents(writer http.ResponseWriter, re
 func (server handler) GetClusterComponents(writer http.ResponseWriter, request *http.Request, organization, cluster string) {
 	result, err := server.manager.GetClusterComponents(request.Context(), organization, cluster)
 	respond[ComponentInstallation](writer, http.StatusOK, result, err)
+}
+
+// GetClusterManagementComponents reads management services installed on the selected cluster.
+func (server handler) GetClusterManagementComponents(writer http.ResponseWriter, request *http.Request, organization, cluster string) {
+	writer.Header().Set("Cache-Control", "no-store")
+	result, err := server.manager.GetClusterManagementComponents(request.Context(), organization, cluster)
+	respond[PlatformResult](writer, http.StatusOK, result, err)
 }
 
 // DiffClusterComponents compares releases without changing or enqueueing anything.

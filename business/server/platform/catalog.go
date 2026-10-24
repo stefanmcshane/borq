@@ -21,7 +21,9 @@ import (
 var componentValues embed.FS
 
 type component struct {
-	Name         string
+	Name string
+	// Description explains the component's role in deployment infrastructure.
+	Description  string
 	Chart        string
 	Repository   string
 	Version      string
@@ -95,10 +97,10 @@ func managementCatalog(settings Settings, upgrade bool) []component {
 
 func targetCatalog(upgrade bool) []component {
 	return orderedComponents([]component{
-		{Name: "cert-manager", Chart: "cert-manager", Repository: "https://charts.jetstack.io", Version: "1.21.1", Values: "cert-manager.yaml", InstallOrder: 10, UpgradeOrder: 10},
-		{Name: "external-secrets", Chart: "external-secrets", Repository: "https://charts.external-secrets.io", Version: "2.5.0", Values: "external-secrets.yaml", InstallOrder: 20, UpgradeOrder: 20},
-		{Name: "traefik", Chart: "traefik", Repository: "https://traefik.github.io/charts", Version: "42.0.0", Values: "traefik.yaml", InstallOrder: 30, UpgradeOrder: 40},
-		{Name: "alloy", Chart: "alloy", Repository: "https://grafana.github.io/helm-charts", Version: "1.12.1", Values: "alloy.yaml", InstallOrder: 40, UpgradeOrder: 30, DependsOn: []string{"external-secrets"}},
+		{Name: "cert-manager", Description: "Issues and renews HTTPS certificates.", Chart: "cert-manager", Repository: "https://charts.jetstack.io", Version: "1.21.1", Values: "cert-manager.yaml", InstallOrder: 10, UpgradeOrder: 10},
+		{Name: "external-secrets", Description: "Syncs application secrets from the management vault.", Chart: "external-secrets", Repository: "https://charts.external-secrets.io", Version: "2.5.0", Values: "external-secrets.yaml", InstallOrder: 20, UpgradeOrder: 20},
+		{Name: "traefik", Description: "Routes web traffic to applications.", Chart: "traefik", Repository: "https://traefik.github.io/charts", Version: "42.0.0", Values: "traefik.yaml", InstallOrder: 30, UpgradeOrder: 40},
+		{Name: "alloy", Description: "Collects application metrics and logs.", Chart: "alloy", Repository: "https://grafana.github.io/helm-charts", Version: "1.12.1", Values: "alloy.yaml", InstallOrder: 40, UpgradeOrder: 30, DependsOn: []string{"external-secrets"}},
 	}, upgrade)
 }
 

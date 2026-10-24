@@ -78,7 +78,7 @@ func DiffTarget(ctx context.Context, input TargetInput) (ComponentDiff, error) {
 		if err != nil {
 			return result, err
 		}
-		inspection, err := releases.InspectWithValues(ctx, helm.InstallOrUpgradeInput{Namespace: settings.Namespace, ReleaseName: definition.Name, ChartRef: definition.Chart, RepositoryUrl: definition.Repository, Version: definition.Version, Values: values})
+		inspection, err := releases.InspectWithValues(ctx, helm.InstallOrUpgradeInput{Namespace: settings.Namespace, ReleaseName: definition.Name, ChartRef: definition.Chart, RepositoryUrl: definition.Repository, Version: definition.Version, Values: values, PodLabels: componentPodLabels()})
 		if err != nil {
 			return result, err
 		}
@@ -138,7 +138,11 @@ func redactInstalledValues(installed, desired any, known bool) any {
 		result := make(map[string]any, len(value))
 		for key, field := range value {
 			expected, exists := template[key]
-			if sensitiveValueKey(key) {
+			// A pod volume's secret object contains a reference, not Secret data.
+			// Recurse only through the known catalog shape; extra fields stay redacted.
+			reference, _ := expected.(map[string]any)
+			_, secretReference := reference["secretName"]
+			if sensitiveValueKey(key) && !(known && exists && key == "secret" && secretReference) {
 				result[key] = "[redacted]"
 				continue
 			}
