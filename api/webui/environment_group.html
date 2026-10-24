@@ -3,7 +3,7 @@
   {{if .GroupLatestVersion}}
   <section class="application-identity environment-group-identity" aria-label="Environment group details">
     <div class="app-avatar">{{template "ui-icon" "terminal"}}</div>
-    <div><p class="app-image">{{.Group.Name}}</p><p class="field-help">Environment group · Latest v{{.GroupLatestVersion}} · Used by {{len .GroupApplications}} {{if eq (len .GroupApplications) 1}}application{{else}}applications{{end}}</p></div>
+    <div><p class="app-image">{{.Group.Name}}</p><p class="field-help">Environment group · Latest v{{.GroupLatestVersion}} · Used by {{len .GroupApplications}} {{if eq (len .GroupApplications) 1}}application{{else}}applications{{end}}</p>{{if .Group.ManagedBy}}<p class="field-help"><span class="badge" data-variant="secondary">Managed</span> Managed by {{.Group.ManagedBy}}. Values refresh automatically. Clone this group to edit an independent copy.</p>{{end}}</div>
   </section>
   <nav class="application-tabs" aria-label="Environment group sections">
     <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name}}" {{if eq .GroupTab "variables"}}aria-current="page"{{end}}>Variables</a>
@@ -21,8 +21,13 @@
 
 {{define "environment-group-variables"}}
 <section class="card management-panel environment-group-settings">
-  <header class="panel-heading"><div><h2>{{if .GroupLatestVersion}}Config variables{{else}}Create an environment group{{end}}</h2><p>{{if .GroupLatestVersion}}Edit, add, or remove variables, then publish a new version. Applications keep their pinned version until you review and deploy a new plan.{{else}}Give this group a name and add the variables your applications need.{{end}}</p></div>{{if .Group.Version}}<span class="badge" data-variant="outline">v{{.Group.Version}}</span>{{end}}</header>
+  <header class="panel-heading"><div><h2>{{if .GroupLatestVersion}}Config variables{{else}}Create an environment group{{end}}</h2><p>{{if .Group.ManagedBy}}These values are read-only. Applications keep their pinned version until you review and deploy a new plan.{{else if .GroupLatestVersion}}Edit, add, or remove variables, then publish a new version. Applications keep their pinned version until you review and deploy a new plan.{{else}}Give this group a name and add the variables your applications need.{{end}}</p></div>{{if .Group.Version}}<span class="badge" data-variant="outline">v{{.Group.Version}}</span>{{end}}</header>
   <section>
+    {{if .Group.ManagedBy}}
+    {{if ne .Group.Version .GroupLatestVersion}}<p class="alert environment-version-notice">Viewing version {{.Group.Version}}.</p>{{end}}
+    <div class="environment-rows">{{range .Group.Values}}<div class="environment-row" role="group" aria-label="Environment variable"><label>Key<input class="input mono" value="{{.Name}}" readonly></label><label>Value<textarea class="textarea environment-value mono" rows="1" wrap="off" readonly>
+{{.Value}}</textarea></label></div>{{end}}</div>
+    {{else}}
     {{if and .Group.Version (ne .Group.Version .GroupLatestVersion)}}<p class="alert environment-version-notice">Viewing version {{.Group.Version}}. Publishing these values creates a new version; it does not change this saved version.</p>{{end}}
     <form class="form-grid" action="/ui/actions" method="post" hx-post="/ui/actions" hx-disabled-elt="find [data-publish-group]" hx-sync="this:drop" autocomplete="off">
       {{template "ui-scope" .}}
@@ -33,12 +38,13 @@
       {{template "environment-editor" .EnvironmentEditor}}
       <div class="form-actions"><button class="btn" type="submit" data-publish-group>{{if .GroupLatestVersion}}Publish new version{{else}}Create group{{end}}</button><a class="btn" data-variant="ghost" href="{{pageUrl "environment" .Organization .Space.Name}}" hx-get="{{pageUrl "environment" .Organization .Space.Name}}">Cancel</a></div>
     </form>
+    {{end}}
   </section>
 </section>
 {{end}}
 
 {{define "environment-group-versions"}}
-<section class="card management-panel environment-group-settings"><header><h2>Published versions</h2><p>Each version is immutable. Open a version to inspect its variables or publish those values as a new version.</p></header><section>
+<section class="card management-panel environment-group-settings"><header><h2>Published versions</h2><p>Each version is immutable. Open a version to inspect its variables{{if not .Group.ManagedBy}} or publish those values as a new version{{end}}.</p></header><section>
   <div class="table-scroll"><table class="table"><thead><tr><th>Version</th><th>Status</th><th></th></tr></thead><tbody>{{range .GroupVersions}}<tr class="resource-row"><td class="mono">v{{.}}</td><td>{{if eq . $.GroupLatestVersion}}<span class="badge" data-variant="secondary">Latest</span>{{else}}<span class="field-help">Previous</span>{{end}}</td><td><a class="text-link resource-row-link" href="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}" hx-get="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}">View variables</a></td></tr>{{end}}</tbody></table></div>
 </section></section>
 {{end}}

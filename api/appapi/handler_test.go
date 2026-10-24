@@ -141,6 +141,7 @@ func TestErrorResponses(t *testing.T) {
 	}{
 		{apps.ErrNotFound, http.StatusNotFound, nil},
 		{apps.ErrConflict, http.StatusConflict, nil},
+		{errors.Join(apps.ErrConflict, apps.ErrEnvironmentGroupManaged, errors.New("private token secret")), http.StatusConflict, []string{"managed by PostgreSQL", "clone it to edit values"}},
 		{errors.Join(postgresConflict, errors.New("private token secret")), http.StatusConflict, []string{"PostgreSQL database with this name already exists", "Choose a new name", "use apply"}},
 		{errors.Join(apps.ErrConflict, errors.New("private token secret")), http.StatusConflict, nil},
 		{apps.ErrInvalid, http.StatusBadRequest, nil},

@@ -45,7 +45,7 @@ func TestManagedPostgresBrowser(t *testing.T) {
 				case strings.HasSuffix(request.URL.Path, "/postgres"):
 					output = []appapi.Postgres{{Name: "database"}}
 				case strings.HasSuffix(request.URL.Path, "/postgres/database"):
-					output = appapi.Postgres{Name: "database", State: "ready", Operation: "change", Protection: appapi.PostgresProtection{Backups: "ready", Wal: "ready", Snapshots: "unsupported"}, RestoreCheck: appapi.PostgresRestoreCheck{Status: "succeeded"}}
+					output = appapi.Postgres{Name: "database", EnvironmentGroup: "postgres-database-immutable-id", State: "ready", Operation: "change", Protection: appapi.PostgresProtection{Backups: "ready", Wal: "ready", Snapshots: "unsupported"}, RestoreCheck: appapi.PostgresRestoreCheck{Status: "succeeded"}}
 				case strings.HasSuffix(request.URL.Path, "/postgres-operations/change"):
 					output = appapi.Operation{ID: "change", SpaceID: "dev", Status: "running", Message: "Updating database"}
 				case strings.HasSuffix(request.URL.Path, "/backups"):
@@ -78,6 +78,7 @@ func TestManagedPostgresBrowser(t *testing.T) {
 			options := []string{}
 			active := []string{}
 			panels := []string{}
+			groups := []string{}
 			hidden := url.Values{}
 			for node := range document.Descendants() {
 				attributes := map[string]string{}
@@ -98,6 +99,15 @@ func TestManagedPostgresBrowser(t *testing.T) {
 					assert.Equal(link.Query().Get("postgres"), "database")
 					assert.Equal(attributes["hx-get"], attributes["href"])
 					active = append(active, link.Query().Get("tab")+"/"+link.Query().Get("subtab"))
+				}
+				if node.Data == "a" && navigationText(node) == "postgres-database-immutable-id" {
+					link, err := url.Parse(attributes["href"])
+					assert.NoErr(err)
+					assert.Equal(link.Query().Get("view"), "environment-group")
+					assert.Equal(link.Query().Get("organization"), "team")
+					assert.Equal(link.Query().Get("space"), "dev")
+					assert.Equal(attributes["hx-get"], attributes["href"])
+					groups = append(groups, link.Query().Get("group"))
 				}
 				if strings.HasPrefix(attributes["hx-get"], "/ui/postgres?") {
 					link, err := url.Parse(attributes["hx-get"])
@@ -130,6 +140,10 @@ func TestManagedPostgresBrowser(t *testing.T) {
 			if test.tab == "overview" {
 				assert.True(strings.Contains(body, "unsupported"))
 				assert.True(strings.Contains(body, "borq am postgres env"))
+				assert.True(strings.Contains(body, "Environment group selector"))
+				assert.Equal(groups, []string{"postgres-database-immutable-id"})
+			} else {
+				assert.Equal(groups, []string{})
 			}
 		})
 	}

@@ -24,10 +24,41 @@ Independent lifecycle and surface reviews identified and closed sparse component
 
 A final independent storage review approved two additional corrections. Helm now filters disabled child CRDs on a separately loaded chart, preserving the SDK's single dependency pass and deployed-value fallback. Shared S3 credentials use reference-specific Secret names so an old ready projection cannot satisfy a replacement. `make test-platform-sdk` passed with real child-resource and CRD readbacks. `make test-platform-s3` passed with real OpenBao and External Secrets, different replacement keys, a missing replacement reaching the Secret wait, and the original projection unchanged. Restoring the old fixed Secret naming through a temporary Go overlay caused the rendering regression to fail as expected.
 
+## Database environment groups
+
+The 2026-10-24 environment-group extension passed `make test-managed-postgres-e2e`
+in 352.73 seconds, or 362.21 seconds including the Make build step. Both source
+and restored databases published their six connection variables through real
+External Secrets PushSecrets into OpenBao. Applications selected the generated
+groups through normal planning, received pinned ExternalSecrets, and queried the
+seeded database successfully. A completed unchanged refresh retained its KV
+version. Restore destinations had distinct hosts and passwords. The weekly
+verification copy published no group. Deletion stopped the producers, preserved
+the selected historical values, and removed the test namespace.
+
+A separate live provider probe exposed an ESO 2.5.0 panic when comparing nested
+objects during PushSecret refresh. The supported `values` property projection
+stores a JSON string and avoids that comparison. The OpenBao reader now accepts
+both object and encoded-object values with strict string validation. The probe
+proved unchanged refreshes, changed-source publication, and application secret
+extraction. Automatic reconciliation also published a group for a pre-existing
+development database.
+
+Chromium verified the database's group link, read-only variables, retained Clone
+action, and application selector. CLI and MCP rejected manual publication with
+the same descriptive ownership error. Independent review closed failed-deletion
+producer resurrection and foreign-producer cleanup issues, then approved the
+integrated implementation and the safe error-response change.
+
 ## Limits
 
 This development cluster has no CSI snapshot driver or VolumeSnapshotClass. Preferred snapshots report unsupported and required mode rejects creation. Snapshot manifests, retention, and restore logic were reviewed and rendering tests passed, but a successful CSI snapshot recovery was not exercised here. S3 recovery and the weekly restore check were exercised on the real cluster. The E2E validates a selected full backup; point-in-time selection uses a conservative verified WAL window and was not separately exercised end to end.
 
 ## Final gate
 
-`make pre-commit` passed on the final code in 412.25 seconds. It includes formatting and vet, all Go unit tests, seven Python pod-history tests, the live controller suite, and the full server integration suite. The additional final managed PostgreSQL recovery rerun passed. Both Make commands ran outside the sandbox before commits. A final Kubernetes readback confirmed no managed PostgreSQL clusters remained after test cleanup.
+`make pre-commit` passed on the environment-group implementation in 438.72 seconds.
+It includes formatting and vet, all Go unit tests, seven Python pod-history tests,
+the live controller suite, and the full server integration suite. The additional
+managed PostgreSQL recovery acceptance passed. Both Make commands ran outside the
+sandbox before the commit. The database acceptance test removed both disposable
+database clusters, their volumes, and the test namespace.

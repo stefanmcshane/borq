@@ -321,6 +321,15 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 			return Postgres{}, postgresValidationError{message: "PostgreSQL storage cannot shrink"}
 		}
 	}
+	if exists && action != "delete" {
+		deleting, err := manager.postgresDeletionAccepted(ctx, stored)
+		if err != nil {
+			return Postgres{}, err
+		}
+		if deleting {
+			return Postgres{}, fmt.Errorf("%w: PostgreSQL deletion was accepted; retry deletion before reusing the name", ErrConflict)
+		}
+	}
 	archive := postgresArchive{}
 	newResource := !exists
 	if newResource {
@@ -433,6 +442,14 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 	task.Key, task.Action, task.Deadline = key, action, now.Add(manager.runtime.rolloutTimeout)
 	operation := Operation{ID: operationID, SpaceID: target.ID, Status: "pending", Phase: "postgres-" + action, Message: stored.Postgres.Message, StartedAt: now, UpdatedAt: now}
 	writes := []sqlite.Write{}
+	if action != "delete" {
+		var claimWrites []sqlite.Write
+		stored, claimWrites, err = manager.claimPostgresEnvironment(ctx, stored, target)
+		if err != nil {
+			return Postgres{}, err
+		}
+		writes = append(writes, claimWrites...)
+	}
 	for _, item := range []struct {
 		collection, key string
 		value           any

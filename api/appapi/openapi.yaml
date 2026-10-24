@@ -201,6 +201,9 @@ components:
         clusterName:
           type: "string"
           description: "ClusterName is the isolated Kubernetes PostgreSQL cluster identity."
+        environmentGroup:
+          type: "string"
+          description: "Environment group containing this database incarnation's connection values."
         state:
           type: "string"
           description: "State is pending, ready, failed, deleting, or removed."
@@ -226,6 +229,7 @@ components:
         - "specification"
         - "namespace"
         - "clusterName"
+        - "environmentGroup"
         - "state"
         - "message"
         - "operation"
@@ -1548,6 +1552,10 @@ components:
         name:
           description: Environment group name within this deployment space.
           type: string
+        managedBy:
+          description: Producer identity; managed groups are read-only and can be cloned.
+          type: string
+          x-go-type-skip-optional-pointer: true
         values:
           description: Complete environment group values, including empty strings.
           items:

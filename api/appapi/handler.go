@@ -385,6 +385,8 @@ func respond[Model any](writer http.ResponseWriter, status int, result any, err 
 			writeProblem(writer, http.StatusConflict, "target components are not ready; inspect cluster components or run cluster reconcile before planning applications")
 		case errors.Is(err, apps.ErrAddonExists):
 			writeProblem(writer, http.StatusConflict, "A custom addon with this name already exists in this space. Open it to update its settings, or use apply.")
+		case errors.Is(err, apps.ErrEnvironmentGroupManaged):
+			writeProblem(writer, http.StatusConflict, apps.ErrEnvironmentGroupManaged.Error())
 		case errors.Is(err, apps.ErrConflict):
 			message := apps.PostgresRequestMessage(err)
 			if message == "" {

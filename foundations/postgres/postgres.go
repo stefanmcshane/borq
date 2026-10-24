@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +89,8 @@ type Input struct {
 	Instances int
 	// StorageSize, StorageClass, Image, Database, Username configure the database.
 	StorageSize, StorageClass, Image, Database, Username string
+	// EnvironmentExport publishes application connection values through External Secrets.
+	EnvironmentExport EnvironmentExport
 	// Password is transient application-role credential material.
 	Password string
 	// Requests and Limits constrain each instance.
@@ -106,6 +110,14 @@ type Input struct {
 	Check Check
 }
 
+// EnvironmentExport identifies an immutable environment group and its OpenBao path.
+type EnvironmentExport struct {
+	// Name identifies the environment group in the owning space.
+	Name string
+	// VaultPath is the KV v2 key below the target store mount.
+	VaultPath string
+}
+
 // Check describes a scoped HTTP trigger, never an administrator credential.
 type Check struct {
 	// Enabled schedules automatic isolated recovery checks.
@@ -120,8 +132,10 @@ type Check struct {
 
 func resource(kind string) schema.GroupVersionResource {
 	group, version := "postgresql.cnpg.io", "v1"
-	plural := map[string]string{"Cluster": "clusters", "Backup": "backups", "ScheduledBackup": "scheduledbackups", "ObjectStore": "objectstores", "CronJob": "cronjobs", "ServiceAccount": "serviceaccounts", "ConfigMap": "configmaps", "VolumeSnapshot": "volumesnapshots", "VolumeSnapshotClass": "volumesnapshotclasses"}[kind]
+	plural := map[string]string{"Cluster": "clusters", "Backup": "backups", "ScheduledBackup": "scheduledbackups", "ObjectStore": "objectstores", "CronJob": "cronjobs", "ServiceAccount": "serviceaccounts", "ConfigMap": "configmaps", "VolumeSnapshot": "volumesnapshots", "VolumeSnapshotClass": "volumesnapshotclasses", "PushSecret": "pushsecrets"}[kind]
 	switch kind {
+	case "PushSecret":
+		group, version = "external-secrets.io", "v1alpha1"
 	case "ObjectStore":
 		group = "barmancloud.cnpg.io"
 	case "CronJob":
@@ -296,6 +310,9 @@ func (client Client) Reconcile(ctx context.Context, input Input) error {
 		return err
 	}
 	if err := client.secret(ctx, input, input.Name+"-app", map[string]string{"username": input.Username, "password": input.Password}); err != nil {
+		return err
+	}
+	if err := client.ReconcileEnvironment(ctx, input); err != nil {
 		return err
 	}
 	for _, manifest := range Manifests(input) {
@@ -585,6 +602,31 @@ func (client Client) deleteOne(ctx context.Context, kind, namespace, name, owner
 
 // DeleteOwned removes only resources bearing the immutable resource identity and retains S3 objects.
 func (client Client) DeleteOwned(ctx context.Context, input Input) (bool, error) {
+	if !input.Isolated && input.EnvironmentExport.Name != "" {
+		producer, err := client.dynamic.Resource(resource("PushSecret")).Namespace(input.Namespace).Get(ctx, input.Name+"-environment", metav1.GetOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return false, err
+		}
+		if err == nil && producer.GetLabels()["borq.run/postgres-id"] != input.Owner {
+			return false, errors.New("refusing to delete PostgreSQL runtime with a conflicting environment producer")
+		}
+	}
+	producers, err := client.dynamic.Resource(resource("PushSecret")).Namespace(input.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "borq.run/postgres-id=" + input.Owner})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	if apierrors.IsNotFound(err) {
+		producers = &unstructured.UnstructuredList{}
+	}
+	for _, producer := range producers.Items {
+		if err := client.deleteOne(ctx, "PushSecret", input.Namespace, producer.GetName(), input.Owner); err != nil {
+			return false, err
+		}
+	}
+	if len(producers.Items) > 0 {
+		return false, nil
+	}
+
 	for _, kind := range []string{"CronJob", "ScheduledBackup", "Backup", "Cluster", "ObjectStore", "ConfigMap"} {
 		objects, err := client.dynamic.Resource(resource(kind)).Namespace(input.Namespace).List(ctx, metav1.ListOptions{LabelSelector: "borq.run/postgres-id=" + input.Owner})
 		if err != nil {
@@ -746,10 +788,86 @@ func (client Client) Environment(ctx context.Context, input Input) (map[string]s
 	if secret.Labels["borq.run/postgres-id"] != input.Owner {
 		return nil, errors.New("PostgreSQL application credential ownership conflict")
 	}
+	return environmentValues(input, string(secret.Data["username"]), string(secret.Data["password"])), nil
+}
+
+func environmentValues(input Input, username, password string) map[string]string {
 	host := input.Name + "-rw." + input.Namespace + ".svc"
-	username, password := string(secret.Data["username"]), string(secret.Data["password"])
 	address := url.URL{Scheme: "postgresql", Host: host + ":5432", Path: "/" + input.Database, User: url.UserPassword(username, password)}
-	return map[string]string{"PGHOST": host, "PGPORT": "5432", "PGDATABASE": input.Database, "PGUSER": username, "PGPASSWORD": password, "DATABASE_URL": address.String()}, nil
+	return map[string]string{"PGHOST": host, "PGPORT": "5432", "PGDATABASE": input.Database, "PGUSER": username, "PGPASSWORD": password, "DATABASE_URL": address.String()}
+}
+
+func environmentManifest(input Input) map[string]any {
+	return object("external-secrets.io/v1alpha1", "PushSecret", input.Name+"-environment", input.Namespace, input.Owner, map[string]any{
+		"refreshInterval": "1m", "updatePolicy": "Replace", "deletionPolicy": "None",
+		"secretStoreRefs": []any{map[string]any{"name": "borq-openbao", "kind": "ClusterSecretStore"}},
+		"selector":        map[string]any{"secret": map[string]any{"name": input.Name + "-app"}},
+		"data":            []any{map[string]any{"conversionStrategy": "None", "match": map[string]any{"secretKey": "environment.json", "remoteRef": map[string]any{"remoteKey": input.EnvironmentExport.VaultPath, "property": "values"}}}},
+	})
+}
+
+// ReconcileEnvironment repairs only the owned connection projection and its PushSecret.
+// It reads the existing role credential and never provisions storage or changes the database.
+func (client Client) ReconcileEnvironment(ctx context.Context, input Input) error {
+	if input.Isolated || input.EnvironmentExport.Name == "" {
+		return nil
+	}
+	if input.EnvironmentExport.VaultPath == "" {
+		return errors.New("PostgreSQL environment export path is missing")
+	}
+	handle := client.kube.CoreV1().Secrets(input.Namespace)
+	secret, err := handle.Get(ctx, input.Name+"-app", metav1.GetOptions{})
+	if err != nil {
+		return errors.New("PostgreSQL application credential is unavailable for environment export")
+	}
+	if secret.Labels["borq.run/postgres-id"] != input.Owner {
+		return errors.New("PostgreSQL application credential ownership conflict")
+	}
+	username, password := string(secret.Data["username"]), string(secret.Data["password"])
+	if username == "" || password == "" {
+		return errors.New("PostgreSQL application credential is incomplete for environment export")
+	}
+	encoded, err := json.Marshal(environmentValues(input, username, password))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(secret.Data["environment.json"], encoded) {
+		secret.Data = maps.Clone(secret.Data)
+		secret.Data["environment.json"] = encoded
+		if _, err := handle.Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+	return client.apply(ctx, environmentManifest(input), input.Owner)
+}
+
+// EnvironmentExportReady observes the actual owned producer and its current synchronization condition.
+// The manager additionally verifies all exported values against the provider before reporting success.
+func (client Client) EnvironmentExportReady(ctx context.Context, input Input) (bool, error) {
+	if input.Isolated || input.EnvironmentExport.Name == "" {
+		return false, errors.New("PostgreSQL environment export is not configured")
+	}
+	producer, err := client.dynamic.Resource(resource("PushSecret")).Namespace(input.Namespace).Get(ctx, input.Name+"-environment", metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if producer.GetLabels()["borq.run/postgres-id"] != input.Owner {
+		return false, errors.New("PostgreSQL environment producer ownership conflict")
+	}
+	if producer.GetDeletionTimestamp() != nil || !reflect.DeepEqual(producer.Object["spec"], environmentManifest(input)["spec"]) {
+		return false, nil
+	}
+	conditions, _, _ := unstructured.NestedSlice(producer.Object, "status", "conditions")
+	for _, raw := range conditions {
+		condition, _ := raw.(map[string]any)
+		if condition["type"] == "Ready" && condition["status"] == "True" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Logs reads bounded current-primary PostgreSQL logs when persisted telemetry is unavailable.

@@ -155,6 +155,30 @@ The output contains `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, an
 configuration exports do not include these credentials. The hostname is reachable
 from the database's Kubernetes network.
 
+## Connect an application with an environment group
+
+Open the database's **Overview** page and follow the group link under
+**Application connection**. Borq creates a managed environment group named
+`postgres-<database-name>-<database-id>` with the same six connection variables.
+The database ID keeps the group tied to this database for its lifetime.
+External Secrets publishes these values to OpenBao. Reconciliation also creates
+groups for existing databases automatically.
+
+Open your application's **Configuration** page, select this group in the
+**Environment group** selector, then review and deploy the change. Borq refreshes
+the group's connection values automatically and publishes a version when they
+change. Existing deployments keep their pinned version until you review and
+deploy a new plan.
+
+Managed groups are read-only. You can inspect their values and versions, or use
+**Settings** to clone a published version into an independent group. Edit and
+publish that copy as needed. A clone does not receive automatic database updates.
+
+Deleting a database retains its environment group and credential history. Treat
+the saved values as secrets. A restored database, or a database recreated with the
+same name, gets its own group. Existing application references keep pointing to
+the original group until you change them.
+
 ## Inspect protection and restore a backup
 
 Borq starts an initial full S3 backup, then schedules full backups daily at midnight

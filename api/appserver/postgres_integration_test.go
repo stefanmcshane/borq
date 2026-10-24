@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -127,6 +130,7 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	assert.Equal(expected.Tables["empty_table"].Count, 0)
 	assert.Equal(len(slices.Compact(slices.Clone(expected.Tables["duplicates"].Rows))), 3)
 	assert.Equal(run.sql(t, ctx, sourcePod, "SELECT encode(payload, 'hex') FROM recovery.accounts WHERE id = 256;"), "010000ff80\n")
+	run.environmentConsumer(t, ctx, client, kube, source)
 
 	t.Log("quiesced SQL fixture captured; request full backup through production API")
 	previous := run.catalogue(t, ctx)
@@ -147,6 +151,7 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	actual := run.fingerprint(t, ctx, restoredPod)
 	assert.Equal(actual, expected)
 	assert.Equal(run.fingerprint(t, ctx, sourcePod), expected)
+	run.environmentConsumer(t, ctx, client, kube, restored)
 	t.Log("all table row bytes, duplicate multiplicity, hashes, schema and sequence states match")
 
 	result := run.sql(t, ctx, restoredPod, `
@@ -168,7 +173,141 @@ SELECT count(*) FROM recovery.accounts WHERE name='post-restore';`)
 	t.Log("exercise the default weekly restore-check Job with real projected-token authentication")
 	run.restoreCheck(t, ctx, kube, source)
 	assert.Equal(run.fingerprint(t, ctx, sourcePod), expected)
+	groups, err := client.ListEnvironmentGroupsWithResponse(ctx, run.organization, run.space)
+	assert.NoErr(err)
+	if groups.JSON200 == nil || len(*groups.JSON200) != 2 {
+		t.Fatal("restore verification must not publish additional environment groups")
+	}
+	hosts, passwords := map[string]bool{}, map[string]bool{}
+	for _, group := range *groups.JSON200 {
+		for _, variable := range group.Values {
+			if variable.Name == "PGHOST" {
+				hosts[variable.Value] = true
+			}
+			if variable.Name == "PGPASSWORD" {
+				passwords[variable.Value] = true
+			}
+		}
+	}
+	if len(hosts) != 2 || len(passwords) != 2 {
+		t.Fatal("restored database must publish its own host and password")
+	}
 	run.monitoring(t, ctx, client, "restored")
+	for _, database := range []appapi.Postgres{restored, source} {
+		deleted, err := client.DeletePostgresWithResponse(ctx, run.organization, run.space, database.Name)
+		assert.NoErr(err)
+		if deleted.JSON202 == nil {
+			t.Fatalf("database deletion returned status %d", deleted.StatusCode())
+		}
+		run.waitOperation(t, ctx, client, deleted.JSON202.Operation)
+		for _, group := range *groups.JSON200 {
+			if group.Name != database.EnvironmentGroup {
+				continue
+			}
+			retained, err := client.GetEnvironmentGroupVersionWithResponse(ctx, run.organization, run.space, group.Name, strconv.Itoa(group.Version))
+			assert.NoErr(err)
+			if retained.JSON200 == nil || !slices.Equal(retained.JSON200.Values, group.Values) {
+				t.Fatal("database deletion changed or removed its pinned environment history")
+			}
+		}
+	}
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	assert.NoErr(err)
+	producers, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.namespace).List(ctx, metav1.ListOptions{})
+	assert.NoErr(err)
+	assert.Equal(len(producers.Items), 0)
+}
+
+// SDK clients retain their configured transports through pointer receivers.
+func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Context, client *appapi.ClientWithResponses, kube *kubernetes.Clientset, database appapi.Postgres) {
+	t.Helper()
+	t.Logf("connect an application through the %s database environment group", database.Name)
+	assert := is.New(t)
+	if database.EnvironmentGroup == "" {
+		t.Fatal("database does not report its managed environment group")
+	}
+	var expected map[string]string
+	assert.NoErr(json.Unmarshal(run.cli(t, ctx, "env", database.Name, "--output", "json"), &expected))
+	group, err := client.GetEnvironmentGroupWithResponse(ctx, run.organization, run.space, database.EnvironmentGroup)
+	assert.NoErr(err)
+	if group.JSON200 == nil {
+		t.Fatalf("database environment group returned status %d", group.StatusCode())
+	}
+	assert.Equal(group.JSON200.ManagedBy, "postgres/"+database.Name)
+	actual := map[string]string{}
+	for _, variable := range group.JSON200.Values {
+		actual[variable.Name] = variable.Value
+	}
+	if len(actual) != 6 || !maps.Equal(actual, expected) {
+		t.Fatal("managed group does not contain the six CLI connection values")
+	}
+	rejected, err := client.PublishEnvironmentGroupWithResponse(ctx, run.organization, run.space, database.EnvironmentGroup, appapi.PublishEnvironmentGroupInput{Values: []appapi.Variable{{Name: "PGHOST", Value: "invalid.example"}}})
+	assert.NoErr(err)
+	if rejected.StatusCode() != http.StatusConflict || !bytes.Contains(bytes.ToLower(rejected.Body), []byte("managed")) {
+		t.Fatal("manual publication did not explain that the database group is managed")
+	}
+	restConfig, err := clientcmd.BuildConfigFromFlags("", run.config.kubeconfig)
+	assert.NoErr(err)
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	assert.NoErr(err)
+	producers := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.namespace)
+	owned, err := producers.List(ctx, metav1.ListOptions{LabelSelector: "borq.run/postgres-id=" + database.ID})
+	assert.NoErr(err)
+	if len(owned.Items) != 1 {
+		t.Fatal("database must have one owned environment producer")
+	}
+	producer := owned.Items[0]
+	previousRefresh, _, err := unstructured.NestedString(producer.Object, "status", "refreshTime")
+	assert.NoErr(err)
+	assert.NoErr(unstructured.SetNestedField(producer.Object, "1s", "spec", "refreshInterval"))
+	_, err = producers.Update(ctx, &producer, metav1.UpdateOptions{})
+	assert.NoErr(err)
+	refreshContext, refreshCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer refreshCancel()
+	for {
+		current, err := producers.Get(refreshContext, producer.GetName(), metav1.GetOptions{})
+		assert.NoErr(err)
+		refreshed, _, err := unstructured.NestedString(current.Object, "status", "refreshTime")
+		assert.NoErr(err)
+		if refreshed != "" && refreshed != previousRefresh {
+			break
+		}
+		select {
+		case <-refreshContext.Done():
+			t.Fatal("External Secrets did not complete an unchanged refresh")
+		case <-time.After(time.Second):
+		}
+	}
+	unchanged, err := client.GetEnvironmentGroupWithResponse(ctx, run.organization, run.space, database.EnvironmentGroup)
+	assert.NoErr(err)
+	if unchanged.JSON200 == nil || unchanged.JSON200.Version != group.JSON200.Version {
+		t.Fatal("unchanged controller refresh allocated a new environment version")
+	}
+	command, port := "sleep 1800", 0
+	name := "env-consumer-" + database.Name
+	patch := []appapi.AppPatch{{Name: name, Image: database.Specification.Image, Command: &command, Port: &port, Env: applicationEnvPatch(database.EnvironmentGroup, "latest")}}
+	plan := createApplicationPlan(t, ctx, client, run.organization, run.space, appapi.Patch{Apps: &patch})
+	secretName, _, version := applicationEnvReference(t, plan, name)
+	assert.Equal(version, group.JSON200.Version)
+	applyApplicationPlan(t, ctx, client, plan.ID)
+	secret, err := kube.CoreV1().Secrets(run.namespace).Get(ctx, secretName, metav1.GetOptions{})
+	assert.NoErr(err)
+	consumed := map[string]string{}
+	for key, value := range secret.Data {
+		consumed[key] = string(value)
+	}
+	if !maps.Equal(consumed, expected) {
+		t.Fatal("application ExternalSecret did not consume the pinned database environment")
+	}
+	pods, err := kube.CoreV1().Pods(run.namespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=" + name})
+	assert.NoErr(err)
+	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp == nil && pod.Status.Phase == corev1.PodRunning {
+			assert.Equal(run.sql(t, ctx, pod.Name, "SELECT count(*) FROM recovery.accounts;"), "257\n")
+			return
+		}
+	}
+	t.Fatal("application consuming the database environment has no running pod")
 }
 
 func (run postgresAcceptance) cli(t *testing.T, ctx context.Context, arguments ...string) []byte {

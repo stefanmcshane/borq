@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -43,6 +44,9 @@ func (manager Manager) postgresClient(ctx context.Context, stored postgresRecord
 		return postgres.Client{}, postgres.Input{}, err
 	}
 	input := postgres.Input{Namespace: stored.Postgres.Namespace, Name: stored.Postgres.ClusterName, Owner: stored.ID, Organization: stored.Organization, SpaceID: target.ID, Instances: specification.Instances, StorageSize: specification.Storage, StorageClass: specification.StorageClass, Image: specification.Image, Database: specification.Database, Username: specification.Username, Requests: specification.Resources.Requests, Limits: specification.Resources.Limits, RetentionDays: specification.Backup.RecoveryWindowDays, BackupSchedule: "0 " + specification.Backup.Schedule, SnapshotSchedule: "0 " + specification.SnapshotSchedule}
+	if stored.Postgres.EnvironmentGroup != "" {
+		input.EnvironmentExport = postgres.EnvironmentExport{Name: stored.Postgres.EnvironmentGroup, VaultPath: environmentGroupPath(target.ID, stored.Postgres.EnvironmentGroup)}
+	}
 	if stored.Postgres.Protection.Snapshots == "supported" {
 		input.SnapshotClass = specification.SnapshotClass
 	}
@@ -219,10 +223,16 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 	for {
 		observed, err = client.Observe(ctx, input)
 		if err == nil && observed.Ready && observed.Wal == "ready" && observed.Backups == "ready" {
-			return observed, nil
+			exported, exportErr := manager.postgresEnvironmentReady(ctx, stored, client, input)
+			if exportErr != nil {
+				return observed, exportErr
+			}
+			if exported {
+				return observed, nil
+			}
 		}
 		operation.Status = "waiting"
-		operation.Message = "waiting for SQL readiness, first full backup, and WAL archiving"
+		operation.Message = "waiting for SQL readiness, first full backup, WAL archiving, and published connection values"
 		operation.UpdatedAt = time.Now().UTC()
 		if err := manager.savePostgresOperation(ctx, operation); err != nil {
 			return observed, err
@@ -316,14 +326,12 @@ func (manager Manager) postgresMaintenance() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
-		select {
-		case <-manager.runtime.context.Done():
+		if manager.runtime.context.Err() != nil {
 			return
-		case <-ticker.C:
 		}
 		records, err := manager.database.List(manager.runtime.context, "postgres")
 		if err != nil {
-			continue
+			slog.ErrorContext(manager.runtime.context, "postgres_environment_scan_failed")
 		}
 		for _, record := range records {
 			var stored postgresRecord
@@ -331,11 +339,19 @@ func (manager Manager) postgresMaintenance() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(manager.runtime.context, 30*time.Second)
+			if err := manager.maintainPostgresEnvironment(ctx, record.Key, stored.ID); err != nil {
+				slog.ErrorContext(ctx, "postgres_environment_reconciliation_failed", "postgres_id", stored.ID, "organization", stored.Organization, "space", stored.Space, "database", stored.Postgres.Name, "reason", safePostgresEnvironmentError(err))
+			}
 			client, input, err := manager.postgresClient(ctx, stored, false)
 			if err == nil {
 				_ = client.PruneSnapshots(ctx, input, time.Duration(stored.Postgres.Specification.SnapshotRetentionHours)*time.Hour)
 			}
 			cancel()
+		}
+		select {
+		case <-manager.runtime.context.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }
@@ -408,6 +424,38 @@ func (manager Manager) rotatePostgresStorage(ctx context.Context, before, after 
 func (manager Manager) reconcilePostgresRuntime(ctx context.Context, stored postgresRecord, task postgresTask) (postgres.Client, postgres.Input, error) {
 	manager.runtime.storageMutex.Lock()
 	defer manager.runtime.storageMutex.Unlock()
+	current, record, err := loadDocument[postgresRecord](ctx, manager.database, "postgres", task.Key)
+	if err != nil {
+		return postgres.Client{}, postgres.Input{}, err
+	}
+	if current.ID != stored.ID || current.ActiveOperation != stored.ActiveOperation || current.Postgres.State == "removed" || current.Postgres.State == "deleting" {
+		return postgres.Client{}, postgres.Input{}, ErrConflict
+	}
+	target, err := manager.GetSpace(ctx, current.Organization, current.Space)
+	if err != nil {
+		return postgres.Client{}, postgres.Input{}, err
+	}
+	previousName := current.Postgres.EnvironmentGroup
+	current, writes, err := manager.claimPostgresEnvironment(ctx, current, target)
+	if err != nil {
+		return postgres.Client{}, postgres.Input{}, err
+	}
+	if previousName != current.Postgres.EnvironmentGroup {
+		write, err := documentWrite("postgres", task.Key, current, record.Revision)
+		if err != nil {
+			return postgres.Client{}, postgres.Input{}, err
+		}
+		writes = append(writes, write)
+	}
+	if len(writes) > 0 {
+		if err := manager.database.Commit(ctx, writes); err != nil {
+			return postgres.Client{}, postgres.Input{}, translateStoreError(err)
+		}
+	}
+	stored = current
+	if err := manager.postgresEnvironmentRetention(ctx, stored); err != nil {
+		return postgres.Client{}, postgres.Input{}, err
+	}
 	client, input, err := manager.postgresClient(ctx, stored, true)
 	if err != nil {
 		return client, input, err

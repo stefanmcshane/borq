@@ -72,6 +72,8 @@ type Postgres struct {
 	Namespace string `json:"namespace"`
 	// ClusterName is the isolated Kubernetes PostgreSQL cluster identity.
 	ClusterName string `json:"clusterName"`
+	// EnvironmentGroup selects this database incarnation’s published connection values.
+	EnvironmentGroup string `json:"environmentGroup"`
 	// State is pending, ready, degraded, unavailable, failed, deleting, or removed.
 	State string `json:"state"`
 	// Message explains the latest durable operation outcome.
