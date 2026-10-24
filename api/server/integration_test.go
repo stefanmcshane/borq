@@ -43,14 +43,14 @@ func TestServerIntegration(t *testing.T) {
 	testContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := assertHealthResponse(testContext, serverURL+"/healthz"); err != nil {
-		t.Fatalf("assert /healthz endpoint: %v", err)
+	if err := assertHealthResponse(testContext, serverURL+"/api/healthz"); err != nil {
+		t.Fatalf("assert /api/healthz endpoint: %v", err)
 	}
 	if err := assertHTTPResponse(testContext, http.MethodGet, serverURL+"/", http.StatusOK, "borq"); err != nil {
 		t.Fatalf("assert / endpoint: %v", err)
 	}
-	if err := assertHTTPResponse(testContext, http.MethodPost, serverURL+"/healthz", http.StatusMethodNotAllowed, "method not allowed"); err != nil {
-		t.Fatalf("assert /healthz method handling: %v", err)
+	if err := assertHTTPResponse(testContext, http.MethodPost, serverURL+"/api/healthz", http.StatusMethodNotAllowed, "method not allowed"); err != nil {
+		t.Fatalf("assert /api/healthz method handling: %v", err)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestReconcileIntegration(t *testing.T) {
 	cmName := "test-integration"
 	cmNamespace := "default"
 	client := &http.Client{Timeout: 5 * time.Second}
-	reconcileURL := fmt.Sprintf("http://localhost:%d/reconcile?component=test-component", port)
+	reconcileURL := fmt.Sprintf("http://localhost:%d/api/reconcile?component=test-component", port)
 
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -286,7 +286,7 @@ func TestReconcileIntegrationCloudNativePG(t *testing.T) {
 	waitForServer(t, port, 5*time.Second)
 
 	client := &http.Client{Timeout: 4 * time.Minute}
-	reconcileURL := fmt.Sprintf("http://localhost:%d/reconcile", port)
+	reconcileURL := fmt.Sprintf("http://localhost:%d/api/reconcile", port)
 
 	t.Run("initial operator reconcile", func(t *testing.T) {
 		operatorResult := reconcileRaw(t, testContext, client, reconcileURL+"?component=cloudnativepg-operator", nil)

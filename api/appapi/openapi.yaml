@@ -1,0 +1,2375 @@
+components:
+  schemas:
+    App:
+      additionalProperties: false
+      description: Complete application configuration after merging and defaulting.
+      properties:
+        checks:
+          $ref: '#/components/schemas/Checks'
+        command:
+          description: Normalized command line parsed using shell quoting and executed
+            directly without a shell; empty uses image defaults.
+          type: string
+        env:
+          $ref: '#/components/schemas/EnvReference'
+        image:
+          description: Container image. Required for a new app; omitted retains an
+            existing image.
+          minLength: 1
+          type: string
+        ingresses:
+          items:
+            $ref: '#/components/schemas/ExpandedIngress'
+          type: array
+        name:
+          description: Application name, limited to 50 characters to leave room for
+            generated resource names.
+          maxLength: 50
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        port:
+          description: Container and Service port; zero disables networking.
+          maximum: 65535
+          minimum: 0
+          type: integer
+        predeploy:
+          $ref: '#/components/schemas/Predeploy'
+        replicas:
+          description: Desired replicas, defaulting to one; zero scales down.
+          minimum: 0
+          type: integer
+      required:
+      - name
+      - image
+      - port
+      - replicas
+      - env
+      - ingresses
+      - predeploy
+      - command
+      - checks
+      type: object
+    AppPatch:
+      additionalProperties: false
+      description: A partial named application update. Omission and an explicit empty
+        list have different meanings. JSON null is not accepted.
+      properties:
+        checks:
+          $ref: '#/components/schemas/ChecksPatch'
+        command:
+          description: Command line parsed using shell quoting and executed directly
+            without a shell. Empty uses image defaults. Invoke a shell explicitly
+            for expansion or pipelines.
+          type: string
+        env:
+          $ref: '#/components/schemas/EnvReferencePatch'
+        image:
+          description: Container image. Required for a new app; omitted retains an
+            existing image.
+          minLength: 1
+          type: string
+        ingresses:
+          description: Traefik routes, upserted by name. Empty lists clear configuration,
+            but plans requiring Kubernetes resource deletion are rejected in this
+            version.
+          items:
+            $ref: '#/components/schemas/Ingress'
+          type: array
+        name:
+          description: Application name, limited to 50 characters to leave room for
+            generated resource names.
+          maxLength: 50
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        port:
+          description: Container and Service port; zero disables networking.
+          maximum: 65535
+          minimum: 0
+          type: integer
+        predeploy:
+          $ref: '#/components/schemas/PredeployPatch'
+        replicas:
+          description: Desired replicas, defaulting to one; zero scales down.
+          minimum: 0
+          type: integer
+      required:
+      - name
+      type: object
+    Check:
+      additionalProperties: false
+      properties:
+        enabled:
+          description: Whether this HTTP probe is emitted.
+          type: boolean
+        failureThreshold:
+          description: Consecutive failures before the probe fails.
+          minimum: 1
+          type: integer
+        path:
+          description: HTTP endpoint, defaulting to /healthz.
+          pattern: ^/
+          type: string
+        periodSeconds:
+          description: Interval between probe attempts.
+          minimum: 1
+          type: integer
+        port:
+          description: HTTP probe port; zero is allowed only for a disabled probe.
+          maximum: 65535
+          minimum: 0
+          type: integer
+        timeoutSeconds:
+          description: Maximum duration of a probe attempt.
+          minimum: 1
+          type: integer
+      required:
+      - enabled
+      - path
+      - port
+      - periodSeconds
+      - timeoutSeconds
+      - failureThreshold
+      type: object
+    CheckPatch:
+      additionalProperties: false
+      description: Only supplied fields change; omitted fields retain existing values
+        or receive defaults.
+      properties:
+        enabled:
+          description: Whether this HTTP probe is emitted.
+          type: boolean
+        failureThreshold:
+          description: Consecutive failures before the probe fails.
+          minimum: 1
+          type: integer
+        path:
+          description: HTTP endpoint, defaulting to /healthz.
+          pattern: ^/
+          type: string
+        periodSeconds:
+          description: Interval between probe attempts.
+          minimum: 1
+          type: integer
+        port:
+          description: HTTP probe port; zero is allowed only for a disabled probe.
+          maximum: 65535
+          minimum: 0
+          type: integer
+        timeoutSeconds:
+          description: Maximum duration of a probe attempt.
+          minimum: 1
+          type: integer
+      type: object
+    Checks:
+      additionalProperties: false
+      description: Complete application health checks.
+      properties:
+        readiness:
+          $ref: '#/components/schemas/Check'
+        startup:
+          $ref: '#/components/schemas/Check'
+      required:
+      - readiness
+      - startup
+      type: object
+    ChecksPatch:
+      additionalProperties: false
+      description: Only supplied checks and check fields change; omitted values retain
+        existing values or receive defaults.
+      properties:
+        readiness:
+          $ref: '#/components/schemas/CheckPatch'
+        startup:
+          $ref: '#/components/schemas/CheckPatch'
+      type: object
+    CloneEnvironmentGroupInput:
+      additionalProperties: false
+      properties:
+        sourceName:
+          description: Existing config family in the same deployment space.
+          maxLength: 253
+          minLength: 1
+          pattern: ^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+        sourceVersion:
+          description: Existing source version; omission selects latest.
+          pattern: ^(latest|[1-9][0-9]*)$
+          type: string
+      required:
+      - sourceName
+      type: object
+    Cluster:
+      additionalProperties: false
+      properties:
+        clientApiServer:
+          x-go-name: ClientApiServer
+          x-oapi-codegen-only-honour-go-name: true
+          description: Client-facing Kubernetes API URL used by the explicit kubeconfig download. Connection credentials remain private in other responses.
+          type: string
+        context:
+          description: Optional context within the kubeconfig.
+          type: string
+        id:
+          description: Stable Borq identity used for credentials and telemetry labels.
+          type: string
+        inCluster:
+          description: Use the server service account to connect to its hosting cluster.
+          type: boolean
+        kubeconfigPath:
+          description: Server-local kubeconfig path. This API is restricted to trusted
+            administrators.
+          type: string
+        name:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        organization:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      required:
+      - organization
+      - name
+      - kubeconfigPath
+      - context
+      - inCluster
+      type: object
+    ClusterInput:
+      additionalProperties: false
+      properties:
+        clientApiServer:
+          x-go-name: ClientApiServer
+          x-oapi-codegen-only-honour-go-name: true
+          description: Optional absolute HTTP(S) Kubernetes API address for downloaded kubeconfigs. Relinking can update this metadata; omission preserves it. Credentials, query strings, and fragments are forbidden.
+          type: string
+        context:
+          description: Optional context within the kubeconfig.
+          type: string
+        inCluster:
+          description: Use the server service account to connect to its hosting cluster.
+          type: boolean
+        kubeconfig:
+          description: Inline kubeconfig with embedded credentials; stored privately
+            and returned only through the explicit kubeconfig download endpoint. Mutually exclusive with kubeconfigPath and inCluster.
+          type: string
+        kubeconfigPath:
+          description: Server-local kubeconfig path. This API is restricted to trusted
+            administrators.
+          type: string
+        reconcile:
+          description: Schedule target component reconciliation after registration. Omission defaults to true. False only saves the registration; it does not install or enqueue components. This request option is never persisted or returned.
+          type: boolean
+      type: object
+    ClusterKubeconfig:
+      additionalProperties: false
+      properties:
+        kubeconfig:
+          description: Selected-context-only kubeconfig with credentials embedded. Treat this response as secret.
+          type: string
+      required:
+      - kubeconfig
+      type: object
+    ComponentDiff:
+      additionalProperties: false
+      properties:
+        components:
+          items:
+            $ref: '#/components/schemas/ComponentChange'
+          type: array
+      required:
+      - components
+      type: object
+    ComponentChange:
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        chart:
+          type: string
+        installedVersion:
+          type: string
+        desiredVersion:
+          type: string
+        revision:
+          type: integer
+        action:
+          description: install, repair, upgrade, none, or conflict. A conflict blocks setup to avoid duplicating components owned by another installation. Existing versions and values require an explicit upgrade request.
+          type: string
+        reason:
+          description: Explanation of the proposed action or detected installation conflict.
+          type: string
+        upgradeAvailable:
+          type: boolean
+        valuesDiff:
+          description: Difference between installed and Borq-owned values, with sensitive values omitted.
+          type: string
+      required:
+      - name
+      - chart
+      - installedVersion
+      - desiredVersion
+      - revision
+      - action
+      - reason
+      - upgradeAvailable
+      - valuesDiff
+      type: object
+    ComponentInstallation:
+      additionalProperties: false
+      properties:
+        id:
+          description: Identity of the durable reconciliation run; polling never schedules another run.
+          type: string
+        clusterId:
+          type: string
+        diff:
+          $ref: '#/components/schemas/ComponentDiff'
+        message:
+          type: string
+        nextRetryAt:
+          description: Scheduled automatic retry after a failed run; the zero timestamp means no retry is pending.
+          format: date-time
+          type: string
+        result:
+          $ref: '#/components/schemas/PlatformResult'
+        status:
+          description: queued, diffing, installing, ready, failed, or disabled. Registration and asynchronous reconciliation have independent outcomes.
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - clusterId
+      - diff
+      - status
+      - message
+      - nextRetryAt
+      - updatedAt
+      - result
+      type: object
+    ComponentState:
+      additionalProperties: false
+      properties:
+        changed:
+          type: boolean
+        chart:
+          type: string
+        name:
+          type: string
+        revision:
+          type: integer
+        status:
+          type: string
+        upgradeAvailable:
+          type: boolean
+        version:
+          type: string
+      required:
+      - name
+      - chart
+      - version
+      - revision
+      - status
+      - changed
+      - upgradeAvailable
+      type: object
+    Configuration:
+      additionalProperties: false
+      properties:
+        apps:
+          items:
+            $ref: '#/components/schemas/App'
+          type: array
+      required:
+      - apps
+      type: object
+    EnvironmentGroup:
+      additionalProperties: false
+      description: One immutable published environment group version, including its
+        complete values.
+      properties:
+        name:
+          description: Environment group name within this deployment space.
+          type: string
+        values:
+          description: Complete environment group values, including empty strings.
+          items:
+            $ref: '#/components/schemas/Variable'
+          type: array
+        version:
+          description: Existing OpenBao KV v2 version assigned at publication.
+          minimum: 1
+          type: integer
+      required:
+      - name
+      - version
+      - values
+      type: object
+    EnvReference:
+      additionalProperties: false
+      description: Reference to a separately published environment group. Omit name
+        to use organization-space-app. Version defaults to latest and is resolved
+        and pinned during planning; saved plans contain a decimal version. Version
+        0 represents an empty default group.
+      properties:
+        name:
+          description: Environment group name, scoped to this space. Omit to select the
+            app's default group.
+          maxLength: 253
+          pattern: ^$|^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+        version:
+          description: Published version or latest. Omission in a supplied env reference
+            selects latest. Planning pins latest to an existing version; it never
+            reserves or creates one. Only the latest and ten previous versions may
+            be planned or applied, checked against the current vault head even for
+            saved plans.
+          pattern: ^(latest|0|[1-9][0-9]*)$
+          type: string
+      required:
+      - name
+      - version
+      type: object
+    EnvReferencePatch:
+      additionalProperties: false
+      description: Reference to a separately published environment group. Omit name
+        to use organization-space-app. Version defaults to latest and is resolved
+        and pinned during planning; saved plans contain a decimal version. Version
+        0 represents an empty default group.
+      properties:
+        name:
+          description: Environment group name, scoped to this space. Omit to select the
+            app's default group.
+          maxLength: 253
+          pattern: ^$|^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+        version:
+          default: latest
+          description: Published version or latest. Omission in a supplied env reference
+            selects latest. Planning pins latest to an existing version; it never
+            reserves or creates one. Only the latest and ten previous versions may
+            be planned or applied, checked against the current vault head even for
+            saved plans.
+          pattern: ^(latest|0|[1-9][0-9]*)$
+          type: string
+      type: object
+    ExpandedIngress:
+      additionalProperties: false
+      properties:
+        host:
+          description: DNS host exposed by Traefik.
+          minLength: 1
+          type: string
+        name:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        path:
+          description: HTTP path prefix, defaulting to /.
+          pattern: ^/
+          type: string
+      required:
+      - name
+      - host
+      - path
+      type: object
+    Ingress:
+      additionalProperties: false
+      description: A public HTTPS route with certificate details managed by Borq and
+        the space's issuer.
+      properties:
+        host:
+          description: DNS host exposed by Traefik.
+          minLength: 1
+          type: string
+        name:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        path:
+          description: HTTP path prefix, defaulting to /.
+          pattern: ^/
+          type: string
+      required:
+      - name
+      - host
+      type: object
+    InspectInput:
+      additionalProperties: false
+      properties:
+        manifests:
+          description: The full resource set rendered for one space.
+          items:
+            $ref: '#/components/schemas/Manifest'
+          type: array
+      required:
+      - manifests
+      type: object
+    Manifest:
+      additionalProperties: true
+      description: One Kubernetes resource represented without transport-specific
+        normalization.
+      type: object
+    Operation:
+      additionalProperties: false
+      properties:
+        id:
+          description: Stable operation identifier.
+          type: string
+        message:
+          description: Progress or failure detail.
+          type: string
+        phase:
+          description: Current durable execution phase; pinned environment Secrets
+            must be ready before predeploy, and predeploy must finish before applications
+            are applied.
+          enum:
+          - secrets
+          - predeploy
+          - applications
+          type: string
+        planId:
+          description: Exact saved plan being executed.
+          type: string
+        resources:
+          items:
+            $ref: '#/components/schemas/ResourceStatus'
+          type: array
+        spaceId:
+          description: Deployment target identifier.
+          type: string
+        startedAt:
+          description: Operation acceptance time. Queued time does not consume the
+            execution deadline.
+          format: date-time
+          type: string
+        status:
+          description: Overall operation state.
+          enum:
+          - queued
+          - pending
+          - applying
+          - waiting
+          - succeeded
+          - failed
+          type: string
+        updatedAt:
+          description: Last observed operation progress.
+          format: date-time
+          type: string
+      required:
+      - id
+      - planId
+      - spaceId
+      - status
+      - phase
+      - message
+      - resources
+      - startedAt
+      - updatedAt
+      type: object
+    Organization:
+      additionalProperties: false
+      properties:
+        name:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      required:
+      - name
+      type: object
+    Patch:
+      additionalProperties: false
+      description: The apps.yaml specification. Target-independent application updates;
+        builds and cluster configuration are intentionally excluded.
+      example:
+        apps:
+        - image: nginx:1.27.5
+          name: frontend
+          port: 80
+        - image: ghcr.io/example/backend:1.0.0
+          name: backend
+          port: 8080
+      properties:
+        apps:
+          description: Named applications to merge. Omitted apps remain. Empty lists
+            clear configuration, but plans that remove existing Kubernetes resources
+            are rejected until deletion support is implemented.
+          items:
+            $ref: '#/components/schemas/AppPatch'
+          type: array
+      type: object
+    Plan:
+      additionalProperties: false
+      properties:
+        baseRevision:
+          description: Desired revision used when planning.
+          minimum: 0
+          type: integer
+        before:
+          $ref: '#/components/schemas/Configuration'
+        configuration:
+          $ref: '#/components/schemas/Configuration'
+        configurationDiff:
+          description: Unified diff of the complete expanded configuration.
+          type: string
+        createdAt:
+          description: Time at which the immutable plan was stored.
+          format: date-time
+          type: string
+        id:
+          description: Immutable plan identifier.
+          type: string
+        manifests:
+          items:
+            $ref: '#/components/schemas/Manifest'
+          type: array
+        rendererVersion:
+          description: Embedded chart version used to produce artifacts.
+          type: string
+        resourceDiffs:
+          items:
+            $ref: '#/components/schemas/ResourceDiff'
+          type: array
+        space:
+          $ref: '#/components/schemas/Space'
+        values:
+          additionalProperties: true
+          description: Resolved Helm rendering values.
+          type: object
+      required:
+      - id
+      - space
+      - baseRevision
+      - before
+      - configuration
+      - configurationDiff
+      - values
+      - rendererVersion
+      - manifests
+      - resourceDiffs
+      - createdAt
+      type: object
+    PlatformResult:
+      additionalProperties: false
+      properties:
+        components:
+          items:
+            $ref: '#/components/schemas/ComponentState'
+          type: array
+        namespace:
+          type: string
+        profile:
+          type: string
+      required:
+      - profile
+      - namespace
+      - components
+      type: object
+    Predeploy:
+      additionalProperties: false
+      description: Complete predeploy configuration. An empty command disables execution.
+        Image and environment always come from the current parent app.
+      properties:
+        backoffLimit:
+          description: Maximum failed Pod retries.
+          maximum: 2147483647
+          minimum: 0
+          type: integer
+        command:
+          description: Normalized command line parsed using shell quoting and executed
+            directly without a shell; empty disables execution.
+          type: string
+        timeoutSeconds:
+          description: Total Job execution deadline.
+          maximum: 2147483647
+          minimum: 1
+          type: integer
+      required:
+      - command
+      - timeoutSeconds
+      - backoffLimit
+      type: object
+    PredeployPatch:
+      additionalProperties: false
+      description: One optional process that must exit successfully before application
+        resources change. It inherits the parent app image and environment and runs
+        when command is nonempty. All apps' predeploy processes form one space-wide
+        barrier. A long-running webserver blocks deployment until its deadline expires.
+      properties:
+        backoffLimit:
+          default: 0
+          description: Maximum failed Pod retries; zero disables retries.
+          maximum: 2147483647
+          minimum: 0
+          type: integer
+        command:
+          description: Command line parsed using shell quoting and executed directly
+            without a shell. Empty disables future predeploy runs. Invoke a shell
+            explicitly for expansion or pipelines.
+          type: string
+        timeoutSeconds:
+          default: 300
+          description: Total Job deadline, including scheduling and retries.
+          maximum: 2147483647
+          minimum: 1
+          type: integer
+      type: object
+    Problem:
+      additionalProperties: false
+      properties:
+        message:
+          description: A description of the request failure.
+          type: string
+      required:
+      - message
+      type: object
+    PublishEnvironmentGroupInput:
+      additionalProperties: false
+      description: Publish a complete immutable config version. This replaces the
+        entire value map and does not merge omitted keys. Identical values reuse the
+        current version; publishing never deploys applications.
+      properties:
+        baseVersion:
+          description: Optional expected latest version. Zero requires a new config;
+            a mismatch rejects the publication.
+          minimum: 0
+          type: integer
+        values:
+          items:
+            $ref: '#/components/schemas/Variable'
+          type: array
+      required:
+      - values
+      type: object
+    RenderInput:
+      additionalProperties: false
+      properties:
+        certificateIssuer:
+          default: borq
+          description: Certificate issuer from the render target's space; this setting
+            is not part of apps.yaml.
+          maxLength: 253
+          minLength: 1
+          type: string
+        configuration:
+          $ref: '#/components/schemas/Configuration'
+        scope:
+          $ref: '#/components/schemas/ResourceScope'
+        namespace:
+          description: Namespace selected by the target space.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        planID:
+          description: Optional saved plan identity used to reproduce its exact immutable
+            artifacts; omission allocates a new snapshot identity.
+          minLength: 1
+          type: string
+        targetID:
+          description: Stable Borq space ownership label.
+          maxLength: 63
+          minLength: 1
+          type: string
+      required:
+      - configuration
+      - namespace
+      - targetID
+      type: object
+    ResourceScope:
+      additionalProperties: false
+      description: Organization, space and registered cluster names used for resource labels and annotations. Organization names are currently their identifiers. This context belongs outside apps.yaml; deployment plans supply it automatically.
+      properties:
+        organization:
+          description: The unique organization name, which is its current identifier.
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+        space:
+          description: The readable space name within the organization.
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+        cluster:
+          description: The registered cluster name within the organization.
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+      required:
+      - organization
+      - space
+      - cluster
+      type: object
+    ApplicationState:
+      additionalProperties: false
+      description: Accepted application state for one space, read without rendering or contacting Kubernetes.
+      properties:
+        configuration:
+          $ref: '#/components/schemas/Configuration'
+        manifests:
+          description: Exact manifests saved by the latest accepted apply, including failed or queued rollouts. Empty before the first apply.
+          items:
+            $ref: '#/components/schemas/Manifest'
+          type: array
+      required:
+      - configuration
+      - manifests
+      type: object
+    Rendered:
+      additionalProperties: false
+      properties:
+        manifests:
+          description: Exact Kubernetes resources produced by the embedded chart.
+          items:
+            $ref: '#/components/schemas/Manifest'
+          type: array
+        rendererVersion:
+          description: Embedded chart version.
+          type: string
+        values:
+          additionalProperties: true
+          description: Complete Helm rendering values.
+          type: object
+      required:
+      - values
+      - manifests
+      - rendererVersion
+      type: object
+    ResourceDiff:
+      additionalProperties: false
+      properties:
+        action:
+          description: Planned action.
+          enum:
+          - create
+          - update
+          - unchanged
+          type: string
+        apiVersion:
+          description: Kubernetes API group and version.
+          type: string
+        desired:
+          $ref: '#/components/schemas/Manifest'
+        fingerprint:
+          description: Fingerprint of the live managed configuration observed during
+            planning.
+          type: string
+        kind:
+          description: Kubernetes resource kind.
+          type: string
+        live:
+          $ref: '#/components/schemas/Manifest'
+        name:
+          description: Resource name.
+          type: string
+        namespace:
+          description: Resource namespace; empty for cluster-scoped resources.
+          type: string
+      required:
+      - apiVersion
+      - kind
+      - namespace
+      - name
+      - action
+      - desired
+      - fingerprint
+      type: object
+    ResourceStatus:
+      additionalProperties: false
+      properties:
+        apiVersion:
+          description: Kubernetes API group and version.
+          type: string
+        kind:
+          description: Kubernetes resource kind.
+          type: string
+        message:
+          description: Observed progress or failure detail.
+          type: string
+        name:
+          description: Resource name.
+          type: string
+        namespace:
+          description: Resource namespace; empty for cluster-scoped resources.
+          type: string
+        state:
+          description: Current readiness state.
+          type: string
+      required:
+      - apiVersion
+      - kind
+      - namespace
+      - name
+      - state
+      - message
+      type: object
+    Space:
+      additionalProperties: false
+      properties:
+        cluster:
+          description: Cluster registered in the same organization and bound to this space.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        configuration:
+          $ref: '#/components/schemas/Configuration'
+        id:
+          description: Stable deployment-target identifier.
+          type: string
+        lastSuccessfulRevision:
+          description: Last revision that completed rollout successfully.
+          minimum: 0
+          type: integer
+        name:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        namespace:
+          description: Server-assigned Kubernetes namespace used for internal service addresses.
+          type: string
+        organization:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+        revision:
+          description: Latest accepted desired revision.
+          minimum: 0
+          type: integer
+      required:
+      - id
+      - organization
+      - name
+      - cluster
+      - namespace
+      - revision
+      - configuration
+      - lastSuccessfulRevision
+      type: object
+    SpaceInput:
+      additionalProperties: false
+      properties:
+        cluster:
+          description: Cluster registered in the same organization. Required when creating a space.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      required:
+      - cluster
+      type: object
+    Variable:
+      additionalProperties: false
+      properties:
+        name:
+          description: Environment variable name.
+          minLength: 1
+          type: string
+        value:
+          description: Full literal environment value, including empty strings. Values
+            are published separately from applications and remain available to trusted
+            API clients.
+          type: string
+      required:
+      - name
+      - value
+      type: object
+info:
+  description: Private trusted-administrator API. Authentication and authorization
+    are deployment boundary requirements for this initial slice; do not expose this
+    API publicly. Organizations own clusters and spaces. A space owns independent desired
+    configuration and history and must be bound to one registered cluster at creation.
+    Borq assigns its namespace and certificate issuer automatically. Registering a cluster
+    creates an initial bound space with the cluster’s name. Cluster platform
+    components are shared by its spaces. Builds, addons, deletion commands, automatic
+    reconciliation, and rollback are outside this version.
+  title: Borq application manager
+  version: 1.0.0
+openapi: 3.0.3
+paths:
+  /api/v1/apps/expand:
+    post:
+      description: Stateless JSON conversion without cluster access or stored state.
+        New apps require images. An omitted Content-Type defaults to application/json.
+        Duplicate keys, unknown fields, null values, and multiple documents are rejected.
+        The CLI converts apps.yaml to and from the JSON schema.
+      operationId: ExpandApps
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Patch'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Configuration'
+          description: Complete configuration with every default, empty list, and
+            explicit zero preserved.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, oversized, malformed, or schema-invalid request. Bodies
+            must contain one document no larger than 1 MiB.
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unsupported request Content-Type.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Expand a partial application configuration into its complete form.
+  /api/v1/apps/inspect:
+    post:
+      description: Reads resource specifications, including live drift in supported
+        application fields. Environment group names and pinned versions are reconstructed
+        without reading secret values. Include the currently referenced ExternalSecrets
+        with the application resources. Unsupported or inconsistent combinations are
+        rejected instead of silently losing configuration.
+      operationId: InspectApps
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InspectInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Configuration'
+          description: Complete application configuration reconstructed from the resources.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, oversized, malformed, or schema-invalid request. Bodies
+            must contain one document no larger than 1 MiB.
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unsupported request Content-Type.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Read Borq-rendered Kubernetes manifests back into a complete application
+        configuration.
+  /api/v1/apps/render:
+    post:
+      description: Rendering without cluster access or writing to the vault. Concrete
+        decimal env versions produce pinned ExternalSecrets; unresolved latest references
+        remain previews without ExternalSecrets. Targeted deployment plans resolve
+        latest before rendering. The namespace and targetID belong to the rendering
+        envelope, never apps.yaml. Supply a saved planID to reproduce its exact predeploy
+        artifacts. Optional scope supplies organization, space and cluster ownership metadata for standalone rendering; saved plans already contain that metadata.
+      operationId: RenderApps
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenderInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Rendered'
+          description: Expanded Helm values and exact Kubernetes resources.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, oversized, malformed, or schema-invalid request. Bodies
+            must contain one document no larger than 1 MiB.
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unsupported request Content-Type.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Render a complete application configuration into Helm values and Kubernetes
+        manifests.
+  /api/v1/management/components:
+    get:
+      operationId: GetManagementComponents
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentInstallation'
+          description: Last component installation state.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: No component installation or cluster found.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Component reconciliation failed.
+      summary: Read management component installation state.
+  /api/v1/management/components/upgrade:
+    post:
+      operationId: UpgradeManagementComponents
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentInstallation'
+          description: Last component installation state.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: No component installation or cluster found.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Component reconciliation failed.
+      summary: Upgrade management components in their explicit dependency order.
+  /api/v1/operations/{operation}:
+    get:
+      operationId: GetOperation
+      parameters:
+      - in: path
+        name: operation
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Poll asynchronous application and rollout status.
+  /api/v1/organizations:
+    get:
+      operationId: ListOrganizations
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Organization'
+                type: array
+          description: Successful response. Empty collections are returned as arrays.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: List organizations.
+  /api/v1/organizations/{organization}:
+    put:
+      operationId: PutOrganization
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organization'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Create or retrieve an organization.
+  /api/v1/organizations/{organization}/clusters:
+    get:
+      operationId: ListClusters
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Cluster'
+                type: array
+          description: Successful response. Empty collections are returned as arrays.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The organization does not exist.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: List clusters registered in this organization.
+  /api/v1/organizations/{organization}/clusters/{cluster}:
+    put:
+      operationId: PutCluster
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: cluster
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClusterInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unsupported request Content-Type.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Save a cluster registration, create its initial space, and optionally queue target setup.
+      description: Registration validates and saves the connection independently of component setup. Reconciliation is queued by default and runs on the server after this response. Its later failure does not undo registration; inspect GET components or queue an explicit retry. Set reconcile to false to skip setup.
+  /api/v1/organizations/{organization}/clusters/{cluster}/kubeconfig:
+    get:
+      operationId: GetClusterKubeconfig
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+      - in: path
+        name: cluster
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+      responses:
+        "200":
+          description: Self-contained kubeconfig for this cluster; no target connectivity is required.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Always no-store.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterKubeconfig'
+        "400":
+          description: Invalid organization or cluster identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        "404":
+          description: This organization has no such cluster registration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        "500":
+          description: Stored credentials could not be exported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      summary: Download the registered cluster's selected kubeconfig.
+      description: Explicitly returns credentials to trusted administrators. The response is never cached. Lists and registration responses omit credentials. Permissions will be refined separately.
+  /api/v1/organizations/{organization}/clusters/{cluster}/components:
+    get:
+      operationId: GetClusterComponents
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: cluster
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentInstallation'
+          description: Saved reconciliation run, including its current state and most recent diff.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: No component installation or cluster found.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unable to read or queue component state.
+      summary: Read deployment target component installation state.
+  /api/v1/organizations/{organization}/clusters/{cluster}/components/reconcile:
+    post:
+      operationId: ReconcileClusterComponents
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: cluster
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentInstallation'
+          description: Saved reconciliation run, including its current state and most recent diff.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: No component installation or cluster found.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: A different reconciliation mode is already active.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unable to read or queue component state.
+      summary: Queue reconciliation of missing or failed target components.
+      description: Returns immediately with the durable run. Repeating while it is active returns that same run. Poll GET components until ready or failed; stopping the client does not cancel server work. Existing release values and versions change only through the upgrade endpoint.
+  /api/v1/organizations/{organization}/clusters/{cluster}/components/upgrade:
+    post:
+      operationId: UpgradeClusterComponents
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: cluster
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentInstallation'
+          description: Saved reconciliation run, including its current state and most recent diff.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: No component installation or cluster found.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: A different reconciliation mode is already active.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unable to read or queue component state.
+      summary: Queue an explicit target component upgrade.
+      description: Returns immediately with the durable run. The server computes the diff, then upgrades components in their declared dependency order. Poll GET components until ready or failed; stopping the client does not cancel server work.
+  /api/v1/organizations/{organization}/clusters/{cluster}/components/diff:
+    get:
+      operationId: DiffClusterComponents
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: cluster
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: query
+        name: upgrade
+        description: Show the explicit-upgrade actions instead of normal missing-component reconciliation.
+        schema:
+          type: boolean
+          default: false
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentDiff'
+          description: Read-only comparison of installed releases and Borq's component catalog.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request or infrastructure management is disabled.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Cluster registration not found.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The physical cluster is owned by another registration.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unable to compare target components.
+      summary: Compare target components without installing or enqueueing anything.
+  /api/v1/organizations/{organization}/spaces:
+    get:
+      operationId: ListSpaces
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/Space'
+                type: array
+          description: Successful response. Empty collections are returned as arrays.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The organization does not exist.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: List spaces in this organization.
+  /api/v1/organizations/{organization}/spaces/{space}:
+    get:
+      operationId: GetSpace
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Space'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Read space binding, accepted desired configuration, and revision state.
+    put:
+      operationId: PutSpace
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpaceInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Space'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unsupported request Content-Type.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Create a space bound to a registered cluster.
+      description: A cluster registered in the same organization is required. Borq assigns a stable isolated namespace and uses the borq ClusterIssuer automatically. Kubernetes creates the namespace on first apply. The cluster binding is immutable.
+  /api/v1/organizations/{organization}/spaces/{space}/apps:
+    get:
+      operationId: ListApps
+      summary: Read the space's expanded app configuration and exact saved manifests.
+      description: Returns the latest accepted desired state, including queued or failed applies. Planning alone does not change this state. Both views come from one stored snapshot, with env references pinned and no literal env values.
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+      - in: path
+        name: space
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationState'
+          description: Accepted configuration and saved manifests; both app and manifest lists are empty before the first apply.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request path.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Organization or space does not exist.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unable to read saved app state.
+  /api/v1/organizations/{organization}/spaces/{space}/environment-groups:
+    get:
+      operationId: ListEnvironmentGroups
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/EnvironmentGroup'
+                type: array
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+      summary: List the latest published version of each named environment group.
+  /api/v1/organizations/{organization}/spaces/{space}/environment-groups/{group}:
+    get:
+      operationId: GetEnvironmentGroup
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: group
+        required: true
+        schema:
+          maxLength: 253
+          minLength: 1
+          pattern: ^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentGroup'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+      summary: Read a config latest version including full values.
+  /api/v1/organizations/{organization}/spaces/{space}/environment-groups/{group}/clone:
+    post:
+      operationId: CloneEnvironmentGroup
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: group
+        required: true
+        schema:
+          maxLength: 253
+          minLength: 1
+          pattern: ^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloneEnvironmentGroupInput'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentGroup'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+      summary: Create a new config family from an existing published version.
+  /api/v1/organizations/{organization}/spaces/{space}/environment-groups/{group}/versions:
+    post:
+      operationId: PublishEnvironmentGroup
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: group
+        required: true
+        schema:
+          maxLength: 253
+          minLength: 1
+          pattern: ^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishEnvironmentGroupInput'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentGroup'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+      summary: Publish a complete immutable environment group version.
+  /api/v1/organizations/{organization}/spaces/{space}/environment-groups/{group}/versions/{version}:
+    get:
+      operationId: GetEnvironmentGroupVersion
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: group
+        required: true
+        schema:
+          maxLength: 253
+          minLength: 1
+          pattern: ^([a-z0-9]([a-z0-9-]*[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$
+          type: string
+      - in: path
+        name: version
+        required: true
+        schema:
+          maxLength: 20
+          minLength: 1
+          pattern: ^(latest|[1-9][0-9]*)$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentGroup'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid, missing, conflicting, or failed config operation.
+      summary: Read an existing config version including full values.
+  /api/v1/organizations/{organization}/spaces/{space}/plans:
+    post:
+      description: Accepts partial application updates as application/json. The CLI
+        converts apps.yaml to this Patch schema. Request bodies never contain target
+        information and must contain one JSON document no larger than 1 MiB; duplicate
+        keys, unknown fields, and null values are rejected. An omitted Content-Type
+        defaults to application/json.
+      operationId: PostPlan
+      parameters:
+      - in: path
+        name: organization
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      - in: path
+        name: space
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Patch'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Target components are not ready, current state conflicts, or the plan is stale. Inspect cluster components or run cluster reconcile before planning a target whose setup is incomplete.
+        "415":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unsupported request Content-Type.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Merge and expand a partial update, observe live resources, and save
+        an immutable plan.
+  /api/v1/plans/{plan}:
+    get:
+      operationId: GetPlan
+      parameters:
+      - in: path
+        name: plan
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Retrieve a saved plan and its exact rendering artifacts.
+  /api/v1/plans/{plan}/apply:
+    post:
+      description: Accepts the exact saved plan into the space's FIFO queue. Config
+        pins must reference the latest or at most ten previous versions at acceptance
+        and execution. Pins are checked again before each predeploy Job and before
+        Deployment updates; an aged-out plan fails without changing its pins. Synchronizes
+        pinned OpenBao values through External Secrets into immutable Secrets, then
+        runs saved predeploy Jobs in deterministic app-name order, waiting for each
+        to complete before applying application resources. Failed or expired Jobs
+        fail the operation and leave application resources unchanged. A restarted
+        server observes the same immutable Jobs rather than starting them again. Reusing
+        a plan ID returns its original operation; create a fresh plan for a new attempt.
+      operationId: ApplyPlan
+      parameters:
+      - in: path
+        name: plan
+        required: true
+        schema:
+          description: A nonempty user-selected identifier.
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+          description: Successful response.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Invalid request.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The requested resource does not exist.
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: The request conflicts with current state or the plan is stale.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+          description: Unexpected server failure.
+      summary: Accept and execute the exact saved plan for the whole space.
+servers:
+- url: /

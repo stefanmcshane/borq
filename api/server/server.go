@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	healthPath              = "/healthz"
+	healthPath              = "/api/healthz"
 	rootPath                = "/"
 	managedNamespace        = "borq-system"
 	kubernetesAuthCheckName = "kubernetes-auth"
@@ -191,7 +191,7 @@ func newHandler(health []HealthCheck, conn kubernetes.Connection, log logger.Log
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write([]byte("borq\n"))
 	})
-	mux.HandleFunc("/reconcile", func(writer http.ResponseWriter, request *http.Request) {
+	mux.HandleFunc("/api/reconcile", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 			return

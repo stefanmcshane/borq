@@ -1,0 +1,6 @@
+# Borq supplies fully resolved app definitions. Defaults belong to the model.
+apps: []
+namespace: ""
+targetID: ""
+planID: ""
+certificateIssuer: borq

@@ -1,0 +1,48 @@
+{{- range .Values.apps }}
+{{- $app := . }}
+{{- with .predeploy }}
+{{- if .command }}
+{{- $identity := printf "%s/%s/%s/%s" $.Values.namespace $.Values.targetID $app.name $.Values.planID }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s-pre" ($app.name | trunc 40 | trimSuffix "-") ($identity | sha256sum | trunc 12) | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: predeploy
+    borq.run/predeploy-name: pre
+spec:
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: {{ .timeoutSeconds }}
+  backoffLimit: {{ .backoffLimit }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml $app.resourceMetadata.annotations | nindent 8 }}
+      labels:
+        {{- toYaml $app.resourceMetadata.labels | nindent 8 }}
+        app.kubernetes.io/managed-by: borq
+        borq.run/target-id: {{ $.Values.targetID | quote }}
+        borq.run/phase: predeploy
+        borq.run/predeploy-name: pre
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: {{ $app.name | quote }}
+          image: {{ $app.image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: {{ .command | toJson }}
+          args: []
+          env: []
+          envFrom: {{ $app.envFrom | toJson }}
+{{- end }}
+{{- end }}
+{{- end }}

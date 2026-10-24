@@ -1,0 +1,25 @@
+Requires an existing k3s cluster and its kubeconfig.
+
+Extract this bundle and run:
+
+  ./borq management bootstrap management --kubeconfig /path/to/k3s.yaml --api-url http://management-node:31833
+  ./borq config set --api-url http://management-node:31833
+  ./borq org create example
+  ./borq cluster link management --organization example --kubeconfig /path/to/k3s.yaml
+  ./borq cluster reconcile management --organization example
+  ./borq config set --organization example --cluster management --space management
+  ./borq apply -f apps.yaml --wait
+
+Management bootstrap installs Borq and its management components on the existing
+cluster. Linking creates the same-named deployment space and queues target components.
+Kubernetes installation, machines and networking are managed separately.
+
+Bootstrap pulls ghcr.io/stefanmcshane/borq:latest by default. --server-image accepts
+a Borq tag or a full image reference. For an externally prepared development k3d
+cluster, use --development --server-image-archive with the included Linux image archive.
+
+Client settings: ~/.config/borq/config.yaml (or $XDG_CONFIG_HOME/borq/config.yaml)
+--profile NAME selects named client defaults.
+
+The binaries are cross-compiled for Apple Silicon and Linux ARM64. This bundle is
+not notarized and has not been executed on macOS.

@@ -1,0 +1,16 @@
+{{define "view-overview"}}
+<div class="metrics-grid"><a class="card metric" href="{{pageUrl "applications" .Organization .Space.Name}}" hx-get="{{pageUrl "applications" .Organization .Space.Name}}"><span>Applications</span><strong>{{.ApplicationCount}}</strong><small>Across your spaces</small></a><a class="card metric" href="{{pageUrl "spaces" .Organization .Space.Name}}" hx-get="{{pageUrl "spaces" .Organization .Space.Name}}"><span>Spaces</span><strong>{{len .Spaces}}</strong><small>Independent deployment targets</small></a><a class="card metric" href="{{pageUrl "clusters" .Organization .Space.Name}}" hx-get="{{pageUrl "clusters" .Organization .Space.Name}}"><span>Clusters</span><strong>{{len .Clusters}}</strong><small>Linked to this organization</small></a></div>
+<section class="card management-panel"><header><h2>Deployment spaces</h2><p>Choose a space to manage its applications.</p></header><section>{{template "ui-spaces-table" .}}</section></section>
+{{template "ui-organization-form" .}}
+{{end}}
+{{define "ui-spaces-table"}}
+<div class="table-scroll"><table class="table"><thead><tr><th>Space</th><th>Cluster</th><th>Revision</th><th>Applications</th></tr></thead><tbody>{{range .Spaces}}<tr><td><a class="text-link" href="{{pageUrl "applications" $.Organization .Name}}" hx-get="{{pageUrl "applications" $.Organization .Name}}">{{.Name}}</a></td><td>{{if .Cluster}}{{.Cluster}}{{else}}<span class="badge" data-variant="outline">Unbound</span>{{end}}</td><td>{{.Revision}} <span class="field-help">/ {{.LastSuccessfulRevision}} successful</span></td><td>{{len .Configuration.Apps}}</td></tr>{{end}}</tbody></table></div>
+{{end}}
+{{define "view-spaces"}}
+<section class="card management-panel"><header><h2>Spaces in {{.Organization}}</h2><p>Each space belongs to a cluster and owns an independent application configuration.</p></header><section>{{template "ui-spaces-table" .}}</section></section>
+{{if .Clusters}}
+<section class="card management-panel"><header><h2>Create a space</h2><p>Choose the cluster where this space will run.</p></header><section><form class="form-grid two-columns" action="/ui/actions" method="post" hx-post="/ui/actions" hx-disabled-elt="find button" hx-sync="this:drop">{{template "ui-scope" .}}<input type="hidden" name="action" value="create-space"><label>Space name<input class="input" name="name" required maxlength="63" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" placeholder="staging"></label><label>Cluster<select class="select" name="cluster" required><option value="" disabled selected>Select a cluster</option>{{range .Clusters}}<option value="{{.Name}}">{{.Name}}</option>{{end}}</select></label><div class="form-actions full-width"><button class="btn" type="submit">Create space</button></div></form></section></section>
+{{else}}
+<section class="alert"><h2>Link a cluster before creating a space</h2><p>Every space needs a cluster to run its applications.</p><a class="btn" data-variant="outline" href="{{pageUrl "clusters" .Organization ""}}" hx-get="{{pageUrl "clusters" .Organization ""}}">Link a cluster</a></section>
+{{end}}
+{{end}}

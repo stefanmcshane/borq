@@ -1,0 +1,76 @@
+{{- range .Values.apps }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml .resourceMetadata.annotations | nindent 4 }}
+    borq.run/environment-group: {{ .env | toJson | quote }}
+    {{- if not .checks.readiness.enabled }}
+    borq.run/disabled-readiness-v1: {{ .checks.readiness | toJson | quote }}
+    {{- end }}
+    {{- if not .checks.startup.enabled }}
+    borq.run/disabled-startup-v1: {{ .checks.startup | toJson | quote }}
+    {{- end }}
+    {{- if not .predeploy.command }}
+    borq.run/disabled-predeploy-v1: {{ dict "command" "" "timeoutSeconds" .predeploy.timeoutSeconds "backoffLimit" .predeploy.backoffLimit | toJson | quote }}
+    {{- end }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+spec:
+  replicas: {{ .replicas }}
+  progressDeadlineSeconds: 600
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .name | quote }}
+      borq.run/target-id: {{ $.Values.targetID | quote }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml .resourceMetadata.annotations | nindent 8 }}
+      labels:
+        {{- toYaml .resourceMetadata.labels | nindent 8 }}
+        app.kubernetes.io/name: {{ .name | quote }}
+        app.kubernetes.io/managed-by: borq
+        borq.run/target-id: {{ $.Values.targetID | quote }}
+    spec:
+      containers:
+        - name: {{ .name | quote }}
+          image: {{ .image | quote }}
+          imagePullPolicy: IfNotPresent
+          command: {{ .command | toJson }}
+          args: []
+          env: []
+          envFrom: {{ .envFrom | toJson }}
+          {{- if .port }}
+          ports:
+            - name: http
+              containerPort: {{ .port }}
+              protocol: TCP
+          {{- else }}
+          ports: []
+          {{- end }}
+          {{- if .checks.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .checks.readiness.path | quote }}
+              port: {{ .checks.readiness.port }}
+            periodSeconds: {{ .checks.readiness.periodSeconds }}
+            timeoutSeconds: {{ .checks.readiness.timeoutSeconds }}
+            failureThreshold: {{ .checks.readiness.failureThreshold }}
+          {{- end }}
+          {{- if .checks.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .checks.startup.path | quote }}
+              port: {{ .checks.startup.port }}
+            periodSeconds: {{ .checks.startup.periodSeconds }}
+            timeoutSeconds: {{ .checks.startup.timeoutSeconds }}
+            failureThreshold: {{ .checks.startup.failureThreshold }}
+          {{- end }}
+{{- end }}

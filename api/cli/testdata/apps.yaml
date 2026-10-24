@@ -1,0 +1,10 @@
+apps:
+  - name: web
+    image: nginx:1.27.5
+    port: 80
+    command: >-
+      /bin/sh -ec "printf 'borq-cli-ready\n' > /usr/share/nginx/html/healthz;
+      exec nginx -g 'daemon off;'"
+    env:
+      name: web-config
+      version: latest

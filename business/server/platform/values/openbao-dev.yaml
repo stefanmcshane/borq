@@ -1,0 +1,23 @@
+injector:
+  enabled: false
+server:
+  dev:
+    enabled: true
+    devRootToken: unused-borq-secret-overrides-this
+  extraSecretEnvironmentVars:
+    - envName: BAO_DEV_ROOT_TOKEN_ID
+      secretName: borq-openbao-admin
+      secretKey: token
+  service:
+    type: NodePort
+    nodePort: {{ openBaoNodePort }}
+  dataStorage:
+    enabled: false
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+ui:
+  enabled: false

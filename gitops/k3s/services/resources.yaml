@@ -1,0 +1,286 @@
+apiVersion: networking.cfargotunnel.com/v1alpha2
+kind: ClusterTunnel
+metadata:
+  name: borq
+spec:
+  cloudflare:
+    accountId: ${CLOUDFLARE_ACCOUNT_ID}
+    domain: ${CLOUDFLARE_DOMAIN}
+    secret: cloudflare-api-token
+  deployPatch: |
+    spec:
+      replicas: 2
+      template:
+        spec:
+          containers:
+            - name: cloudflared
+              image: cloudflare/cloudflared:2026.8.3
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+  fallbackTarget: http_status:404
+  newTunnel:
+    name: ${CLOUDFLARE_TUNNEL_NAME}
+---
+apiVersion: networking.cfargotunnel.com/v1alpha1
+kind: TunnelBinding
+metadata:
+  name: zz-traefik
+  namespace: kube-system
+subjects:
+  - name: traefik
+    spec:
+      fqdn: "*.${CLOUDFLARE_DOMAIN}"
+      protocol: http
+      target: http://traefik.kube-system.svc.cluster.local:80
+tunnelRef:
+  kind: ClusterTunnel
+  name: borq
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tailscale-operator
+  namespace: tailscale
+spec:
+  chart:
+    spec:
+      chart: tailscale-operator
+      sourceRef:
+        kind: HelmRepository
+        name: tailscale
+        namespace: flux-system
+      version: 1.102.3
+  install:
+    remediation:
+      retries: 3
+  interval: 1h
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    installCRDs: true
+    operatorConfig:
+      defaultTags:
+        - tag:k8s-operator
+    proxyConfig:
+      defaultTags: tag:k8s
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy
+  namespace: borq-system
+spec:
+  chart:
+    spec:
+      chart: alloy
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+      version: 1.12.1
+  install:
+    remediation:
+      retries: 3
+  interval: 1h
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    alloy:
+      configMap:
+        content: |-
+          logging {
+            level  = "info"
+            format = "logfmt"
+          }
+
+          loki.write "grafana_cloud" {
+            endpoint {
+              url = sys.env("GRAFANA_CLOUD_LOGS_URL")
+              basic_auth {
+                username = sys.env("GRAFANA_CLOUD_LOGS_USERNAME")
+                password = sys.env("GRAFANA_CLOUD_ACCESS_POLICY_TOKEN")
+              }
+            }
+          }
+
+          discovery.kubernetes "pods" {
+            role = "pod"
+          }
+
+          discovery.relabel "pod_logs" {
+            targets = discovery.kubernetes.pods.targets
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+          }
+
+          loki.source.kubernetes "pod_logs" {
+            targets    = discovery.relabel.pod_logs.output
+            forward_to = [loki.process.pod_logs.receiver]
+          }
+
+          loki.process "pod_logs" {
+            stage.static_labels {
+              values = {
+                cluster = "${K3S_CLUSTER_NAME}",
+              }
+            }
+            forward_to = [loki.write.grafana_cloud.receiver]
+          }
+
+          discovery.kubernetes "pod_metrics" {
+            role = "pod"
+          }
+
+          discovery.relabel "pod_metrics" {
+            targets = discovery.kubernetes.pod_metrics.targets
+            rule {
+              action        = "keep"
+              source_labels = ["__meta_kubernetes_pod_container_port_name"]
+              regex         = "metrics"
+            }
+            rule {
+              action        = "keep"
+              source_labels = ["__meta_kubernetes_pod_ready"]
+              regex         = "true"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_cnpg_io_cluster"]
+              target_label  = "cnpg_cluster"
+            }
+          }
+
+          prometheus.scrape "pod_metrics" {
+            targets    = discovery.relabel.pod_metrics.output
+            forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+          }
+
+          prometheus.scrape "kube_state_metrics" {
+            targets = [{
+              __address__ = "kube-state-metrics.borq-system.svc:8080",
+            }]
+            forward_to = [prometheus.relabel.kube_state_metrics.receiver]
+          }
+
+          prometheus.relabel "kube_state_metrics" {
+            forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+            rule {
+              action        = "keep"
+              source_labels = ["__name__"]
+              regex         = "kube_deployment_status_replicas|kube_pod_status_ready|kube_pod_labels|kube_horizontalpodautoscaler_spec_target_metric|kube_horizontalpodautoscaler_status_current_replicas|kube_pod_container_resource_requests|kube_pod_status_phase|kube_node_labels"
+            }
+          }
+
+          prometheus.remote_write "grafana_cloud" {
+            external_labels = {
+              cluster = "${K3S_CLUSTER_NAME}",
+            }
+            endpoint {
+              url = sys.env("GRAFANA_CLOUD_METRICS_URL")
+              basic_auth {
+                username = sys.env("GRAFANA_CLOUD_METRICS_USERNAME")
+                password = sys.env("GRAFANA_CLOUD_ACCESS_POLICY_TOKEN")
+              }
+            }
+          }
+      envFrom:
+        - secretRef:
+            name: grafana-cloud-credentials
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+    controller:
+      replicas: 1
+      type: deployment
+---
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: postgres-r2
+  namespace: borq-system
+spec:
+  configuration:
+    data:
+      compression: gzip
+    destinationPath: s3://${R2_BUCKET}/postgres/borq-postgres
+    endpointURL: https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com
+    s3Credentials:
+      accessKeyId:
+        key: ACCESS_KEY_ID
+        name: r2-backup-credentials
+      region:
+        key: REGION
+        name: r2-backup-credentials
+      secretAccessKey:
+        key: ACCESS_SECRET_KEY
+        name: r2-backup-credentials
+    wal:
+      compression: gzip
+  retentionPolicy: 30d
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: borq-postgres
+  namespace: borq-system
+spec:
+  bootstrap:
+    initdb:
+      database: borq
+      owner: borq
+  instances: 1
+  plugins:
+    - isWALArchiver: true
+      name: barman-cloud.cloudnative-pg.io
+      parameters:
+        barmanObjectName: postgres-r2
+  postgresql:
+    parameters:
+      archive_timeout: 5min
+  resources:
+    requests:
+      cpu: 100m
+      memory: 100Mi
+  storage:
+    size: 5Gi
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: borq-postgres-daily
+  namespace: borq-system
+spec:
+  backupOwnerReference: self
+  cluster:
+    name: borq-postgres
+  immediate: true
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  schedule: "0 0 2 * * *"

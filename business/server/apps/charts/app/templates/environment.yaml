@@ -1,0 +1,50 @@
+{{- range .Values.apps }}
+{{- $app := . }}
+{{- with .envSnapshot }}
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ .secretName | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+    borq.run/environment-group-name: {{ .configName | quote }}
+    borq.run/env-snapshot: {{ .snapshotId | quote }}
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: environment
+spec:
+  refreshPolicy: OnChange
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: {{ .store | quote }}
+  dataFrom:
+    - extract:
+        key: {{ .path | quote }}
+        property: values
+        version: {{ .version | toString | quote }}
+  target:
+    name: {{ .secretName | quote }}
+    creationPolicy: Owner
+    deletionPolicy: Merge
+    immutable: true
+    template:
+      type: Opaque
+      metadata:
+        labels:
+          {{- toYaml $app.resourceMetadata.labels | nindent 10 }}
+          app.kubernetes.io/name: {{ $app.name | quote }}
+          app.kubernetes.io/managed-by: borq
+          borq.run/target-id: {{ $.Values.targetID | quote }}
+        annotations:
+          {{- toYaml $app.resourceMetadata.annotations | nindent 10 }}
+          borq.run/environment-group-name: {{ .configName | quote }}
+          borq.run/env-version: {{ .version | toString | quote }}
+          borq.run/env-path: {{ .path | quote }}
+          borq.run/env-keys: {{ .keys | toJson | quote }}
+{{- end }}
+{{- end }}

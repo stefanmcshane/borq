@@ -1,0 +1,92 @@
+{{define "application-container"}}
+<fieldset class="application-section">
+  <legend>{{template "ui-icon" "applications"}} Container</legend>
+  <p class="field-help">Choose what runs and how much capacity it needs.</p>
+  <div class="form-grid two-columns">
+    <label>Application name<input class="input" name="name" value="{{.Draft.Name}}" {{if .ExistingName}}readonly{{end}} required maxlength="50" pattern="[a-z]([a-z0-9-]*[a-z0-9])?" placeholder="web" spellcheck="false"><small>A unique name in this space. It cannot be changed after deployment.</small></label>
+    <label>Container image<input class="input mono" name="image" required value="{{.Draft.Image}}" placeholder="ghcr.io/example/web:v1" spellcheck="false"><small>Use an existing image from your container registry.</small></label>
+    <label>Container port<input class="input" type="number" name="port" min="0" max="65535" required value="{{.Draft.Port}}"><small>Use 0 for a worker without a network service.</small></label>
+    <label>Replicas<input class="input" type="number" name="replicas" min="0" max="2147483647" required value="{{.Draft.Replicas}}"><small>Number of instances. Use 0 to scale down.</small></label>
+    <label class="full-width">Command<textarea class="textarea mono" name="command" rows="2" placeholder="Use the image’s default command" spellcheck="false">
+{{.Draft.Command}}</textarea><small>Executable and arguments, with quotes where needed. Leave empty to use the image defaults.</small></label>
+  </div>
+</fieldset>
+{{end}}
+
+{{define "application-environment"}}
+<fieldset class="application-section">
+  <legend>{{template "ui-icon" "management"}} Environment</legend>
+  <p class="field-help">Use a published environment group. The selected version is pinned when you review changes.</p>
+  <div class="form-grid two-columns">
+    <label>Environment group<select class="select" name="environment">
+      <option value="" {{if or (eq .Draft.Env.Name "") (eq .Draft.Env.Version "0")}}selected{{end}}>{{if .ExistingName}}Keep current group{{else}}App default{{end}}</option>
+      {{if and .Draft.Env.Name (ne .Draft.Env.Version "0")}}<option value="{{.Draft.Env.Name}}" selected>{{.Draft.Env.Name}}</option>{{end}}
+      {{range .GroupNames}}{{if or (ne . $.Draft.Env.Name) (eq $.Draft.Env.Version "0")}}<option value="{{.}}">{{.}}</option>{{end}}{{end}}
+    </select><small>Select a published group in this space. <a class="text-link" href="{{.EnvironmentUrl}}" hx-get="{{.EnvironmentUrl}}">Manage groups</a></small></label>
+    <label>Environment version<input class="input" name="environmentVersion" value="{{if ne .Draft.Env.Version "0"}}{{.Draft.Env.Version}}{{end}}" placeholder="latest" pattern="latest|[0-9]+" spellcheck="false"><small>Choose latest or a published version number. You can change the version on its own.</small></label>
+  </div>
+</fieldset>
+{{end}}
+
+{{define "application-ingresses"}}
+<fieldset class="application-section application-routes">
+  <legend>{{template "ui-icon" "globe"}} Public routes <span class="badge" data-variant="secondary">HTTPS</span></legend>
+  <p class="field-help">Expose this app at a hostname and path. HTTPS certificates are managed automatically; the hostname must point to your cluster.</p>
+  <input type="hidden" name="ingressFields" value="on">
+  <div class="application-route-list">
+    {{range $index, $entry := .Ingresses}}
+    <div class="application-route" role="group" aria-label="Public route {{if .Route.Name}}{{.Route.Name}}{{else}}draft{{end}}">
+      <div class="application-route-heading"><span>{{if .Route.Name}}{{.Route.Name}}{{else}}New route{{end}}</span>{{if .Saved}}<span class="badge" data-variant="outline">Deployed</span>{{else}}<button class="btn" data-variant="ghost" type="submit" name="removeIngress" value="{{$index}}" formaction="/ui/application-editor" formnovalidate hx-post="/ui/application-editor" hx-target="#application-editor" hx-swap="outerHTML" hx-push-url="false" hx-sync="closest form:drop" hx-disabled-elt="this" aria-label="Remove route {{if .Route.Name}}{{.Route.Name}}{{else}}draft{{end}}">{{template "ui-icon" "trash"}} Remove</button>{{end}}</div>
+      <div class="application-route-fields">
+        <label>Route name<input class="input" name="ingressName" value="{{.Route.Name}}" {{if .Saved}}readonly{{end}} {{if .Focus}}autofocus{{end}} required maxlength="63" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?" placeholder="public" spellcheck="false"></label>
+        <label>Hostname<input class="input mono" name="ingressHost" value="{{.Route.Host}}" required placeholder="app.example.com" spellcheck="false"></label>
+        <label>Path prefix<input class="input mono" name="ingressPath" value="{{if .Route.Path}}{{.Route.Path}}{{else}}/{{end}}" required pattern="/.*" placeholder="/" spellcheck="false"></label>
+      </div>
+    </div>
+    {{else}}
+    <div class="application-route-empty" data-internal-access data-namespace="{{.Namespace}}">{{template "ui-icon" "globe"}}<div>
+      <strong data-internal-title>{{if eq .Draft.Port 0}}No network service{{else}}Internal access only{{end}}</strong>
+      <code class="internal-address" data-internal-address {{if not (and .Namespace .Draft.Name (gt .Draft.Port 0))}}hidden{{end}}>{{if and .Namespace .Draft.Name (gt .Draft.Port 0)}}http://{{.Draft.Name}}.{{.Namespace}}.svc:{{.Draft.Port}}{{end}}</code>
+      <p data-internal-help>{{if eq .Draft.Port 0}}Set a container port to give this app an internal address.{{else if and .Namespace .Draft.Name}}Available after deployment to apps in this cluster. Add a public route for HTTPS access.{{else}}Enter an application name to preview its internal address.{{end}}</p>
+    </div></div>
+    {{end}}
+  </div>
+  <div class="application-route-footer">
+    <button class="btn" data-variant="outline" type="submit" name="editorAction" value="add-ingress" formaction="/ui/application-editor" formnovalidate hx-post="/ui/application-editor" hx-target="#application-editor" hx-swap="outerHTML" hx-push-url="false" hx-sync="closest form:drop" hx-disabled-elt="this">{{template "ui-icon" "plus"}} Add route</button>
+    <span class="field-help">Requires a nonzero container port.{{if .SavedIngresses}} Deployed routes can be updated; removal is not supported yet.{{end}}</span>
+  </div>
+</fieldset>
+{{end}}
+
+{{define "application-check"}}
+<div class="application-probe">
+  <label class="checkbox-label application-probe-toggle"><input class="checkbox" type="checkbox" name="{{.Name}}" {{if .Check.Enabled}}checked{{end}}><span>{{.Title}} check<small>{{.Description}}</small></span></label>
+  <div class="form-grid two-columns">
+    <label>HTTP path<input class="input mono" name="{{.Name}}Path" value="{{.Check.Path}}" required pattern="/.*" placeholder="/healthz" spellcheck="false"></label>
+    <label>Probe port<input class="input" type="number" name="{{.Name}}Port" min="0" max="65535" {{if .PortSet}}required value="{{.Check.Port}}"{{end}} placeholder="Container port"><small>{{if .PortSet}}Independent of the container port. Use 0 only when disabled.{{else}}Leave blank to use the container port.{{end}}</small></label>
+  </div>
+  <details class="application-probe-timing">
+    <summary>Timing and failure policy</summary>
+    <div class="form-grid">
+      <label>Interval (seconds)<input class="input" type="number" name="{{.Name}}PeriodSeconds" min="1" max="2147483647" required value="{{.Check.PeriodSeconds}}"><small>Time between probe attempts.</small></label>
+      <label>Timeout (seconds)<input class="input" type="number" name="{{.Name}}TimeoutSeconds" min="1" max="2147483647" required value="{{.Check.TimeoutSeconds}}"><small>Maximum duration of each attempt.</small></label>
+      <label>Failure threshold<input class="input" type="number" name="{{.Name}}FailureThreshold" min="1" max="2147483647" required value="{{.Check.FailureThreshold}}"><small>Consecutive failures before the check fails.</small></label>
+    </div>
+  </details>
+</div>
+{{end}}
+
+{{define "application-predeploy"}}
+<fieldset class="application-section">
+  <legend>{{template "ui-icon" "terminal"}} Predeploy task <span class="badge" data-variant="outline">Optional</span></legend>
+  <p class="field-help">Run migrations or setup before any app in this space is updated. The task uses this app’s image and environment and must exit successfully.</p>
+  <div class="form-grid">
+    <label>Predeploy command<textarea class="textarea mono" name="predeployCommand" rows="2" placeholder="./app migrate" spellcheck="false">
+{{.Draft.Predeploy.Command}}</textarea><small>Leave empty to disable the task.</small></label>
+    <div class="form-grid two-columns">
+      <label>Task timeout (seconds)<input class="input" type="number" name="predeployTimeoutSeconds" min="1" max="2147483647" required value="{{.Draft.Predeploy.TimeoutSeconds}}"><small>Total time allowed, including scheduling and retries.</small></label>
+      <label>Retry limit<input class="input" type="number" name="predeployBackoffLimit" min="0" max="2147483647" required value="{{.Draft.Predeploy.BackoffLimit}}"><small>Number of failed attempts to retry. Use 0 for no retries.</small></label>
+    </div>
+  </div>
+</fieldset>
+{{end}}

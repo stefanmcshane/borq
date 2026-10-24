@@ -1,0 +1,18 @@
+{{define "view-applications"}}
+{{if .Operation.ID}}{{template "ui-operation" .Operation}}{{end}}
+{{if .Plan.ID}}{{template "ui-plan" .}}{{end}}
+{{if .Space.ID}}
+<section class="card management-panel"><header class="panel-heading"><div><h2>Applications in {{.Space.Name}}</h2><p>Select an application to manage its settings and deployment.</p></div>{{if .Space.Cluster}}<a class="btn" href="{{pageUrl "application" .Organization .Space.Name}}" hx-get="{{pageUrl "application" .Organization .Space.Name}}">Add an application</a>{{end}}</header><section>
+{{if .Applications.Configuration.Apps}}
+  <div class="table-scroll"><table class="table"><thead><tr><th>Application</th><th>Image</th><th>Replicas</th><th>Port</th><th>Environment</th></tr></thead><tbody>{{range .Applications.Configuration.Apps}}<tr><td><a class="text-link" href="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}" hx-get="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}">{{.Name}}</a></td><td class="mono">{{.Image}}</td><td>{{.Replicas}}</td><td>{{.Port}}</td><td>{{.Env.Name}} <span class="field-help">v{{.Env.Version}}</span></td></tr>{{end}}</tbody></table></div>
+{{else}}
+  <p class="empty-copy">No applications have been accepted for this space.</p>
+{{end}}
+</section></section>
+{{end}}
+{{if not .Space.Cluster}}<section class="alert"><h2>Create a space before deploying</h2><p>Choose a registered cluster when creating a space on the Spaces page.</p><a class="btn" data-variant="outline" href="{{pageUrl "spaces" .Organization .Space.Name}}" hx-get="{{pageUrl "spaces" .Organization .Space.Name}}">Create space</a></section>{{end}}
+{{end}}
+
+{{define "ui-plan"}}
+<section class="card management-panel plan-panel"><header><h2>Review deployment plan</h2><p>These saved resources will be applied to {{.Plan.Space.Name}} on {{.Plan.Space.Cluster}}.</p></header><section><div class="metadata"><span>Base revision {{.Plan.BaseRevision}}</span><span class="mono">{{.Plan.ID}}</span></div><h3>Configuration changes</h3><pre class="configuration-diff">{{if .Plan.ConfigurationDiff}}{{.Plan.ConfigurationDiff}}{{else}}No configuration changes. The plan can still repair resource drift.{{end}}</pre><div class="table-scroll"><table class="table"><thead><tr><th>Resource</th><th>Action</th></tr></thead><tbody>{{range .Plan.ResourceDiffs}}<tr><td>{{.Kind}} / {{.Name}}</td><td><span class="badge" data-variant="outline">{{.Action}}</span></td></tr>{{end}}</tbody></table></div><form class="form-actions" action="/ui/actions" method="post" hx-post="/ui/actions" hx-disabled-elt="find button" hx-sync="this:drop">{{template "ui-scope" .}}<input type="hidden" name="action" value="apply-plan"><input type="hidden" name="application" value="{{.Draft.Name}}"><input type="hidden" name="plan" value="{{.Plan.ID}}"><button class="btn" type="submit">Apply reviewed plan</button><a class="btn" data-variant="ghost" href="{{pageUrl "application" .Organization .Space.Name "app" .Application.Name}}" hx-get="{{pageUrl "application" .Organization .Space.Name "app" .Application.Name}}">Discard review</a><details class="plan-manifests"><summary class="btn disclosure-button" role="button" data-variant="outline">Exact manifests</summary><pre>{{yaml .Plan.Manifests}}</pre></details></form></section></section>
+{{end}}

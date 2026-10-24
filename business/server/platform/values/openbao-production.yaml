@@ -1,0 +1,22 @@
+injector:
+  enabled: false
+server:
+  dev:
+    enabled: false
+  standalone:
+    enabled: true
+  service:
+    type: NodePort
+    nodePort: {{ openBaoNodePort }}
+  dataStorage:
+    enabled: true
+    size: 1Gi
+    storageClass: {{ .StorageClass | quote }}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+ui:
+  enabled: false

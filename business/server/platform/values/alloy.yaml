@@ -1,0 +1,100 @@
+alloy:
+  envFrom:
+    - secretRef:
+        name: borq-telemetry
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      memory: 384Mi
+  configMap:
+    content: |-
+      logging {
+        level = "info"
+        format = "logfmt"
+      }
+
+      loki.write "management" {
+        endpoint {
+          url = {{ .LokiURL | quote }}
+          bearer_token = sys.env("TELEMETRY_TOKEN")
+        }
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label = "container"
+        }
+        rule {
+          target_label = "borq_cluster"
+          replacement = {{ .ClusterID | quote }}
+        }
+      }
+
+      loki.source.kubernetes "pod_logs" {
+        targets = discovery.relabel.pod_logs.output
+        forward_to = [loki.write.management.receiver]
+      }
+
+      discovery.relabel "pod_metrics" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          action = "keep"
+          source_labels = ["__meta_kubernetes_pod_container_port_name"]
+          regex = "metrics"
+        }
+        rule {
+          action = "keep"
+          source_labels = ["__meta_kubernetes_pod_ready"]
+          regex = "true"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label = "pod"
+        }
+      }
+
+      prometheus.scrape "pod_metrics" {
+        targets = discovery.relabel.pod_metrics.output
+        forward_to = [prometheus.remote_write.management.receiver]
+      }
+
+      prometheus.exporter.self "alloy" {}
+
+      prometheus.scrape "self" {
+        targets = prometheus.exporter.self.alloy.targets
+        scrape_interval = "15s"
+        forward_to = [prometheus.remote_write.management.receiver]
+      }
+
+      prometheus.remote_write "management" {
+        external_labels = {
+          borq_cluster = {{ .ClusterID | quote }},
+        }
+        endpoint {
+          url = {{ .PrometheusURL | quote }}
+          bearer_token = sys.env("TELEMETRY_TOKEN")
+        }
+      }
+controller:
+  type: deployment
+  replicas: 1

@@ -1,0 +1,76 @@
+deploymentMode: SingleBinary
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+{{ if eq .Profile "dev" }}
+    type: s3
+    bucketNames:
+      chunks: loki
+      ruler: loki
+      admin: loki
+    s3:
+      endpoint: rustfs-svc.{{ .Namespace }}.svc:9000
+      region: us-east-1
+      accessKeyId: ${RUSTFS_ACCESS_KEY}
+      secretAccessKey: ${RUSTFS_SECRET_KEY}
+      s3ForcePathStyle: true
+      insecure: true
+{{ else }}
+    type: filesystem
+{{ end }}
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: {{ if eq .Profile "dev" }}s3{{ else }}filesystem{{ end }}
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    retention_period: {{ if eq .Profile "dev" }}24h{{ else }}168h{{ end }}
+  compactor:
+    retention_enabled: true
+    delete_request_store: {{ if eq .Profile "dev" }}s3{{ else }}filesystem{{ end }}
+singleBinary:
+  replicas: 1
+{{ if eq .Profile "dev" }}
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: borq-rustfs
+{{ end }}
+  persistence:
+    enabled: true
+    size: {{ if eq .Profile "dev" }}1Gi{{ else }}5Gi{{ end }}
+    storageClass: {{ .StorageClass | quote }}
+    whenDeleted: Retain
+    whenScaled: Retain
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+sidecar:
+  rules:
+    enabled: false

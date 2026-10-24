@@ -1,0 +1,56 @@
+{{define "view-application"}}
+<div class="application-navigation"><a class="text-link" href="{{pageUrl "applications" .Organization .Space.Name}}" hx-get="{{pageUrl "applications" .Organization .Space.Name}}">← All applications</a>{{if .Draft.Name}}<span class="field-help">{{.Space.Cluster}}</span>{{end}}</div>
+{{if not .Space.Cluster}}
+  <section class="alert"><h2>Create a space before deploying</h2><p>Choose a registered cluster when creating a space on the Spaces page.</p><a class="btn" data-variant="outline" href="{{pageUrl "spaces" .Organization .Space.Name}}" hx-get="{{pageUrl "spaces" .Organization .Space.Name}}">Create space</a></section>
+{{else}}
+  <nav class="application-tabs" aria-label="Application sections">
+    <a href="{{if .Plan.ID}}{{pageUrl "application" .Organization .Space.Name "app" .Draft.Name "plan" .Plan.ID}}{{else}}{{pageUrl "application" .Organization .Space.Name "app" .Application.Name}}{{end}}" hx-get="{{if .Plan.ID}}{{pageUrl "application" .Organization .Space.Name "app" .Draft.Name "plan" .Plan.ID}}{{else}}{{pageUrl "application" .Organization .Space.Name "app" .Application.Name}}{{end}}" {{if eq .ApplicationTab "general"}}aria-current="page"{{end}}>General</a>
+    {{if .Application.Name}}
+      <a href="{{pageUrl "application" .Organization .Space.Name "app" .Application.Name "tab" "configuration"}}" hx-get="{{pageUrl "application" .Organization .Space.Name "app" .Application.Name "tab" "configuration"}}" {{if eq .ApplicationTab "configuration"}}aria-current="page"{{end}}>Configuration</a>
+      <a href="{{pageUrl "application" .Organization .Space.Name "app" .Application.Name "tab" "manifests"}}" hx-get="{{pageUrl "application" .Organization .Space.Name "app" .Application.Name "tab" "manifests"}}" {{if eq .ApplicationTab "manifests"}}aria-current="page"{{end}}>Manifests</a>
+    {{end}}
+  </nav>
+  {{if .Operation.ID}}{{template "ui-operation" .Operation}}{{end}}
+  {{if .Plan.ID}}{{template "ui-plan" .}}{{end}}
+  {{if eq .ApplicationTab "configuration"}}
+    <section class="card management-panel"><header><h2>Accepted configuration</h2><p>The saved configuration for {{.Application.Name}}.</p></header><section><pre>{{yaml .Application}}</pre></section></section>
+  {{else if eq .ApplicationTab "manifests"}}
+    <section class="card management-panel"><header><h2>Saved manifests</h2><p>Kubernetes resources saved for {{.Application.Name}}.</p></header><section>{{if .ApplicationManifests}}{{range .ApplicationManifests}}<pre>{{yaml .}}</pre>{{end}}{{else}}<p class="empty-copy">No manifests have been saved for this application.</p>{{end}}</section></section>
+  {{else}}
+    <section class="card management-panel application-settings"><header><h2>Application settings</h2><p>{{if .Application.Name}}Update this application’s settings, then review the changes before deploying.{{else}}Configure your application, then review the changes before deploying.{{end}}</p></header><section>
+      <form class="form-grid" action="/ui/actions" method="post" hx-post="/ui/actions" hx-disabled-elt="find [data-review-application]" hx-sync="this:drop">
+        {{template "ui-scope" .}}<input type="hidden" name="action" value="plan-app">
+        {{template "application-editor" .ApplicationEditor}}
+        <div class="form-actions"><button class="btn" type="submit" data-review-application>Review changes</button><a class="btn" data-variant="ghost" href="{{pageUrl "applications" .Organization .Space.Name}}" hx-get="{{pageUrl "applications" .Organization .Space.Name}}">Cancel</a></div>
+      </form>
+    </section></section>
+  {{end}}
+{{end}}
+{{end}}
+
+{{define "application-editor"}}
+<div id="application-editor" class="form-grid">
+  <input type="hidden" name="format" value="{{.Format}}">
+  <input type="hidden" name="document" value="{{.Document}}">
+  <input type="hidden" name="application" value="{{.ExistingName}}">
+  {{range .SavedIngresses}}<input type="hidden" name="savedIngress" value="{{.}}">{{end}}
+  <input type="hidden" name="serviceNamespace" value="{{.Namespace}}">
+  {{range .GroupNames}}<input type="hidden" name="environmentChoice" value="{{.}}">{{end}}
+  <label class="checkbox-label application-yaml-toggle"><input class="checkbox" type="checkbox" name="yamlMode" {{if eq .Format "yaml"}}checked{{end}} hx-post="/ui/application-editor" hx-trigger="change" hx-target="#application-editor" hx-swap="outerHTML" hx-push-url="false" hx-sync="closest form:drop" hx-disabled-elt="this">{{if .ExistingName}}Edit application as YAML instead{{else}}Paste application as YAML instead{{end}}</label>
+  <noscript><button class="btn" data-variant="outline" type="submit" formaction="/ui/application-editor" formnovalidate>Switch editor</button></noscript>
+  {{if eq .Format "yaml"}}
+    <label>Application YAML<textarea class="textarea code-editor" name="configuration" rows="18" required spellcheck="false" aria-describedby="application-yaml-help">{{.Yaml}}</textarea></label>
+    <p id="application-yaml-help" class="field-help">Enter one application, starting with <code>name:</code> and <code>image:</code>. Other applications in this space keep their settings.</p>
+  {{else}}
+    {{template "application-container" .}}
+    {{template "application-environment" .}}
+    {{template "application-ingresses" .}}
+    <fieldset class="application-section">
+      <legend>{{template "ui-icon" "health"}} Health checks</legend>
+      <p class="field-help">Probe endpoints and budgets are independent of the container port. Disabled checks retain their settings.</p>
+      <div class="application-probes">{{range .Checks}}{{template "application-check" .}}{{end}}</div>
+    </fieldset>
+    {{template "application-predeploy" .}}
+  {{end}}
+</div>
+{{end}}

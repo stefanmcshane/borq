@@ -1,0 +1,60 @@
+{{define "page"}}<!doctype html>
+<html lang="en" class="dark" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <meta name="htmx-config" content='{"selfRequestsOnly":true,"allowEval":false,"includeIndicatorStyles":false,"historyCacheSize":0,"historyRestoreAsHxRequest":false,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+    <title>Borq · {{.Title}}</title>
+    <script src="/assets/theme.js"></script>
+    <link rel="icon" href="/assets/borq.svg" type="image/svg+xml">
+    <link rel="preload" href="/assets/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="/assets/basecoat.min.css">
+    <link rel="stylesheet" href="/assets/theme.css">
+    <link rel="stylesheet" href="/assets/style.css">
+    <script src="/assets/htmx.min.js" defer></script>
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body hx-target="#app" hx-swap="innerHTML" hx-indicator="#refresh-progress">
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+    <div id="app" hx-history="false">{{template "shell" .}}</div>
+  </body>
+</html>{{end}}
+
+{{define "shell"}}
+<title>Borq · {{.Title}}</title>
+<div class="shell" hx-get="{{.Location}}" hx-trigger="deployment-complete from:body" hx-target="#app">
+  {{template "ui-sidebar" .}}
+  <div class="content">
+    {{template "ui-topbar" .}}
+    <main id="workspace" tabindex="-1">
+      <div class="page-heading"><div><h1>{{.Title}}</h1><p class="subtitle">{{if eq .View "management"}}Manage the Borq installation.{{else if .Organization}}{{.Organization}}{{if .Space.Name}} / {{.Space.Name}}{{end}}{{else}}Your infrastructure, in one place.{{end}}</p></div>{{template "ui-refresh-button" .}}</div>
+      {{if .Spaces}}
+      <form class="scope-picker" action="/" method="get" hx-get="/" hx-trigger="change">
+        <input type="hidden" name="view" value="{{if eq .View "application"}}applications{{else if eq .View "environment-group"}}environment{{else}}{{.View}}{{end}}"><input type="hidden" name="organization" value="{{.Organization}}">
+        <label for="space-selector">Space</label><select class="select" id="space-selector" name="space">{{range .Spaces}}<option value="{{.Name}}" {{if eq $.Space.Name .Name}}selected{{end}}>{{.Name}}</option>{{end}}</select>
+        <noscript><button class="btn" data-variant="outline" type="submit">Select space</button></noscript>
+      </form>
+      {{end}}
+      <p id="refresh-progress" class="refresh-progress htmx-indicator" role="status">Loading workspace…</p>
+      <div id="notice" aria-live="polite">{{if .Notice}}<p class="alert notice-success" role="status">{{.Notice}}</p>{{end}}</div>
+      {{if eq .View "management"}}{{template "view-management" .}}
+      {{else if not .Organization}}
+        <section class="empty workspace-empty onboarding"><header><h2>Create your first organization</h2><p>Organizations bring your clusters, spaces, and applications together.</p></header></section>
+        {{template "ui-organization-form" .}}
+      {{else if eq .View "overview"}}{{template "view-overview" .}}
+      {{else if eq .View "applications"}}{{template "view-applications" .}}
+      {{else if eq .View "application"}}{{template "view-application" .}}
+      {{else if eq .View "spaces"}}{{template "view-spaces" .}}
+      {{else if eq .View "clusters"}}{{template "view-clusters" .}}
+      {{else if eq .View "environment"}}{{template "view-environment" .}}
+      {{else if eq .View "environment-group"}}{{template "view-environment-group" .}}
+      {{end}}
+    </main>
+    <footer class="footer"><span>Borq</span><a href="/api/docs/">API reference</a></footer>
+  </div>
+</div>
+{{end}}
+
+{{define "notice-error"}}<p class="alert request-error" data-variant="destructive" role="alert">{{.}}</p>{{end}}
+{{define "error-page"}}<!doctype html><html lang="en" class="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Borq · Request failed</title><link rel="stylesheet" href="/assets/basecoat.min.css"><link rel="stylesheet" href="/assets/theme.css"><link rel="stylesheet" href="/assets/style.css"></head><body><main class="error-page">{{template "notice-error" .}}<a class="btn" data-variant="outline" href="/">Return to workspace</a></main></body></html>{{end}}

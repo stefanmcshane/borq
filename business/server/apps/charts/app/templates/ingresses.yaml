@@ -1,0 +1,40 @@
+{{- range .Values.apps }}
+{{- $app := . }}
+{{- range .ingresses }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ printf "%s-%s" $app.name .name | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+    cert-manager.io/secret-template: {{ $app.resourceMetadata | toJson | quote }}
+    cert-manager.io/cluster-issuer: {{ $.Values.certificateIssuer | quote }}
+    external-dns.kubernetes.io/hostname: {{ .host | quote }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: {{ .path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $app.name | quote }}
+                port:
+                  number: {{ $app.port }}
+  tls:
+    - hosts:
+        - {{ .host | quote }}
+      secretName: {{ .tlsSecret | quote }}
+{{- end }}
+{{- end }}

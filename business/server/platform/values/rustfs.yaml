@@ -1,0 +1,67 @@
+fullnameOverride: rustfs
+replicaCount: 1
+mode:
+  standalone:
+    enabled: true
+  distributed:
+    enabled: false
+secret:
+  existingSecret: borq-rustfs
+ingress:
+  enabled: false
+storageclass:
+  name: {{ .StorageClass | quote }}
+  dataStorageSize: 1Gi
+  logStorageSize: 128Mi
+config:
+  rustfs:
+    obs_log_directory: ""
+resources:
+  requests:
+    cpu: 20m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+extraManifests:
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: borq-rustfs-buckets
+      annotations:
+        helm.sh/hook: post-install,post-upgrade
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 180
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: buckets
+              image: public.ecr.aws/aws-cli/aws-cli:2.38.1
+              command: ["/bin/sh", "-ec"]
+              args:
+                - >-
+                  aws --endpoint-url http://rustfs-svc:9000 s3api head-bucket --bucket loki
+                  || aws --endpoint-url http://rustfs-svc:9000 s3api create-bucket --bucket loki
+              env:
+                - name: AWS_DEFAULT_REGION
+                  value: us-east-1
+                - name: AWS_EC2_METADATA_DISABLED
+                  value: "true"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: borq-rustfs
+                      key: RUSTFS_ACCESS_KEY
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: borq-rustfs
+                      key: RUSTFS_SECRET_KEY
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 192Mi

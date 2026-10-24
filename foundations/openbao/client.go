@@ -1,11 +1,12 @@
 // Package openbao provides a thin wrapper around the official OpenBao
-// Go client (github.com/openbao/openbao/api/v2), exposing only the
-// subset needed for server initialization and unsealing.
+// Go client (github.com/openbao/openbao/api/v2) for initialization, unsealing,
+// and versioned key-value storage.
 package openbao
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	openbaoapi "github.com/openbao/openbao/api/v2"
@@ -31,6 +32,13 @@ type NewClientInput struct {
 	// (e.g. "http://127.0.0.1:8200").
 	Address string
 
+	// Token authenticates requests explicitly; an empty value sends no token.
+	Token string
+
+	// HttpClient supplies a custom transport, including Kubernetes service proxy
+	// authentication. Its zero value uses the SDK's default HTTP transport.
+	HttpClient http.Client
+
 	// RequestTimeout is the per-request timeout. Zero means no timeout.
 	RequestTimeout time.Duration
 }
@@ -42,17 +50,29 @@ type Client struct {
 
 // NewClient creates a new OpenBao API client connected to the given address.
 func NewClient(input NewClientInput) (*Client, error) {
-	config := openbaoapi.DefaultConfig()
+	address := input.Address
+	if address == "" {
+		address = "https://127.0.0.1:8200"
+	}
+	if input.HttpClient.CheckRedirect == nil {
+		// Let the SDK enforce its own redirect rules, including TLS downgrades.
+		input.HttpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+	// The SDK retains the HTTP client pointer for subsequent requests.
+	config := &openbaoapi.Config{
+		Address:    address,
+		HttpClient: &input.HttpClient,
+		Timeout:    input.RequestTimeout,
+	}
 	cli, err := openbaoapi.NewClient(config)
 	if err != nil {
-		return nil, fmt.Errorf("create openbao client: %w", err)
+		return nil, fmt.Errorf("create openbao client: invalid client configuration")
 	}
-	if input.Address != "" {
-		cli.SetAddress(input.Address)
-	}
-	if input.RequestTimeout > 0 {
-		cli.SetClientTimeout(input.RequestTimeout)
-	}
+	// Override the SDK's ambient token and namespace so callers own credentials.
+	cli.SetToken(input.Token)
+	cli.ClearNamespace()
 	return &Client{cli: cli}, nil
 }
 

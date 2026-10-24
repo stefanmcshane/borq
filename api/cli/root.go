@@ -16,9 +16,17 @@ func NewRootCommand(ctx context.Context, log logger.Logger, cfg Config) *cobra.C
 		Short:         "Borq manages opinionated Kubernetes-backed deployment clouds.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(command *cobra.Command, arguments []string) error {
+			return validateCommandProfile(command)
+		},
 	}
+	command.PersistentFlags().String("profile", "", "Named local API, organization, space, and cluster preset; an empty value uses base defaults.")
 
 	command.AddCommand(newManagementCommand(ctx, log, cfg))
+	command.AddCommand(newApplicationServerCommand(cfg))
+	command.AddCommand(newApplicationCommands()...)
+	command.AddCommand(newEnvironmentGroupCommand())
+	command.AddCommand(newClientConfigCommand())
 
 	command.SetOut(os.Stdout)
 	command.SetErr(os.Stderr)

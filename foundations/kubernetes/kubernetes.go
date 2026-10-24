@@ -48,7 +48,12 @@ type connectionConfig struct {
 
 // Config describes how to connect to Kubernetes.
 type Config struct {
+	// KubeconfigPath selects an explicit kubeconfig; empty uses pod credentials.
 	KubeconfigPath string
+	// Context selects a kubeconfig context without changing its current-context.
+	Context string
+	// InCluster explicitly requires pod credentials instead of a kubeconfig.
+	InCluster bool
 }
 
 // DiffResult describes how a desired resource differs from the live cluster object.
@@ -1951,6 +1956,9 @@ func buildConnectionConfig(options []Option) (connectionConfig, error) {
 
 func restConfigForConfig(config Config) (rest.Config, error) {
 	kubeconfigPath := strings.TrimSpace(config.KubeconfigPath)
+	if config.InCluster && kubeconfigPath != "" {
+		return rest.Config{}, errors.New("in-cluster credentials and kubeconfig path cannot both be selected")
+	}
 	if kubeconfigPath == "" {
 		restConfig, err := rest.InClusterConfig()
 		if err != nil {
@@ -1960,7 +1968,7 @@ func restConfigForConfig(config Config) (rest.Config, error) {
 	}
 
 	loadingRules := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfigPath}
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{CurrentContext: strings.TrimSpace(config.Context)})
 	restConfig, err := clientConfig.ClientConfig()
 	if err != nil {
 		return rest.Config{}, fmt.Errorf("load kubeconfig %q: %w", kubeconfigPath, err)

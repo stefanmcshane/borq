@@ -144,7 +144,7 @@ func TestHandlerServesHealthAndRoot(t *testing.T) {
 	handler.ServeHTTP(rootRecorder, rootRequest)
 	is.Equal(rootRecorder.Code, http.StatusOK)
 
-	healthRequest := httptest.NewRequest("GET", "/healthz", nil)
+	healthRequest := httptest.NewRequest("GET", "/api/healthz", nil)
 	healthRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(healthRecorder, healthRequest)
 	is.Equal(healthRecorder.Code, http.StatusOK)
@@ -169,7 +169,7 @@ func TestHandlerReconcilesAllComponentsWhenComponentIsOmitted(t *testing.T) {
 		"alpha": alpha,
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/reconcile?dry-run=true", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
@@ -201,7 +201,7 @@ func TestHandlerReconcileAllDefersBorqPostgresWhenCloudNativePGChanges(t *testin
 		"cloudnativepg-operator": operator,
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/reconcile?dry-run=true", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
@@ -235,7 +235,7 @@ func TestHandlerReconcileAllIncludesBorqPostgresAfterCloudNativePGConverges(t *t
 		"cloudnativepg-operator": operator,
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/reconcile?dry-run=true", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
@@ -260,7 +260,7 @@ func TestHandlerReconcileAllReturnsEmptyDiffArrayWhenNoDiffs(t *testing.T) {
 		},
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/reconcile?dry-run=true", nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/reconcile?dry-run=true", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
@@ -280,7 +280,7 @@ func TestHandlerRejectsBodyWhenReconcilingAllComponents(t *testing.T) {
 		"alpha": &testReconcileHandler{name: "alpha", defaultName: "alpha-default"},
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/reconcile", strings.NewReader(`{"name":"override"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/reconcile", strings.NewReader(`{"name":"override"}`))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 
@@ -295,7 +295,7 @@ func TestHandlerReconcileUsesDefaultConfigWhenBodyIsEmpty(t *testing.T) {
 		"alpha": &testReconcileHandler{name: "alpha", defaultName: "alpha-default"},
 	})
 
-	request := httptest.NewRequest(http.MethodPost, "/reconcile?component=alpha&dry-run=true", nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/reconcile?component=alpha&dry-run=true", nil)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 

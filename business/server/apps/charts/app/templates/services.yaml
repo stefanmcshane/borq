@@ -1,0 +1,27 @@
+{{- range .Values.apps }}
+{{- if .port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml .resourceMetadata.annotations | nindent 4 }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .name | quote }}
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+  ports:
+    - name: http
+      port: {{ .port }}
+      targetPort: {{ .port }}
+      protocol: TCP
+{{- end }}
+{{- end }}

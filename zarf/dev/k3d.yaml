@@ -1,0 +1,41 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: borq-dev
+servers: 1
+agents: 1
+image: rancher/k3s:v1.35.3-k3s1
+# Nested Docker does not expose host kernel logs, which kubelet otherwise requires at startup.
+volumes:
+  - volume: /dev/null:/dev/kmsg
+    nodeFilters:
+      - server:*
+      - agent:*
+kubeAPI:
+  host: 127.0.0.1
+  hostIP: 127.0.0.1
+  hostPort: "6550"
+ports:
+  - port: 127.0.0.1:8088:80
+    nodeFilters:
+      - loadbalancer
+  - port: 127.0.0.1:8443:443
+    nodeFilters:
+      - loadbalancer
+options:
+  k3s:
+    extraArgs:
+      - arg: --kubelet-arg=feature-gates=KubeletInUserNamespace=true
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: --kube-proxy-arg=conntrack-max-per-core=0
+        nodeFilters:
+          - server:*
+          - agent:*
+  k3d:
+    wait: true
+    timeout: 180s
+  kubeconfig:
+    updateDefaultKubeconfig: false
+    switchCurrentContext: false

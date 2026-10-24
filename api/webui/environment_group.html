@@ -1,0 +1,59 @@
+{{define "view-environment-group"}}
+<div class="application-navigation"><a class="text-link" href="{{pageUrl "environment" .Organization .Space.Name}}" hx-get="{{pageUrl "environment" .Organization .Space.Name}}">← All environment groups</a>{{if .GroupLatestVersion}}<span class="badge" data-variant="outline">Latest v{{.GroupLatestVersion}}</span>{{end}}</div>
+{{if not .Space.Cluster}}{{template "environment-space-required" .}}{{else}}
+  {{if .GroupLatestVersion}}
+  <nav class="application-tabs" aria-label="Environment group sections">
+    <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name}}" {{if eq .GroupTab "variables"}}aria-current="page"{{end}}>Variables</a>
+    <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "versions"}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "versions"}}" {{if eq .GroupTab "versions"}}aria-current="page"{{end}}>Versions</a>
+    <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "applications"}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "applications"}}" {{if eq .GroupTab "applications"}}aria-current="page"{{end}}>Applications <span class="badge" data-variant="secondary">{{len .GroupApplications}}</span></a>
+    <a href="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "settings"}}" hx-get="{{pageUrl "environment-group" .Organization .Space.Name "group" .Group.Name "tab" "settings"}}" {{if eq .GroupTab "settings"}}aria-current="page"{{end}}>Settings</a>
+  </nav>
+  {{end}}
+  {{if eq .GroupTab "versions"}}{{template "environment-group-versions" .}}
+  {{else if eq .GroupTab "applications"}}{{template "environment-group-applications" .}}
+  {{else if eq .GroupTab "settings"}}{{template "environment-group-settings" .}}
+  {{else}}{{template "environment-group-variables" .}}{{end}}
+{{end}}
+{{end}}
+
+{{define "environment-group-variables"}}
+<section class="card management-panel environment-group-settings">
+  <header class="panel-heading"><div><h2>{{if .GroupLatestVersion}}Config variables{{else}}Create an environment group{{end}}</h2><p>{{if .GroupLatestVersion}}Edit, add, or remove variables, then publish a new version. Applications keep their pinned version until you review and deploy a new plan.{{else}}Give this group a name and add the variables your applications need.{{end}}</p></div>{{if .Group.Version}}<span class="badge" data-variant="outline">v{{.Group.Version}}</span>{{end}}</header>
+  <section>
+    {{if and .Group.Version (ne .Group.Version .GroupLatestVersion)}}<p class="alert environment-version-notice">Viewing version {{.Group.Version}}. Publishing these values creates a new version; it does not change this saved version.</p>{{end}}
+    <form class="form-grid" action="/ui/actions" method="post" hx-post="/ui/actions" hx-disabled-elt="find [data-publish-group]" hx-sync="this:drop" autocomplete="off">
+      {{template "ui-scope" .}}
+      <input type="hidden" name="action" value="publish-group">
+      <input type="hidden" name="baseVersion" value="{{.GroupLatestVersion}}">
+      <input type="hidden" name="groupVersion" value="{{.Group.Version}}">
+      {{if .GroupLatestVersion}}<input type="hidden" name="name" value="{{.Group.Name}}">{{else}}<label>Group name<input class="input" name="name" value="{{.Group.Name}}" required maxlength="253" placeholder="web-config" spellcheck="false"><small>Use a unique name in this space. Applications will select this name.</small></label>{{end}}
+      {{template "environment-editor" .EnvironmentEditor}}
+      <div class="form-actions"><button class="btn" type="submit" data-publish-group>{{if .GroupLatestVersion}}Publish new version{{else}}Create group{{end}}</button><a class="btn" data-variant="ghost" href="{{pageUrl "environment" .Organization .Space.Name}}" hx-get="{{pageUrl "environment" .Organization .Space.Name}}">Cancel</a></div>
+    </form>
+  </section>
+</section>
+{{end}}
+
+{{define "environment-group-versions"}}
+<section class="card management-panel environment-group-settings"><header><h2>Published versions</h2><p>Each version is immutable. Open a version to inspect its variables or publish those values as a new version.</p></header><section>
+  <div class="table-scroll"><table class="table"><thead><tr><th>Version</th><th>Status</th><th></th></tr></thead><tbody>{{range .GroupVersions}}<tr><td class="mono">v{{.}}</td><td>{{if eq . $.GroupLatestVersion}}<span class="badge" data-variant="secondary">Latest</span>{{else}}<span class="field-help">Previous</span>{{end}}</td><td><a class="text-link" href="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}" hx-get="{{pageUrl "environment-group" $.Organization $.Space.Name "group" $.Group.Name "version" (printf "%d" .)}}">View variables</a></td></tr>{{end}}</tbody></table></div>
+</section></section>
+{{end}}
+
+{{define "environment-group-applications"}}
+<section class="card management-panel environment-group-settings"><header><h2>Applications using this group</h2><p>Change a group or its version from the application’s General page. Publishing variables leaves existing deployment pins in place.</p></header><section>
+  {{if .GroupApplications}}<div class="table-scroll"><table class="table"><thead><tr><th>Application</th><th>Pinned version</th><th>Image</th></tr></thead><tbody>{{range .GroupApplications}}<tr><td><a class="text-link" href="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}" hx-get="{{pageUrl "application" $.Organization $.Space.Name "app" .Name}}">{{.Name}}</a></td><td><span class="badge" data-variant="outline">v{{.Env.Version}}</span></td><td class="mono">{{.Image}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="resource-empty">{{template "ui-icon" "applications"}}<h3>No applications are using this group</h3><p>Select this group from an application’s environment dropdown, then review and deploy the change.</p><a class="btn" data-variant="outline" href="{{pageUrl "applications" .Organization .Space.Name}}" hx-get="{{pageUrl "applications" .Organization .Space.Name}}">View applications</a></div>{{end}}
+</section></section>
+{{end}}
+
+{{define "environment-group-settings"}}
+<section class="card management-panel environment-group-settings"><header><h2>Group settings</h2><p>This group is scoped to {{.Organization}} / {{.Space.Name}}.</p></header><section class="form-grid"><label>Group name<input class="input" value="{{.Group.Name}}" readonly><small>Clone this group to use a different name.</small></label></section></section>
+<section class="card management-panel environment-group-settings"><header><h2>Clone this group</h2><p>Copy a published version into an independent group. Applications continue using their current group.</p></header><section>
+  <form class="form-grid two-columns" action="/ui/actions" method="post" hx-post="/ui/actions" hx-disabled-elt="find button" hx-sync="this:drop">
+    {{template "ui-scope" .}}<input type="hidden" name="action" value="clone-group"><input type="hidden" name="sourceName" value="{{.Group.Name}}">
+    <label>New group name<input class="input" name="name" required maxlength="253" placeholder="{{.Group.Name}}-copy" spellcheck="false"></label>
+    <label>Source version<input class="input" name="sourceVersion" required value="latest" pattern="latest|[1-9][0-9]*" spellcheck="false"><small>Use latest or a published version number.</small></label>
+    <div class="form-actions full-width"><button class="btn" type="submit">Clone group</button></div>
+  </form>
+</section></section>
+{{end}}
