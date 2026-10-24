@@ -16,6 +16,8 @@ type PostgresInput struct {
 	Database string `json:"database,omitempty"`
 	// Username is the application role; omission selects app.
 	Username string `json:"username,omitempty"`
+	// Credentials configures OpenBao password rotation and its private SQL route.
+	Credentials PostgresCredentialPolicy `json:"credentials,omitempty"`
 	// Resources sets Kubernetes resource requests and limits.
 	Resources PostgresResources `json:"resources,omitempty"`
 	// Backup configures mandatory full backups and WAL retention.
@@ -30,6 +32,16 @@ type PostgresInput struct {
 	SnapshotClass string `json:"snapshotClass,omitempty"`
 	// RestoreCheck configures automatic isolated recovery verification.
 	RestoreCheck PostgresRestoreCheckInput `json:"restoreCheck,omitempty"`
+}
+
+// PostgresCredentialPolicy controls automatically rotated database passwords.
+type PostgresCredentialPolicy struct {
+	// RotationPeriod defaults to 24h and cannot disable rotation.
+	RotationPeriod string `json:"rotationPeriod,omitempty"`
+	// Host overrides the private SQL hostname reachable from management OpenBao.
+	Host string `json:"host,omitempty"`
+	// Port defaults to 5432 for the management SQL connection.
+	Port int `json:"port,omitempty"`
 }
 
 // PostgresBackupPolicy configures mandatory object storage protection.

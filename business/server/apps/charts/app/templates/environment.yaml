@@ -10,6 +10,9 @@ metadata:
   annotations:
     {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
     borq.run/environment-group-name: {{ .configName | quote }}
+    {{- if .postgresId }}
+    borq.run/postgres-id: {{ .postgresId | quote }}
+    {{- end }}
     borq.run/env-snapshot: {{ .snapshotId | quote }}
   labels:
     {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
@@ -18,7 +21,12 @@ metadata:
     borq.run/target-id: {{ $.Values.targetID | quote }}
     borq.run/phase: environment
 spec:
+  {{- if .postgresId }}
+  refreshPolicy: Periodic
+  refreshInterval: 15s
+  {{- else }}
   refreshPolicy: OnChange
+  {{- end }}
   secretStoreRef:
     kind: ClusterSecretStore
     name: {{ .store | quote }}
@@ -26,12 +34,14 @@ spec:
     - extract:
         key: {{ .path | quote }}
         property: values
+        {{- if not .postgresId }}
         version: {{ .version | toString | quote }}
+        {{- end }}
   target:
     name: {{ .secretName | quote }}
     creationPolicy: Owner
     deletionPolicy: Merge
-    immutable: true
+    immutable: {{ if .postgresId }}false{{ else }}true{{ end }}
     template:
       type: Opaque
       metadata:
@@ -43,7 +53,12 @@ spec:
         annotations:
           {{- toYaml $app.resourceMetadata.annotations | nindent 10 }}
           borq.run/environment-group-name: {{ .configName | quote }}
+          {{- if .postgresId }}
+          borq.run/postgres-id: {{ .postgresId | quote }}
+          borq.run/env-version: latest
+          {{- else }}
           borq.run/env-version: {{ .version | toString | quote }}
+          {{- end }}
           borq.run/env-path: {{ .path | quote }}
           borq.run/env-keys: {{ .keys | toJson | quote }}
 {{- end }}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -18,18 +19,20 @@ import (
 	"github.com/stefanmcshane/borq/foundations/openbao"
 	"github.com/stefanmcshane/borq/foundations/sqlite"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 type postgresRecord struct {
-	Postgres        Postgres `json:"postgres"`
-	Organization    string   `json:"organization"`
-	Space           string   `json:"space"`
-	Cluster         string   `json:"cluster"`
-	ID              string   `json:"id"`
-	ArchiveID       string   `json:"archiveId"`
-	CredentialsRef  string   `json:"credentialsRef"`
-	ActiveOperation string   `json:"activeOperation"`
-	ActiveCheck     string   `json:"activeCheck,omitempty"`
+	Postgres        Postgres                `json:"postgres"`
+	Organization    string                  `json:"organization"`
+	Space           string                  `json:"space"`
+	Cluster         string                  `json:"cluster"`
+	ID              string                  `json:"id"`
+	ArchiveID       string                  `json:"archiveId"`
+	CredentialsRef  string                  `json:"credentialsRef"`
+	ActiveOperation string                  `json:"activeOperation"`
+	ActiveCheck     string                  `json:"activeCheck,omitempty"`
+	Credentials     postgresCredentialState `json:"credentials,omitempty"`
 }
 
 type postgresArchive struct {
@@ -97,8 +100,24 @@ func normalizePostgres(input PostgresInput) (PostgresInput, error) {
 		input.Username = "app"
 	}
 	identifier := regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
-	if !identifier.MatchString(input.Database) || !identifier.MatchString(input.Username) || input.Username == "postgres" {
-		return input, postgresValidationError{message: "database and application username must be lowercase SQL identifiers; postgres is reserved"}
+	if !identifier.MatchString(input.Database) || !identifier.MatchString(input.Username) || input.Username == "postgres" || input.Username == "borq_openbao" {
+		return input, postgresValidationError{message: "database and application username must be lowercase SQL identifiers; postgres and borq_openbao are reserved"}
+	}
+	if input.Credentials.RotationPeriod == "" {
+		input.Credentials.RotationPeriod = "24h"
+	}
+	period, err := time.ParseDuration(input.Credentials.RotationPeriod)
+	if err != nil || period < time.Minute || period > 30*24*time.Hour || period%time.Second != 0 {
+		return input, postgresValidationError{message: "credential rotationPeriod must be a whole-second duration between 1m and 720h"}
+	}
+	if input.Credentials.Port == 0 {
+		input.Credentials.Port = 5432
+	}
+	if input.Credentials.Port < 1 || input.Credentials.Port > 65535 {
+		return input, postgresValidationError{message: "credential port must be between 1 and 65535"}
+	}
+	if host := input.Credentials.Host; host != "" && (net.ParseIP(host) != nil || len(validation.IsDNS1123Subdomain(host)) != 0) {
+		return input, postgresValidationError{message: "credential host must be a private SQL DNS hostname reachable from OpenBao"}
 	}
 	if input.Backup.Schedule == "" {
 		input.Backup.Schedule = "0 0 * * *"
@@ -304,7 +323,7 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 			return Postgres{}, err
 		}
 	}
-	if !exists && (action == "delete" || action == "backup") {
+	if !exists && (action == "delete" || action == "backup" || action == "rotate") {
 		return Postgres{}, ErrNotFound
 	}
 	if exists && (action == "create" || action == "restore") {
@@ -495,6 +514,15 @@ func mergePostgresInput(previous, input PostgresInput) PostgresInput {
 	}
 	if input.Username != "" {
 		previous.Username = input.Username
+	}
+	if input.Credentials.RotationPeriod != "" {
+		previous.Credentials.RotationPeriod = input.Credentials.RotationPeriod
+	}
+	if input.Credentials.Host != "" {
+		previous.Credentials.Host = input.Credentials.Host
+	}
+	if input.Credentials.Port != 0 {
+		previous.Credentials.Port = input.Credentials.Port
 	}
 	if input.Resources.Requests != nil {
 		previous.Resources.Requests = input.Resources.Requests

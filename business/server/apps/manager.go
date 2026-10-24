@@ -580,7 +580,7 @@ func (manager Manager) Apply(ctx context.Context, id string) (Operation, error) 
 		return Operation{}, err
 	}
 	// Validate before reserving a revision. Queue execution checks again when its turn arrives.
-	if err := verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
+	if err := manager.verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
 		return Operation{}, err
 	}
 	return manager.enqueuePlan(ctx, id)
@@ -639,7 +639,7 @@ func (manager Manager) runOperation(ctx context.Context, operation Operation) {
 			operation.Phase = "predeploy"
 		}
 	}
-	if err := verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
+	if err := manager.verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
 		manager.failOperation(operation, client, jobs, err)
 		return
 	}
@@ -672,7 +672,7 @@ func (manager Manager) runOperation(ctx context.Context, operation Operation) {
 		}
 	}
 	// A predeploy task or server restart may have outlived the pinned version's deployment window.
-	if err := verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
+	if err := manager.verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
 		manager.failOperation(operation, client, jobs, err)
 		return
 	}
@@ -701,7 +701,7 @@ func (manager Manager) runPredeploy(ctx context.Context, operation Operation, cl
 		}
 	}
 	for _, job := range jobs {
-		if err := verifyEnvironment(ctx, client, entries); err != nil {
+		if err := manager.verifyEnvironment(ctx, client, entries); err != nil {
 			return operation, err
 		}
 		operation.Status, operation.Message = "applying", "starting predeploy Job "+manifestName(job)

@@ -2,3 +2,5 @@ managedAddons:
   postgres:
     - name: source
       snapshots: preferred
+      credentials:
+        rotationPeriod: 1m

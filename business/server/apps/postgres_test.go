@@ -25,6 +25,7 @@ func TestPostgresDefaults(t *testing.T) {
 	check.Equal(input.SnapshotRetentionHours, 24)
 	check.Equal(input.RestoreCheck.Schedule, "0 3 * * 0")
 	check.Equal(input.RestoreCheck.TimeoutSeconds, 1800)
+	check.Equal(input.Credentials, PostgresCredentialPolicy{RotationPeriod: "24h", Port: 5432})
 	for _, bad := range []struct {
 		input   PostgresInput
 		message string
@@ -32,8 +33,9 @@ func TestPostgresDefaults(t *testing.T) {
 		{PostgresInput{Instances: -1}, "PostgreSQL instances must be between 1 and 16"},
 		{PostgresInput{Storage: "0Gi"}, "PostgreSQL storage must be a positive Kubernetes quantity"},
 		{PostgresInput{Image: "postgres:latest"}, "PostgreSQL image must pin a supported 14–18 major and exact minor tag"},
-		{PostgresInput{Database: "app; DROP DATABASE postgres"}, "database and application username must be lowercase SQL identifiers; postgres is reserved"},
-		{PostgresInput{Username: "postgres"}, "database and application username must be lowercase SQL identifiers; postgres is reserved"},
+		{PostgresInput{Database: "app; DROP DATABASE postgres"}, "database and application username must be lowercase SQL identifiers; postgres and borq_openbao are reserved"},
+		{PostgresInput{Username: "postgres"}, "database and application username must be lowercase SQL identifiers; postgres and borq_openbao are reserved"},
+		{PostgresInput{Username: "borq_openbao"}, "database and application username must be lowercase SQL identifiers; postgres and borq_openbao are reserved"},
 		{PostgresInput{Snapshots: "enabled"}, "snapshots must be preferred, required, or disabled"},
 		{PostgresInput{Backup: PostgresBackupPolicy{Schedule: "0 0 0 * * *"}}, "full backup schedule requires five cron fields"},
 		{PostgresInput{RestoreCheck: PostgresRestoreCheckInput{Schedule: "0 0 0 * * *"}}, "restore check schedule requires five cron fields"},
@@ -59,6 +61,77 @@ func TestPostgresDefaults(t *testing.T) {
 	check.Equal(merged.Instances, 2)
 	check.True(!*merged.RestoreCheck.Enabled)
 
+}
+
+// TestPostgresCredentialPolicy validates rotation bounds and the private SQL route before accepting database changes.
+func TestPostgresCredentialPolicy(t *testing.T) {
+	for _, policy := range []PostgresCredentialPolicy{
+		{RotationPeriod: "1m", Host: "pg.internal", Port: 1},
+		{RotationPeriod: "61s", Host: "pg-rw.production.svc", Port: 5432},
+		{RotationPeriod: "1.5m", Host: "private-pg.internal", Port: 65535},
+		{RotationPeriod: "720h"},
+	} {
+		t.Run(fmt.Sprint(policy), func(t *testing.T) {
+			check := is.New(t)
+			input, err := normalizePostgres(PostgresInput{Credentials: policy})
+			check.NoErr(err)
+			check.Equal(input.Credentials.RotationPeriod, policy.RotationPeriod)
+			check.Equal(input.Credentials.Host, policy.Host)
+			if policy.Port != 0 {
+				check.Equal(input.Credentials.Port, policy.Port)
+			}
+		})
+	}
+	for _, invalid := range []struct {
+		policy  PostgresCredentialPolicy
+		message string
+	}{
+		{PostgresCredentialPolicy{RotationPeriod: "disabled"}, "credential rotationPeriod must be a whole-second duration between 1m and 720h"},
+		{PostgresCredentialPolicy{RotationPeriod: "0s"}, "credential rotationPeriod must be a whole-second duration between 1m and 720h"},
+		{PostgresCredentialPolicy{RotationPeriod: "59s"}, "credential rotationPeriod must be a whole-second duration between 1m and 720h"},
+		{PostgresCredentialPolicy{RotationPeriod: "60.5s"}, "credential rotationPeriod must be a whole-second duration between 1m and 720h"},
+		{PostgresCredentialPolicy{RotationPeriod: "720h1s"}, "credential rotationPeriod must be a whole-second duration between 1m and 720h"},
+		{PostgresCredentialPolicy{Port: -1}, "credential port must be between 1 and 65535"},
+		{PostgresCredentialPolicy{Port: 65536}, "credential port must be between 1 and 65535"},
+		{PostgresCredentialPolicy{Host: "postgresql://pg.internal"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+		{PostgresCredentialPolicy{Host: "pg.internal:5432"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+		{PostgresCredentialPolicy{Host: "pg internal"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+		{PostgresCredentialPolicy{Host: "pg..internal"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+		{PostgresCredentialPolicy{Host: "-pg"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+		{PostgresCredentialPolicy{Host: "10.0.0.5"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+		{PostgresCredentialPolicy{Host: "2001:db8::1"}, "credential host must be a private SQL DNS hostname reachable from OpenBao"},
+	} {
+		t.Run(fmt.Sprint(invalid.policy), func(t *testing.T) {
+			check := is.New(t)
+			_, err := normalizePostgres(PostgresInput{Credentials: invalid.policy})
+			check.True(errors.Is(err, ErrInvalid))
+			check.Equal(PostgresRequestMessage(err), invalid.message)
+		})
+	}
+}
+
+// TestPostgresCredentialPolicyMerge preserves omitted credential settings when applying a partial database update.
+func TestPostgresCredentialPolicyMerge(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		patch  PostgresCredentialPolicy
+		wanted PostgresCredentialPolicy
+	}{
+		{"omitted", PostgresCredentialPolicy{}, PostgresCredentialPolicy{RotationPeriod: "2h", Host: "old.internal", Port: 6432}},
+		{"period", PostgresCredentialPolicy{RotationPeriod: "1m"}, PostgresCredentialPolicy{RotationPeriod: "1m", Host: "old.internal", Port: 6432}},
+		{"host", PostgresCredentialPolicy{Host: "new.internal"}, PostgresCredentialPolicy{RotationPeriod: "2h", Host: "new.internal", Port: 6432}},
+		{"port", PostgresCredentialPolicy{Port: 5432}, PostgresCredentialPolicy{RotationPeriod: "2h", Host: "old.internal", Port: 5432}},
+		{"all", PostgresCredentialPolicy{RotationPeriod: "3h", Host: "new.internal", Port: 7432}, PostgresCredentialPolicy{RotationPeriod: "3h", Host: "new.internal", Port: 7432}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			check := is.New(t)
+			previous, err := normalizePostgres(PostgresInput{Credentials: PostgresCredentialPolicy{RotationPeriod: "2h", Host: "old.internal", Port: 6432}})
+			check.NoErr(err)
+			merged, err := normalizePostgres(mergePostgresInput(previous, PostgresInput{Credentials: test.patch}))
+			check.NoErr(err)
+			check.Equal(merged.Credentials, test.wanted)
+		})
+	}
 }
 
 // TestPostgresRestartDeadline proves durable write-close-reopen recovery without resetting an original deadline.

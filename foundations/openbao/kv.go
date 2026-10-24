@@ -166,6 +166,18 @@ func (c *Client) WriteKv(ctx context.Context, mount, path string, input WriteKvI
 	return KvEntry{Version: secret.VersionMetadata.Version, Values: values, PlanID: input.PlanID}, nil
 }
 
+// DeleteKvMetadata permanently retires a bootstrap document and every historical version.
+func (c *Client) DeleteKvMetadata(ctx context.Context, mount, path string) error {
+	mount, path, err := kvLocation(mount, path)
+	if err != nil {
+		return err
+	}
+	if err := c.cli.KVv2(mount).DeleteMetadata(ctx, path); err != nil {
+		return kvRequestError(ctx, "delete bootstrap metadata", err)
+	}
+	return nil
+}
+
 func kvLocation(mount, path string) (string, string, error) {
 	mount = strings.Trim(mount, "/")
 	path = strings.Trim(path, "/")

@@ -232,8 +232,7 @@ func TestEnvironmentCloneNavigation(t *testing.T) {
 	assert.Equal(location.Query().Get("group"), "copy")
 }
 
-// TestManagedEnvironmentGroupPages keeps generated values inspectable while
-// reserving publication for the database and preserving the independent clone flow.
+// TestManagedEnvironmentGroupPages keeps rotating credentials read-only and prevents static copies.
 func TestManagedEnvironmentGroupPages(t *testing.T) {
 	for _, input := range []struct {
 		query, present, absent string
@@ -242,7 +241,7 @@ func TestManagedEnvironmentGroupPages(t *testing.T) {
 		{"view=environment-group&group=postgres-database-immutable-id", "managed-current-value", "managed-old-value"},
 		{"view=environment-group&group=postgres-database-immutable-id&version=1", "managed-old-value", "managed-current-value"},
 		{"view=environment-group&group=postgres-database-immutable-id&tab=versions", "View variables", "publish those values"},
-		{"view=environment-group&group=postgres-database-immutable-id&tab=settings", `name="sourceName" value="postgres-database-immutable-id"`, "managed-current-value"},
+		{"view=environment-group&group=postgres-database-immutable-id&tab=settings", "Credentials cannot be pinned or cloned.", `name="sourceName"`},
 	} {
 		t.Run(input.query, func(t *testing.T) {
 			assert := is.New(t)

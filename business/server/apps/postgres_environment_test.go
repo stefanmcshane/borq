@@ -10,6 +10,7 @@ import (
 	"github.com/matryer/is"
 	"github.com/stefanmcshane/borq/foundations/postgres"
 	"github.com/stefanmcshane/borq/foundations/sqlite"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // TestPostgresEnvironmentClaims rejects existing manual families and historical paths rather than adopting values.
@@ -66,7 +67,7 @@ func TestPostgresEnvironmentReservationIsAtomic(t *testing.T) {
 	check.True(errors.Is(err, ErrNotFound))
 }
 
-// TestPostgresEnvironmentReadOnlyAndClone proves ownership is authoritative for current and historical reads and every manual write.
+// TestPostgresEnvironmentReadOnlyAndClone prevents managed credentials from becoming pinned configuration.
 func TestPostgresEnvironmentReadOnlyAndClone(t *testing.T) {
 	check := is.New(t)
 	manager, cluster, vault, target := newEnvironmentGroupManager(t)
@@ -80,7 +81,7 @@ func TestPostgresEnvironmentReadOnlyAndClone(t *testing.T) {
 	vault.mutex.Lock()
 	vault.versions[environmentGroupPath(target.ID, stored.Postgres.EnvironmentGroup)] = []map[string]string{{"PGHOST": "old"}, {"PGHOST": "current"}}
 	vault.mutex.Unlock()
-	for _, version := range []string{"1", "latest"} {
+	for _, version := range []string{"latest"} {
 		group, err := manager.GetEnvironmentGroup(t.Context(), environmentGroupTestTarget(), stored.Postgres.EnvironmentGroup, version)
 		check.NoErr(err)
 		check.Equal(group.ManagedBy, "postgres/orders")
@@ -94,14 +95,12 @@ func TestPostgresEnvironmentReadOnlyAndClone(t *testing.T) {
 	cluster.mutex.Lock()
 	cluster.resources["/api/v1/namespaces/borq-system/secrets/openbao-token"] = token
 	cluster.mutex.Unlock()
-	_, err = manager.CloneEnvironmentGroup(t.Context(), CloneEnvironmentGroupInput{Target: environmentGroupTestTarget(), Name: stored.Postgres.EnvironmentGroup, SourceName: stored.Postgres.EnvironmentGroup, SourceVersion: "1"})
+	_, err = manager.CloneEnvironmentGroup(t.Context(), CloneEnvironmentGroupInput{Target: environmentGroupTestTarget(), Name: stored.Postgres.EnvironmentGroup, SourceName: stored.Postgres.EnvironmentGroup, SourceVersion: "latest"})
 	check.True(errors.Is(err, ErrConflict))
-	clone, err := manager.CloneEnvironmentGroup(t.Context(), CloneEnvironmentGroupInput{Target: environmentGroupTestTarget(), Name: "orders-custom", SourceName: stored.Postgres.EnvironmentGroup, SourceVersion: "1"})
-	check.NoErr(err)
-	check.Equal(clone.ManagedBy, "")
-	check.Equal(clone.Values, []Variable{{Name: "PGHOST", Value: "old"}})
-	_, err = manager.PublishEnvironmentGroup(t.Context(), PublishEnvironmentGroupInput{Target: environmentGroupTestTarget(), Name: "orders-custom", Values: []Variable{{Name: "PGHOST", Value: "editable"}}})
-	check.NoErr(err)
+	_, err = manager.GetEnvironmentGroup(t.Context(), environmentGroupTestTarget(), stored.Postgres.EnvironmentGroup, "1")
+	check.True(errors.Is(err, ErrInvalid))
+	_, err = manager.CloneEnvironmentGroup(t.Context(), CloneEnvironmentGroupInput{Target: environmentGroupTestTarget(), Name: "orders-custom", SourceName: stored.Postgres.EnvironmentGroup, SourceVersion: "latest"})
+	check.True(errors.Is(err, ErrConflict))
 	recreated := stored
 	recreated.ID = "second-incarnation"
 	recreated.Postgres.EnvironmentGroup = ""
@@ -109,12 +108,12 @@ func TestPostgresEnvironmentReadOnlyAndClone(t *testing.T) {
 	check.NoErr(err)
 	check.NoErr(manager.database.Commit(t.Context(), writes))
 	check.Equal(recreated.Postgres.EnvironmentGroup, "postgres-orders-second-incarnation")
-	old, err := manager.GetEnvironmentGroup(t.Context(), environmentGroupTestTarget(), stored.Postgres.EnvironmentGroup, "1")
+	old, err := manager.GetEnvironmentGroup(t.Context(), environmentGroupTestTarget(), stored.Postgres.EnvironmentGroup, "latest")
 	check.NoErr(err)
-	check.Equal(old.Values, []Variable{{Name: "PGHOST", Value: "old"}})
+	check.Equal(old.Values, []Variable{{Name: "PGHOST", Value: "current"}})
 }
 
-// TestPostgresEnvironmentBackfillPersists proves export-only repair writes catalog and database identity durably before retrying a missing source.
+// TestPostgresEnvironmentBackfillPersists keeps managed environment identity durable during an isolated restore check even if the database cluster is missing.
 func TestPostgresEnvironmentBackfillPersists(t *testing.T) {
 	check := is.New(t)
 	_, cluster, vault, _ := newEnvironmentGroupManager(t)
@@ -124,19 +123,21 @@ func TestPostgresEnvironmentBackfillPersists(t *testing.T) {
 	key := "acme/production/orders"
 	input, err := normalizePostgres(PostgresInput{})
 	check.NoErr(err)
-	stored := postgresRecord{Organization: "acme", Space: "production", Cluster: "local", ID: "existing-database", Postgres: Postgres{ID: "existing-database", Name: "orders", Namespace: target.Namespace, ClusterName: "pg-existing", State: "ready", Specification: input}}
+	stored := postgresRecord{Organization: "acme", Space: "production", Cluster: "local", ID: "existing-database", ActiveCheck: "isolated-check", Postgres: Postgres{ID: "existing-database", Name: "orders", Namespace: target.Namespace, ClusterName: "pg-existing", State: "ready", Specification: input}}
 	write, err := documentWrite("postgres", key, stored, 0)
 	check.NoErr(err)
 	check.NoErr(manager.database.Commit(t.Context(), []sqlite.Write{write}))
 	err = manager.maintainPostgresEnvironment(t.Context(), key, stored.ID)
-	check.True(err != nil && strings.Contains(err.Error(), "application credential is unavailable"))
-	check.Equal(vault.retention(), 11)
+	check.True(apierrors.IsNotFound(err))
+	check.True(strings.HasPrefix(safePostgresEnvironmentError(err), "observe database readiness: "))
+	check.Equal(vault.retention(), 1)
 	check.Equal(vault.writes(), 0)
 	check.NoErr(manager.Close())
 	reopened := openTestManager(t, path, time.Second)
 	persisted, _, err := loadDocument[postgresRecord](t.Context(), reopened.database, "postgres", key)
 	check.NoErr(err)
 	check.Equal(persisted.Postgres.EnvironmentGroup, "postgres-orders-existing-database")
+	check.Equal(persisted.ActiveCheck, "isolated-check")
 	claim, _, err := loadDocument[environmentGroupRecord](t.Context(), reopened.database, "environment-group", target.ID+"/"+persisted.Postgres.EnvironmentGroup)
 	check.NoErr(err)
 	check.Equal(claim.PostgresID, stored.ID)
@@ -144,9 +145,17 @@ func TestPostgresEnvironmentBackfillPersists(t *testing.T) {
 	check.Equal(claim.VaultPath, environmentGroupPath(target.ID, persisted.Postgres.EnvironmentGroup))
 }
 
+func TestPostgresEnvironmentDiagnosticsRedactDependencyErrors(t *testing.T) {
+	err := postgresEnvironmentFailure{stage: "refresh application credentials", err: errors.New("connection failed with password=do-not-log")}
+	message := safePostgresEnvironmentError(err)
+	if !strings.HasPrefix(message, "refresh application credentials: ") || strings.Contains(message, "do-not-log") {
+		t.Fatal("maintenance diagnostics must identify the stage without exposing dependency payloads")
+	}
+}
+
 // TestPostgresEnvironmentStaleMaintenance excludes accepted deletion, busy work, removed state, and replaced identities before any external access.
 func TestPostgresEnvironmentStaleMaintenance(t *testing.T) {
-	for _, state := range []string{"deleting", "removed", "active operation", "active check", "replaced identity"} {
+	for _, state := range []string{"deleting", "removed", "active operation", "replaced identity"} {
 		t.Run(state, func(t *testing.T) {
 			check := is.New(t)
 			manager := openTestManager(t, filepath.Join(t.TempDir(), "state.sqlite"), 0)
@@ -154,8 +163,6 @@ func TestPostgresEnvironmentStaleMaintenance(t *testing.T) {
 			switch state {
 			case "active operation":
 				stored.ActiveOperation = "pending"
-			case "active check":
-				stored.ActiveCheck = "pending"
 			case "replaced identity":
 				stored.ID = "new-identity"
 			default:

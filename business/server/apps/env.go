@@ -10,10 +10,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// EnvSecretName derives an immutable Secret name from the app and published
-// configuration identity. It remains stable when the same version is reapplied.
+// EnvSecretName derives a stable Secret name for a pinned version or live database binding.
 func EnvSecretName(snapshot EnvSnapshot) string {
 	identity := sha256.Sum256([]byte(snapshot.SnapshotID))
+	if snapshot.PostgresID != "" {
+		return fmt.Sprintf("%s-env-%x-live", snapshot.AppName, identity[:6])
+	}
 	return fmt.Sprintf("%s-env-%x-v%d", snapshot.AppName, identity[:6], snapshot.Version)
 }
 
@@ -67,6 +69,14 @@ func renderEnvSnapshots(configuration Configuration, targetID, _ string, snapsho
 	resolved := make([]EnvSnapshot, 0, len(snapshots))
 	for _, application := range configuration.Apps {
 		snapshot, exists := byApp[application.Name]
+		if exists && snapshot.PostgresID != "" {
+			if application.Env.Version != "latest" || snapshot.ConfigName != application.Env.Name {
+				return nil, fmt.Errorf("app %q managed database environment must follow latest", application.Name)
+			}
+			resolved = append(resolved, snapshot)
+			delete(byApp, application.Name)
+			continue
+		}
 		if application.Env.Version == "latest" || application.Env.Version == "0" {
 			if exists {
 				return nil, fmt.Errorf("app %q has an environment snapshot without a positive pinned version", application.Name)
@@ -97,6 +107,17 @@ func validateEnvSnapshot(snapshot EnvSnapshot, targetID string) error {
 	}
 	if snapshot.Path != environmentGroupPath(targetID, snapshot.ConfigName) && snapshot.Path != legacyEnvironmentGroupPath(targetID, snapshot.ConfigName) {
 		return fmt.Errorf("app %q environment path must belong to its deployment target and config", snapshot.AppName)
+	}
+	if snapshot.PostgresID != "" {
+		if snapshot.Version != 0 || snapshot.SnapshotID != targetID+"/"+snapshot.ConfigName+"/"+snapshot.PostgresID {
+			return fmt.Errorf("app %q managed environment requires its producer identity without a pinned version", snapshot.AppName)
+		}
+		for _, variable := range snapshot.Values {
+			if variable.Value != "" {
+				return fmt.Errorf("app %q live environment must not contain credential values", snapshot.AppName)
+			}
+		}
+		return nil
 	}
 	if snapshot.Version < 1 || strings.TrimSpace(snapshot.SnapshotID) == "" {
 		return fmt.Errorf("app %q environment requires a positive version and snapshot identity", snapshot.AppName)

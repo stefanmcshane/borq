@@ -8,6 +8,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"text/template"
+
+	"github.com/Masterminds/sprig/v3"
 
 	"github.com/matryer/is"
 	corev1 "k8s.io/api/core/v1"
@@ -18,76 +21,82 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// TestEnvironmentProjection proves the credential-to-provider wire shape without simulating a controller.
+// TestEnvironmentProjection verifies the ESO wire contract, URL escaping, and exclusive controller ownership of credential data.
 func TestEnvironmentProjection(t *testing.T) {
 	check := is.New(t)
-	input := Input{Namespace: "space", Name: "pg-destination", Owner: "database-id", Database: "orders", EnvironmentExport: EnvironmentExport{Name: "postgres-orders-database-id", VaultPath: "borq/environment-groups/space-id/postgres-orders-database-id"}}
-	password := "p@ss:/?#% ü"
-	source := corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: input.Name + "-app", Namespace: input.Namespace, ResourceVersion: "7", Labels: map[string]string{"borq.run/postgres-id": input.Owner, "cnpg.io/reload": "true"}}, Type: corev1.SecretTypeBasicAuth, Data: map[string][]byte{"username": []byte("orders"), "password": []byte(password), "preserved": []byte("extra")}}
-	var producer map[string]any
-	writes := 0
+	input := Input{Namespace: "space", Name: "pg-destination", Owner: "database-id", Database: "orders", Credentials: CredentialSource{Namespace: "borq", Mount: "database-target", Role: "pg-database-id", Provider: map[string]any{"server": "https://bao.example", "auth": map[string]any{"tokenSecretRef": map[string]any{"name": "borq-openbao", "key": "token"}}}}, EnvironmentExport: EnvironmentExport{Name: "postgres-orders-database-id", VaultPath: "borq/environment-groups/space-id/postgres-orders-database-id"}}
+	password := "p@ss:/?#% $&+,;=ü"
+	sourceAvailable := false
+	source := corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: input.Name + "-credentials", Namespace: "borq", ResourceVersion: "7", Labels: map[string]string{"borq.run/postgres-id": input.Owner}}, Type: corev1.SecretTypeBasicAuth, Data: map[string][]byte{"username": []byte("orders"), "password": []byte(password)}}
+	written := map[string]map[string]any{}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(request.URL.Path, "/secrets/pg-destination-app") {
-			if request.Method == http.MethodPut {
-				check.NoErr(json.NewDecoder(request.Body).Decode(&source))
-				writes++
+		if strings.HasSuffix(request.URL.Path, "/secrets/pg-destination-credentials") {
+			check.Equal(request.Method, http.MethodGet)
+			check.True(strings.Contains(request.URL.Path, "/namespaces/borq/"))
+			if !sourceAvailable {
+				http.Error(writer, `{"kind":"Status","apiVersion":"v1","reason":"NotFound","code":404}`, http.StatusNotFound)
+				return
 			}
 			check.NoErr(json.NewEncoder(writer).Encode(source))
 			return
 		}
-		if strings.HasSuffix(request.URL.Path, "/pushsecrets/pg-destination-environment") {
-			if request.Method == http.MethodPatch {
-				check.NoErr(json.NewDecoder(request.Body).Decode(&producer))
-				check.NoErr(json.NewEncoder(writer).Encode(producer))
-				return
-			}
-			http.Error(writer, `{"kind":"Status","apiVersion":"v1","reason":"NotFound","code":404}`, http.StatusNotFound)
+		check.True(strings.Contains(request.URL.Path, "/namespaces/borq/"))
+		if request.Method == http.MethodPatch {
+			var manifest map[string]any
+			check.NoErr(json.NewDecoder(request.Body).Decode(&manifest))
+			written[manifest["kind"].(string)] = manifest
+			check.NoErr(json.NewEncoder(writer).Encode(manifest))
 			return
 		}
-		t.Errorf("unexpected Kubernetes request %s %s", request.Method, request.URL.Path)
-		writer.WriteHeader(500)
+		http.Error(writer, `{"kind":"Status","apiVersion":"v1","reason":"NotFound","code":404}`, http.StatusNotFound)
 	}))
 	defer server.Close()
 	config := rest.Config{Host: server.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json"}}
 	client := Client{kube: kube.NewForConfigOrDie(&config), dynamic: dynamic.NewForConfigOrDie(&config)}
 	check.NoErr(client.ReconcileEnvironment(t.Context(), input))
-	check.Equal(writes, 1)
-	check.Equal(source.Type, corev1.SecretTypeBasicAuth)
-	check.Equal(string(source.Data["preserved"]), "extra")
-	check.Equal(source.ResourceVersion, "7")
+	if len(written) != 2 || written["PushSecret"] != nil {
+		t.Fatal("environment exporter started before its source credential Secret existed")
+	}
+	sourceAvailable = true
+	source.Data["environment.json"] = []byte(`{}`)
+	check.NoErr(client.ReconcileEnvironment(t.Context(), input))
+	check.Equal(len(written), 3)
+	generator := written["VaultDynamicSecret"]
+	check.Equal(generator["spec"].(map[string]any)["path"], "database-target/static-creds/pg-database-id")
+	external := written["ExternalSecret"]
+	target := external["spec"].(map[string]any)["target"].(map[string]any)
+	check.Equal(target["immutable"], false)
+	check.Equal(external["spec"].(map[string]any)["refreshInterval"], "15s")
+	secretTemplate := target["template"].(map[string]any)
+	data := secretTemplate["data"].(map[string]any)
+	engineValues := map[string]string{"username": "orders", "password": password, "last_vault_rotation": "2026-10-24T12:00:00Z", "rotation_period": "86400", "ttl": "10"}
+	rendered := &strings.Builder{}
+	environmentTemplate, err := template.New("environment").Option("missingkey=error").Funcs(sprig.TxtFuncMap()).Parse(data["environment.json"].(string))
+	check.NoErr(err)
+	check.NoErr(environmentTemplate.Execute(rendered, engineValues))
 	var values map[string]string
-	check.NoErr(json.Unmarshal(source.Data["environment.json"], &values))
-	check.Equal(len(values), 6)
-	check.Equal(values["PGHOST"], "pg-destination-rw.space.svc")
-	check.Equal(values["PGPORT"], "5432")
-	check.Equal(values["PGDATABASE"], "orders")
-	check.Equal(values["PGUSER"], "orders")
-	check.Equal(values["PGPASSWORD"], password)
+	check.NoErr(json.Unmarshal([]byte(rendered.String()), &values))
+	check.Equal(values, environmentValues(input, "orders", password))
 	address, err := url.Parse(values["DATABASE_URL"])
 	check.NoErr(err)
-	decoded, exists := address.User.Password()
-	check.True(exists)
-	check.Equal(decoded, password)
-	check.Equal(address.Host, "pg-destination-rw.space.svc:5432")
-	check.Equal(address.Path, "/orders")
-	check.Equal(producer["apiVersion"], "external-secrets.io/v1alpha1")
-	check.Equal(producer["metadata"].(map[string]any)["labels"].(map[string]any)["borq.run/postgres-id"], input.Owner)
-	check.Equal(producer["spec"], map[string]any{
-		"refreshInterval": "1m", "updatePolicy": "Replace", "deletionPolicy": "None",
-		"secretStoreRefs": []any{map[string]any{"name": "borq-openbao", "kind": "ClusterSecretStore"}},
-		"selector":        map[string]any{"secret": map[string]any{"name": "pg-destination-app"}},
-		"data":            []any{map[string]any{"conversionStrategy": "None", "match": map[string]any{"secretKey": "environment.json", "remoteRef": map[string]any{"remoteKey": input.EnvironmentExport.VaultPath, "property": "values"}}}},
-	})
-	encoded, err := json.Marshal(producer)
+	decodedPassword, present := address.User.Password()
+	check.True(present)
+	check.Equal(decodedPassword, password)
+	check.Equal(address.User.Username(), "orders")
+	annotations := secretTemplate["metadata"].(map[string]any)["annotations"].(map[string]any)
+	rotationTemplate, err := template.New("rotation").Option("missingkey=error").Parse(annotations["borq.run/credential-rotation"].(string))
 	check.NoErr(err)
-	check.True(!strings.Contains(string(encoded), password))
-	check.NoErr(client.ReconcileEnvironment(t.Context(), input))
-	check.Equal(writes, 1)
+	rendered.Reset()
+	check.NoErr(rotationTemplate.Execute(rendered, engineValues))
+	check.Equal(rendered.String(), "2026-10-24T12:00:00Z")
+	check.Equal(written["PushSecret"]["spec"].(map[string]any)["selector"], map[string]any{"secret": map[string]any{"name": "pg-destination-credentials"}})
+	actual, err := client.Environment(t.Context(), input)
+	check.NoErr(err)
+	check.Equal(actual, values)
 	source.Labels["borq.run/postgres-id"] = "foreign-owner"
-	err = client.ReconcileEnvironment(t.Context(), input)
+	_, err = client.Environment(t.Context(), input)
 	check.True(err != nil && strings.Contains(err.Error(), "ownership conflict"))
-	check.Equal(writes, 1)
 	input.Isolated = true
 	check.NoErr((Client{}).ReconcileEnvironment(context.Background(), input))
 }

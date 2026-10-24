@@ -42,8 +42,11 @@ func (web handler) loadEnvironmentPage(request *http.Request, selection url.Valu
 	}
 	page.Group, page.Title = group, group.Name
 	page.EnvironmentEditor.Values = group.Values
-	// The API retains the latest and ten previous versions and validates reads itself.
-	for version := page.GroupLatestVersion; version > 0 && len(page.GroupVersions) < 11; version-- {
+	retained := 11
+	if group.ManagedBy != "" {
+		retained = 1
+	}
+	for version := page.GroupLatestVersion; version > 0 && len(page.GroupVersions) < retained; version-- {
 		page.GroupVersions = append(page.GroupVersions, version)
 	}
 	for _, application := range page.Space.Configuration.Apps {

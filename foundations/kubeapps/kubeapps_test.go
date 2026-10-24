@@ -354,6 +354,7 @@ func testClient(manifests ...map[string]any) (Client, *fake.FakeDynamicClient) {
 		{Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"}:             "IngressList",
 		{Group: "batch", Version: "v1", Resource: "jobs"}:                              "JobList",
 		{Version: "v1", Resource: "secrets"}:                                           "SecretList",
+		{Version: "v1", Resource: "pods"}:                                              "PodList",
 		{Group: "external-secrets.io", Version: "v1", Resource: "externalsecrets"}:     "ExternalSecretList",
 		{Group: "external-secrets.io", Version: "v1", Resource: "clustersecretstores"}: "ClusterSecretStoreList",
 	}

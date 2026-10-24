@@ -76,9 +76,10 @@ type Variable struct {
 	Value string `json:"value"`
 }
 
-// EnvSnapshot binds an application's environment values to one immutable vault
-// version and the Kubernetes Secret that the External Secrets operator creates.
+// EnvSnapshot binds an application to a pinned configuration version or a live database producer.
 type EnvSnapshot struct {
+	// PostgresID identifies a live managed database binding; values contain key names only.
+	PostgresID string `json:"postgresId,omitempty"`
 	// AppName identifies the application consuming these values.
 	AppName string `json:"appName"`
 	// ConfigName identifies the named environment group.

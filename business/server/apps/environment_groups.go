@@ -18,7 +18,7 @@ import (
 const previousEnvironmentGroupVersions = 10
 
 // ErrEnvironmentGroupManaged lets transports explain producer ownership without exposing backend errors.
-var ErrEnvironmentGroupManaged = errors.New("environment group is managed by PostgreSQL; clone it to edit values")
+var ErrEnvironmentGroupManaged = errors.New("environment group is managed by PostgreSQL and follows rotating credentials")
 
 func validateEnvironmentGroupVersion(name string, version, latest int) error {
 	if version < 1 || version > latest {
@@ -255,6 +255,13 @@ func (manager Manager) GetEnvironmentGroup(ctx context.Context, target Environme
 	if err != nil {
 		return EnvironmentGroup{}, err
 	}
+	record, _, recordErr := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", environment.ID+"/"+name)
+	if recordErr != nil && !errors.Is(recordErr, ErrNotFound) {
+		return EnvironmentGroup{}, recordErr
+	}
+	if record.PostgresID != "" && number != 0 {
+		return EnvironmentGroup{}, fmt.Errorf("%w: managed PostgreSQL credentials are available only as latest", ErrInvalid)
+	}
 	vault, mount, err := openEnvironmentVault(ctx, client)
 	if err != nil {
 		return EnvironmentGroup{}, err
@@ -270,10 +277,6 @@ func (manager Manager) GetEnvironmentGroup(ctx context.Context, target Environme
 	if err != nil {
 		return EnvironmentGroup{}, err
 	}
-	record, _, err := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", environment.ID+"/"+name)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return EnvironmentGroup{}, err
-	}
 	managedBy := ""
 	if record.PostgresID != "" {
 		managedBy = "postgres/" + record.PostgresName
@@ -286,6 +289,9 @@ func (manager Manager) CloneEnvironmentGroup(ctx context.Context, input CloneEnv
 	source, err := manager.GetEnvironmentGroup(ctx, input.Target, input.SourceName, input.SourceVersion)
 	if err != nil {
 		return EnvironmentGroup{}, err
+	}
+	if source.ManagedBy != "" {
+		return EnvironmentGroup{}, fmt.Errorf("%w: rotating PostgreSQL credentials cannot be cloned into a pinned environment group", ErrConflict)
 	}
 	expected := 0
 	return manager.PublishEnvironmentGroup(ctx, PublishEnvironmentGroupInput{Target: input.Target, Name: input.Name, Values: source.Values, BaseVersion: &expected})

@@ -95,9 +95,11 @@ components:
           type: "string"
           description: "Database is the initial application database; omission selects app."
         username:
-          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres is reserved."
+          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres and borq_openbao are reserved."
           type: "string"
           description: "Username is the application role; omission selects app."
+        credentials:
+          $ref: "#/components/schemas/PostgresCredentialPolicy"
         resources:
           $ref: "#/components/schemas/PostgresResources"
           description: "Resources sets Kubernetes resource requests and limits."
@@ -126,6 +128,21 @@ components:
           description: "SnapshotClass selects an optional CSI snapshot class."
         restoreCheck:
           $ref: "#/components/schemas/PostgresRestoreCheckInput"
+    PostgresCredentialPolicy:
+      type: "object"
+      additionalProperties: false
+      properties:
+        rotationPeriod:
+          type: "string"
+          description: "OpenBao password rotation duration, defaults to 24h; between 1m and 720h."
+        host:
+          type: "string"
+          description: "Private SQL hostname reachable from management OpenBao; defaults to the target-local database Service."
+        port:
+          type: "integer"
+          minimum: 1
+          maximum: 65535
+          description: "Management SQL port, defaults to 5432."
     PostgresBackupPolicy:
       x-borq-validation-message: "PostgreSQL backup settings must use supported configuration fields."
       type: "object"
@@ -671,12 +688,14 @@ components:
           type: "string"
           description: "Database is the initial application database; omission selects app."
         username:
-          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres is reserved."
+          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres and borq_openbao are reserved."
           type: "string"
           description: "Username is the application role; omission selects app."
         resources:
           $ref: "#/components/schemas/PostgresResources"
           description: "Resources sets Kubernetes resource requests and limits."
+        credentials:
+          $ref: "#/components/schemas/PostgresCredentialPolicy"
         backup:
           $ref: "#/components/schemas/PostgresBackupPolicy"
           description: "Backup configures mandatory full backups and WAL retention."
@@ -1553,7 +1572,7 @@ components:
           description: Environment group name within this deployment space.
           type: string
         managedBy:
-          description: Producer identity; managed groups are read-only and can be cloned.
+          description: Producer identity; managed groups are read-only and follow rotating credentials.
           type: string
           x-go-type-skip-optional-pointer: true
         values:

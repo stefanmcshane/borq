@@ -161,23 +161,70 @@ Open the database's **Overview** page and follow the group link under
 **Application connection**. Borq creates a managed environment group named
 `postgres-<database-name>-<database-id>` with the same six connection variables.
 The database ID keeps the group tied to this database for its lifetime.
-External Secrets publishes these values to OpenBao. Reconciliation also creates
-groups for existing databases automatically.
+OpenBao owns the PostgreSQL application password and rotates it every 24 hours by
+default. External Secrets reads the current credential from its database engine,
+then publishes the connection variables into the managed group. Reconciliation
+also enrolls existing databases automatically.
 
 Open your application's **Configuration** page, select this group in the
 **Environment group** selector, then review and deploy the change. Borq refreshes
-the group's connection values automatically and publishes a version when they
-change. Existing deployments keep their pinned version until you review and
-deploy a new plan.
+the group's connection values automatically. Applications using this group follow
+`latest` and restart after External Secrets delivers the new password. A brief
+window of rejected new connections is possible between database rotation and
+application refresh. Existing connections can continue until they reconnect.
 
-Managed groups are read-only. You can inspect their values and versions, or use
-**Settings** to clone a published version into an independent group. Edit and
-publish that copy as needed. A clone does not receive automatic database updates.
+Managed database groups are read-only and retain only the current credential
+version. They cannot be pinned or cloned into static groups. Other environment
+groups keep their existing immutable versions and deployment pins.
 
-Deleting a database retains its environment group and credential history. Treat
-the saved values as secrets. A restored database, or a database recreated with the
-same name, gets its own group. Existing application references keep pointing to
+Deleting a database removes its OpenBao database connection, rotation role, and
+credential projections. Its group metadata and last published value remain for
+existing references, but no live database accepts that credential. A restored
+database, or a database recreated with the same name, gets its own group and
+independent rotation role. Existing application references keep pointing to
 the original group until you change them.
+
+## Credential ownership and rotation
+
+CloudNativePG owns cluster lifecycle, and Barman owns backups. OpenBao owns the
+application password and the dedicated `borq_openbao` control-account password.
+Borq retires the one-time CNPG bootstrap Secret and its saved bootstrap password
+once OpenBao enrollment succeeds. CNPG does not write application passwords after
+that handoff. Application usernames remain stable so table ownership is preserved.
+
+Set the password lifetime in the database YAML when needed:
+
+```yaml
+managedAddons:
+  postgres:
+    - name: database
+      credentials:
+        rotationPeriod: 24h
+```
+
+The duration must use whole seconds between `1m` and `720h`. OpenBao schedules
+application-password rotation. Borq also requests control-account rotation through
+OpenBao at the configured interval and immediately during enrollment. The control
+account can manage PostgreSQL roles and is privileged even though it is not a
+superuser. Its password stays inside OpenBao after enrollment.
+
+Management OpenBao must be able to reach each database over a private SQL route.
+The default uses the CNPG service name when management and target are colocated.
+For a remote target, set `credentials.host` and optional `credentials.port` to a
+private endpoint reachable from OpenBao. Borq verifies the database certificate
+and hostname using the public CNPG CA mounted into OpenBao. It does not expose a
+public database port or create a cross-cluster network route.
+
+Apply the management component configuration before enrolling databases so OpenBao
+has its `/openbao/postgres-ca` ConfigMap mount. Existing development installations
+using in-memory OpenBao need their secrets preserved before restarting that pod.
+A restart of an in-memory development vault otherwise loses its data. Production
+OpenBao uses persistent storage.
+
+The manager includes a durable credential-rotation operation for future CLI, API,
+and UI actions. Automatic rotation requires no user-triggered command. Restore
+verification runs without enrolling or exporting a credential for its temporary
+copy. A user-requested restore enrolls the new database independently.
 
 ## Inspect protection and restore a backup
 
@@ -259,7 +306,7 @@ make test-managed-postgres-e2e
 
 The target uses `tmp/management/kubeconfig` and the local API at port 7833 by default.
 It creates temporary addons, seeds data, backs up, restores, compares schema and
-data, checks database writes, and cleans up. Use focused Make checks while iterating.
+data, checks database writes and rotating application credentials, and cleans up. Use focused Make checks while iterating.
 Run `make pre-commit` outside the sandbox before committing. The dedicated recovery
 check is additional coverage for provisioning changes, not a routine UI or copy-edit
 check.

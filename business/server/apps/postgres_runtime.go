@@ -44,6 +44,7 @@ func (manager Manager) postgresClient(ctx context.Context, stored postgresRecord
 		return postgres.Client{}, postgres.Input{}, err
 	}
 	input := postgres.Input{Namespace: stored.Postgres.Namespace, Name: stored.Postgres.ClusterName, Owner: stored.ID, Organization: stored.Organization, SpaceID: target.ID, Instances: specification.Instances, StorageSize: specification.Storage, StorageClass: specification.StorageClass, Image: specification.Image, Database: specification.Database, Username: specification.Username, Requests: specification.Resources.Requests, Limits: specification.Resources.Limits, RetentionDays: specification.Backup.RecoveryWindowDays, BackupSchedule: "0 " + specification.Backup.Schedule, SnapshotSchedule: "0 " + specification.SnapshotSchedule}
+	input.Credentials = postgres.CredentialSource{Mount: "database-" + cluster.ID, Role: "pg-" + stored.ID, Namespace: stored.Credentials.Namespace, Host: specification.Credentials.Host}
 	if stored.Postgres.EnvironmentGroup != "" {
 		input.EnvironmentExport = postgres.EnvironmentExport{Name: stored.Postgres.EnvironmentGroup, VaultPath: environmentGroupPath(target.ID, stored.Postgres.EnvironmentGroup)}
 	}
@@ -65,6 +66,9 @@ func (manager Manager) postgresClient(ctx context.Context, stored postgresRecord
 	if err != nil {
 		return postgres.Client{}, input, err
 	}
+	if stored.Credentials.Phase != "" {
+		return client, input, nil
+	}
 	targetClient, err := newClusterClient(cluster)
 	if err != nil {
 		return postgres.Client{}, input, err
@@ -82,8 +86,8 @@ func (manager Manager) postgresClient(ctx context.Context, stored postgresRecord
 	if err != nil {
 		return postgres.Client{}, input, err
 	}
-	input.Password = entry.Values["password"]
-	if input.Password == "" {
+	input.BootstrapPassword = entry.Values["password"]
+	if input.BootstrapPassword == "" {
 		return postgres.Client{}, input, errors.New("PostgreSQL credential reference has no password")
 	}
 	return client, input, nil
@@ -170,6 +174,9 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 		return observed, err
 	}
 	if task.Action == "delete" {
+		if err := manager.removePostgresCredentials(ctx, stored, input); err != nil {
+			return observed, err
+		}
 		for {
 			complete, err := client.DeleteOwned(ctx, input)
 			if err != nil {
@@ -200,6 +207,9 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 			}
 		}
 	}
+	if task.Action == "rotate" {
+		return manager.executePostgresRotation(ctx, stored, client, input, operation)
+	}
 	settings, err := manager.GetPlatformSettings(ctx)
 	if err != nil {
 		return observed, err
@@ -219,20 +229,45 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 	if err != nil {
 		return observed, err
 	}
+	stored, _, err = loadDocument[postgresRecord](ctx, manager.database, "postgres", task.Key)
+	if err != nil {
+		return observed, err
+	}
 
 	for {
 		observed, err = client.Observe(ctx, input)
-		if err == nil && observed.Ready && observed.Wal == "ready" && observed.Backups == "ready" {
+		if err == nil && observed.Ready {
+			input, err = manager.reconcilePostgresCredentials(ctx, stored, client, input)
+			if err != nil {
+				var dependency postgresCredentialError
+				if !errors.As(err, &dependency) {
+					return observed, err
+				}
+				operation.Status, operation.Message, operation.UpdatedAt = "waiting", dependency.message, time.Now().UTC()
+				if err := manager.savePostgresOperation(ctx, operation); err != nil {
+					return observed, err
+				}
+				if err := manager.waitForPoll(ctx); err != nil {
+					return observed, dependency
+				}
+				continue
+			}
 			exported, exportErr := manager.postgresEnvironmentReady(ctx, stored, client, input)
 			if exportErr != nil {
 				return observed, exportErr
 			}
 			if exported {
-				return observed, nil
+				consumers, consumerErr := manager.refreshPostgresConsumers(ctx, stored)
+				if consumerErr != nil {
+					return observed, consumerErr
+				}
+				if consumers && observed.Wal == "ready" && observed.Backups == "ready" {
+					return observed, nil
+				}
 			}
 		}
 		operation.Status = "waiting"
-		operation.Message = "waiting for SQL readiness, first full backup, WAL archiving, and published connection values"
+		operation.Message = "waiting for SQL, backup protection, OpenBao credentials, and application credential refresh"
 		operation.UpdatedAt = time.Now().UTC()
 		if err := manager.savePostgresOperation(ctx, operation); err != nil {
 			return observed, err
@@ -310,6 +345,10 @@ func (manager Manager) finishPostgres(operation Operation, task postgresTask, ob
 }
 
 func safePostgresError(err error) string {
+	var credentialFailure postgresCredentialError
+	if errors.As(err, &credentialFailure) {
+		return credentialFailure.message
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "PostgreSQL operation exceeded its original durable deadline"
 	}
@@ -323,7 +362,7 @@ func safePostgresError(err error) string {
 }
 
 func (manager Manager) postgresMaintenance() {
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		if manager.runtime.context.Err() != nil {
@@ -335,7 +374,7 @@ func (manager Manager) postgresMaintenance() {
 		}
 		for _, record := range records {
 			var stored postgresRecord
-			if json.Unmarshal(record.Value, &stored) != nil || stored.Postgres.State == "removed" || stored.ActiveOperation != "" || stored.ActiveCheck != "" {
+			if json.Unmarshal(record.Value, &stored) != nil || stored.Postgres.State == "removed" || stored.ActiveOperation != "" {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(manager.runtime.context, 30*time.Second)

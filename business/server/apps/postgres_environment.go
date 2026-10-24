@@ -70,7 +70,7 @@ func (manager Manager) postgresEnvironmentRetention(ctx context.Context, stored 
 	if err != nil {
 		return err
 	}
-	return vault.SetKvRetention(ctx, mount, environmentGroupPath(target.ID, stored.Postgres.EnvironmentGroup), previousEnvironmentGroupVersions+1)
+	return vault.SetKvRetention(ctx, mount, environmentGroupPath(target.ID, stored.Postgres.EnvironmentGroup), 1)
 }
 
 func (manager Manager) postgresEnvironmentReady(ctx context.Context, stored postgresRecord, client postgres.Client, input postgres.Input) (bool, error) {
@@ -81,6 +81,17 @@ func (manager Manager) postgresEnvironmentReady(ctx context.Context, stored post
 	expected, err := client.Environment(ctx, input)
 	if err != nil {
 		return false, err
+	}
+	engine, err := manager.postgresVault(ctx)
+	if err != nil {
+		return false, err
+	}
+	credentials, err := engine.ReadStaticCredentials(ctx, input.Credentials.Mount, input.Credentials.Role)
+	if err != nil {
+		return false, err
+	}
+	if expected["PGUSER"] != credentials.Username || expected["PGPASSWORD"] != credentials.Password {
+		return false, nil
 	}
 	_, targetClient, err := manager.environmentGroupConnection(ctx, EnvironmentGroupTarget{Organization: stored.Organization, Space: stored.Space})
 	if err != nil {
@@ -100,6 +111,21 @@ func (manager Manager) postgresEnvironmentReady(ctx context.Context, stored post
 	return maps.Equal(expected, entry.Values), nil
 }
 
+type postgresEnvironmentFailure struct {
+	stage string
+	err   error
+}
+
+func (failure postgresEnvironmentFailure) Error() string { return failure.stage }
+func (failure postgresEnvironmentFailure) Unwrap() error { return failure.err }
+
+func postgresEnvironmentStep(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return postgresEnvironmentFailure{stage: stage, err: err}
+}
+
 func (manager Manager) maintainPostgresEnvironment(ctx context.Context, key, identity string) error {
 	manager.runtime.storageMutex.Lock()
 	defer manager.runtime.storageMutex.Unlock()
@@ -107,7 +133,7 @@ func (manager Manager) maintainPostgresEnvironment(ctx context.Context, key, ide
 	if err != nil {
 		return err
 	}
-	if stored.ID != identity || stored.Postgres.State == "removed" || stored.Postgres.State == "deleting" || stored.ActiveOperation != "" || stored.ActiveCheck != "" {
+	if stored.ID != identity || stored.Postgres.State == "removed" || stored.Postgres.State == "deleting" || stored.ActiveOperation != "" {
 		return nil
 	}
 	deleting, err := manager.postgresDeletionAccepted(ctx, stored)
@@ -136,16 +162,37 @@ func (manager Manager) maintainPostgresEnvironment(ctx context.Context, key, ide
 		}
 	}
 	if err := manager.postgresEnvironmentRetention(ctx, stored); err != nil {
-		return err
+		return postgresEnvironmentStep("configure credential history retention", err)
 	}
 	client, input, err := manager.postgresClient(ctx, stored, false)
 	if err != nil {
-		return err
+		return postgresEnvironmentStep("connect to database cluster", err)
 	}
-	return client.ReconcileEnvironment(ctx, input)
+	observed, err := client.Observe(ctx, input)
+	if err != nil || !observed.Ready {
+		return postgresEnvironmentStep("observe database readiness", err)
+	}
+	input, err = manager.reconcilePostgresCredentials(ctx, stored, client, input)
+	if err != nil {
+		return postgresEnvironmentStep("reconcile OpenBao credentials", err)
+	}
+	ready, err := manager.postgresEnvironmentReady(ctx, stored, client, input)
+	if err != nil || !ready {
+		return postgresEnvironmentStep("verify credential delivery", err)
+	}
+	_, err = manager.refreshPostgresConsumers(ctx, stored)
+	return postgresEnvironmentStep("refresh application credentials", err)
 }
 
 func safePostgresEnvironmentError(err error) string {
+	var failure postgresEnvironmentFailure
+	if errors.As(err, &failure) {
+		return failure.stage + ": " + safePostgresEnvironmentError(failure.err)
+	}
+	var credentialFailure postgresCredentialError
+	if errors.As(err, &credentialFailure) {
+		return credentialFailure.message
+	}
 	switch {
 	case errors.Is(err, ErrConflict):
 		return "environment ownership conflict"

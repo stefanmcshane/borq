@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -35,16 +34,25 @@ import (
 )
 
 type postgresAcceptanceConfig struct {
-	binary       string `env:"BORQ_MANAGED_ADDON_TEST_BINARY"`
-	server       string `env:"BORQ_MANAGED_ADDON_TEST_SERVER_URL"`
-	kubeconfig   string `env:"BORQ_MANAGEMENT_KUBECONFIG"`
-	organization string `env:"BORQ_MANAGED_ADDON_TEST_ORGANIZATION"`
-	cluster      string `env:"BORQ_MANAGED_ADDON_TEST_CLUSTER"`
+	binary              string `env:"BORQ_MANAGED_ADDON_TEST_BINARY"`
+	server              string `env:"BORQ_MANAGED_ADDON_TEST_SERVER_URL"`
+	kubeconfig          string `env:"BORQ_MANAGEMENT_KUBECONFIG"`
+	organization        string `env:"BORQ_MANAGED_ADDON_TEST_ORGANIZATION"`
+	cluster             string `env:"BORQ_MANAGED_ADDON_TEST_CLUSTER"`
+	managementNamespace string `env:"BORQ_MANAGED_ADDON_TEST_MANAGEMENT_NAMESPACE"`
 }
 
 type postgresAcceptance struct {
 	config                         postgresAcceptanceConfig
 	organization, space, namespace string
+	clusterID                      string
+}
+
+type postgresConsumer struct {
+	name, secret string
+	pod          corev1.Pod
+	password     string
+	jobs         []string
 }
 
 type postgresTableFingerprint struct {
@@ -59,17 +67,18 @@ type postgresFingerprint struct {
 	Sequences string
 }
 
-// TestManagedPostgresIntegrationRecovery owns physical backup recovery acceptance.
-// It crosses the public YAML, CLI, API, real CNPG, S3 and SQL boundaries and
-// compares logical row bytes because PostgreSQL physical files change on recovery.
+// TestManagedPostgresIntegrationRecovery owns live credential rotation and
+// physical backup recovery acceptance across the public YAML, CLI, API, OpenBao,
+// ESO, CNPG, S3 and SQL boundaries. Logical row bytes survive physical recovery.
 func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	assert := is.New(t)
 	config := postgresAcceptanceConfig{
-		binary:       os.Getenv("BORQ_MANAGED_ADDON_TEST_BINARY"),
-		server:       os.Getenv("BORQ_MANAGED_ADDON_TEST_SERVER_URL"),
-		kubeconfig:   os.Getenv("BORQ_MANAGEMENT_KUBECONFIG"),
-		organization: os.Getenv("BORQ_MANAGED_ADDON_TEST_ORGANIZATION"),
-		cluster:      os.Getenv("BORQ_MANAGED_ADDON_TEST_CLUSTER"),
+		binary:              os.Getenv("BORQ_MANAGED_ADDON_TEST_BINARY"),
+		server:              os.Getenv("BORQ_MANAGED_ADDON_TEST_SERVER_URL"),
+		kubeconfig:          os.Getenv("BORQ_MANAGEMENT_KUBECONFIG"),
+		organization:        os.Getenv("BORQ_MANAGED_ADDON_TEST_ORGANIZATION"),
+		cluster:             os.Getenv("BORQ_MANAGED_ADDON_TEST_CLUSTER"),
+		managementNamespace: os.Getenv("BORQ_MANAGED_ADDON_TEST_MANAGEMENT_NAMESPACE"),
 	}
 	if config.binary == "" || config.server == "" || config.kubeconfig == "" {
 		t.Fatal("BORQ_MANAGED_ADDON_TEST_BINARY, BORQ_MANAGED_ADDON_TEST_SERVER_URL and BORQ_MANAGEMENT_KUBECONFIG are required")
@@ -79,6 +88,9 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	}
 	if config.cluster == "" {
 		config.cluster = "management"
+	}
+	if config.managementNamespace == "" {
+		config.managementNamespace = "borq"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -97,6 +109,14 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	assertApplicationResponse(t, clusters.StatusCode(), clusters.Body, http.StatusOK)
 	if clusters.JSON200 == nil || !slices.ContainsFunc(*clusters.JSON200, func(cluster appapi.Cluster) bool { return cluster.Name == config.cluster }) {
 		t.Fatalf("organization %s has no registered cluster %s", run.organization, config.cluster)
+	}
+	for _, cluster := range *clusters.JSON200 {
+		if cluster.Name == config.cluster && cluster.ID != nil {
+			run.clusterID = *cluster.ID
+		}
+	}
+	if run.clusterID == "" {
+		t.Fatal("registered cluster has no credential engine identity")
 	}
 	grant, err := client.SetOrganizationManagedAddonsWithResponse(ctx, run.organization, appapi.OrganizationManagedAddonsInput{Enabled: true})
 	assert.NoErr(err)
@@ -130,7 +150,9 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	assert.Equal(expected.Tables["empty_table"].Count, 0)
 	assert.Equal(len(slices.Compact(slices.Clone(expected.Tables["duplicates"].Rows))), 3)
 	assert.Equal(run.sql(t, ctx, sourcePod, "SELECT encode(payload, 'hex') FROM recovery.accounts WHERE id = 256;"), "010000ff80\n")
-	run.environmentConsumer(t, ctx, client, kube, source)
+	sourceConsumer := run.environmentConsumer(t, ctx, client, kube, source)
+	run.rotation(t, ctx, kube, source, sourceConsumer, false)
+	run.rotation(t, ctx, kube, source, run.consumer(t, ctx, kube, sourceConsumer.name, sourceConsumer.secret), true)
 
 	t.Log("quiesced SQL fixture captured; request full backup through production API")
 	previous := run.catalogue(t, ctx)
@@ -151,7 +173,9 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	actual := run.fingerprint(t, ctx, restoredPod)
 	assert.Equal(actual, expected)
 	assert.Equal(run.fingerprint(t, ctx, sourcePod), expected)
-	run.environmentConsumer(t, ctx, client, kube, restored)
+	restoredConsumer := run.environmentConsumer(t, ctx, client, kube, restored)
+	run.restoreCredentialIsolation(t, ctx, source, restored)
+	run.rotation(t, ctx, kube, restored, restoredConsumer, true)
 	t.Log("all table row bytes, duplicate multiplicity, hashes, schema and sequence states match")
 
 	result := run.sql(t, ctx, restoredPod, `
@@ -200,26 +224,17 @@ SELECT count(*) FROM recovery.accounts WHERE name='post-restore';`)
 			t.Fatalf("database deletion returned status %d", deleted.StatusCode())
 		}
 		run.waitOperation(t, ctx, client, deleted.JSON202.Operation)
-		for _, group := range *groups.JSON200 {
-			if group.Name != database.EnvironmentGroup {
-				continue
-			}
-			retained, err := client.GetEnvironmentGroupVersionWithResponse(ctx, run.organization, run.space, group.Name, strconv.Itoa(group.Version))
-			assert.NoErr(err)
-			if retained.JSON200 == nil || !slices.Equal(retained.JSON200.Values, group.Values) {
-				t.Fatal("database deletion changed or removed its pinned environment history")
-			}
-		}
+		run.credentialsRemoved(t, ctx, kube, database)
 	}
 	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	assert.NoErr(err)
-	producers, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.namespace).List(ctx, metav1.ListOptions{})
+	producers, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.config.managementNamespace).List(ctx, metav1.ListOptions{LabelSelector: "borq.run/postgres-id in (" + source.ID + "," + restored.ID + ")"})
 	assert.NoErr(err)
 	assert.Equal(len(producers.Items), 0)
 }
 
 // SDK clients retain their configured transports through pointer receivers.
-func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Context, client *appapi.ClientWithResponses, kube *kubernetes.Clientset, database appapi.Postgres) {
+func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Context, client *appapi.ClientWithResponses, kube *kubernetes.Clientset, database appapi.Postgres) postgresConsumer {
 	t.Helper()
 	t.Logf("connect an application through the %s database environment group", database.Name)
 	assert := is.New(t)
@@ -250,7 +265,7 @@ func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Cont
 	assert.NoErr(err)
 	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	assert.NoErr(err)
-	producers := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.namespace)
+	producers := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.config.managementNamespace)
 	owned, err := producers.List(ctx, metav1.ListOptions{LabelSelector: "borq.run/postgres-id=" + database.ID})
 	assert.NoErr(err)
 	if len(owned.Items) != 1 {
@@ -259,10 +274,8 @@ func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Cont
 	producer := owned.Items[0]
 	previousRefresh, _, err := unstructured.NestedString(producer.Object, "status", "refreshTime")
 	assert.NoErr(err)
-	assert.NoErr(unstructured.SetNestedField(producer.Object, "1s", "spec", "refreshInterval"))
-	_, err = producers.Update(ctx, &producer, metav1.UpdateOptions{})
-	assert.NoErr(err)
-	refreshContext, refreshCancel := context.WithTimeout(ctx, 30*time.Second)
+	baseline := *group.JSON200
+	refreshContext, refreshCancel := context.WithTimeout(ctx, time.Minute)
 	defer refreshCancel()
 	for {
 		current, err := producers.Get(refreshContext, producer.GetName(), metav1.GetOptions{})
@@ -270,7 +283,19 @@ func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Cont
 		refreshed, _, err := unstructured.NestedString(current.Object, "status", "refreshTime")
 		assert.NoErr(err)
 		if refreshed != "" && refreshed != previousRefresh {
-			break
+			observed, err := client.GetEnvironmentGroupWithResponse(refreshContext, run.organization, run.space, database.EnvironmentGroup)
+			assert.NoErr(err)
+			if observed.JSON200 == nil {
+				t.Fatal("managed database environment disappeared during controller refresh")
+			}
+			if slices.Equal(observed.JSON200.Values, baseline.Values) {
+				if observed.JSON200.Version != baseline.Version {
+					t.Fatal("unchanged controller refresh allocated a new environment version")
+				}
+				break
+			}
+			baseline = *observed.JSON200
+			previousRefresh = refreshed
 		}
 		select {
 		case <-refreshContext.Done():
@@ -278,36 +303,54 @@ func (run postgresAcceptance) environmentConsumer(t *testing.T, ctx context.Cont
 		case <-time.After(time.Second):
 		}
 	}
-	unchanged, err := client.GetEnvironmentGroupWithResponse(ctx, run.organization, run.space, database.EnvironmentGroup)
-	assert.NoErr(err)
-	if unchanged.JSON200 == nil || unchanged.JSON200.Version != group.JSON200.Version {
-		t.Fatal("unchanged controller refresh allocated a new environment version")
-	}
-	command, port := "sleep 1800", 0
+	command, port := "sleep 2400", 0
+	predeploy := "psql -X -qAt --set ON_ERROR_STOP=1 -c 'SELECT 1;'"
 	name := "env-consumer-" + database.Name
-	patch := []appapi.AppPatch{{Name: name, Image: database.Specification.Image, Command: &command, Port: &port, Env: applicationEnvPatch(database.EnvironmentGroup, "latest")}}
+	patch := []appapi.AppPatch{{Name: name, Image: database.Specification.Image, Command: &command, Port: &port, Env: applicationEnvPatch(database.EnvironmentGroup, "latest"), Predeploy: &appapi.PredeployPatch{Command: &predeploy}}}
 	plan := createApplicationPlan(t, ctx, client, run.organization, run.space, appapi.Patch{Apps: &patch})
-	secretName, _, version := applicationEnvReference(t, plan, name)
-	assert.Equal(version, group.JSON200.Version)
+	t.Logf("accepted consumer %s plan %s", name, plan.ID)
+	secretName := postgresLiveSecret(t, plan, name)
+	encodedPlan, err := json.Marshal(plan)
+	assert.NoErr(err)
+	if bytes.Contains(encodedPlan, []byte(expected["PGPASSWORD"])) {
+		t.Fatal("public application plan contains a rotating database password")
+	}
+	if applicationByName(t, plan.Configuration, name).Env.Version != "latest" {
+		t.Fatal("managed database consumer was pinned to an expiring credential version")
+	}
 	applyApplicationPlan(t, ctx, client, plan.ID)
-	secret, err := kube.CoreV1().Secrets(run.namespace).Get(ctx, secretName, metav1.GetOptions{})
-	assert.NoErr(err)
-	consumed := map[string]string{}
-	for key, value := range secret.Data {
-		consumed[key] = string(value)
-	}
-	if !maps.Equal(consumed, expected) {
-		t.Fatal("application ExternalSecret did not consume the pinned database environment")
-	}
-	pods, err := kube.CoreV1().Pods(run.namespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=" + name})
-	assert.NoErr(err)
-	for _, pod := range pods.Items {
-		if pod.DeletionTimestamp == nil && pod.Status.Phase == corev1.PodRunning {
-			assert.Equal(run.sql(t, ctx, pod.Name, "SELECT count(*) FROM recovery.accounts;"), "257\n")
-			return
+	consumerContext, consumerCancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer consumerCancel()
+	for {
+		secret, err := kube.CoreV1().Secrets(run.namespace).Get(consumerContext, secretName, metav1.GetOptions{})
+		assert.NoErr(err)
+		if secret.Immutable != nil && *secret.Immutable {
+			t.Fatal("managed database consumer Secret must permit rotation")
+		}
+		assert.NoErr(json.Unmarshal(run.cli(t, consumerContext, "env", database.Name, "--output", "json"), &expected))
+		consumed := map[string]string{}
+		for key, value := range secret.Data {
+			consumed[key] = string(value)
+		}
+		pods, err := kube.CoreV1().Pods(run.namespace).List(consumerContext, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=" + name})
+		assert.NoErr(err)
+		if maps.Equal(consumed, expected) {
+			for _, pod := range pods.Items {
+				if !postgresConsumerReady(pod) {
+					continue
+				}
+				output, _, err := run.sqlAttempt(consumerContext, pod.Name, "SELECT count(*) FROM recovery.accounts;", "")
+				if err == nil && output == "257\n" {
+					return run.consumer(t, consumerContext, kube, name, secretName)
+				}
+			}
+		}
+		select {
+		case <-consumerContext.Done():
+			t.Fatal("application did not consume all six current CLI connection values and connect to its database")
+		case <-time.After(time.Second):
 		}
 	}
-	t.Fatal("application consuming the database environment has no running pod")
 }
 
 func (run postgresAcceptance) cli(t *testing.T, ctx context.Context, arguments ...string) []byte {
@@ -444,16 +487,48 @@ func (run postgresAcceptance) clientPod(t *testing.T, ctx context.Context, kube 
 
 func (run postgresAcceptance) sql(t *testing.T, ctx context.Context, pod, sql string) string {
 	t.Helper()
-	command := exec.CommandContext(ctx, "kubectl", "--kubeconfig", run.config.kubeconfig, "--namespace", run.namespace,
-		"exec", "-i", pod, "--", "psql", "-X", "-qAt", "--set", "ON_ERROR_STOP=1")
-	command.Stdin = strings.NewReader("SET timezone='UTC'; SET extra_float_digits=3; SET bytea_output='hex';\n" + sql)
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	name, dedicated := strings.CutPrefix(pod, "recovery-client-")
+	for {
+		password := ""
+		if dedicated {
+			var credentials map[string]string
+			if err := json.Unmarshal(run.cli(t, ctx, "env", name, "--output", "json"), &credentials); err != nil {
+				t.Fatal(err)
+			}
+			password = credentials["PGPASSWORD"]
+		}
+		output, diagnostic, err := run.sqlAttempt(ctx, pod, sql, password)
+		if err == nil {
+			return output
+		}
+		if !dedicated || !strings.Contains(diagnostic, "password authentication failed") {
+			t.Fatalf("real SQL execution failed: %v: %s", err, diagnostic)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("SQL client did not receive the current CLI password after automatic rotation")
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (run postgresAcceptance) sqlAttempt(ctx context.Context, pod, sql, password string) (string, string, error) {
+	arguments := []string{"psql", "-X", "-qAt", "--set", "ON_ERROR_STOP=1"}
+	input := "SET timezone='UTC'; SET extra_float_digits=3; SET bytea_output='hex';\n" + sql
+	if password != "" {
+		arguments = []string{"sh", "-c", "IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -X -qAt --set ON_ERROR_STOP=1"}
+		input = password + "\n" + input
+	}
+	commandArguments := []string{"--kubeconfig", run.config.kubeconfig, "--namespace", run.namespace, "exec", "-i", pod, "--"}
+	commandArguments = append(commandArguments, arguments...)
+	command := exec.CommandContext(ctx, "kubectl", commandArguments...)
+	command.Stdin = strings.NewReader(input)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("real SQL execution failed: %v: %s", err, stderr.String())
-	}
-	return string(output)
+	return string(output), stderr.String(), err
 }
 
 func (run postgresAcceptance) fingerprint(t *testing.T, ctx context.Context, pod string) postgresFingerprint {

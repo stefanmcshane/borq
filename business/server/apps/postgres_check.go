@@ -205,11 +205,12 @@ func (manager Manager) finishPostgresCheck(operation Operation, task postgresTas
 func (manager Manager) reconcilePostgresCheck(ctx context.Context, stored postgresRecord, source postgresArchive, input postgres.Input) error {
 	manager.runtime.storageMutex.Lock()
 	defer manager.runtime.storageMutex.Unlock()
-	client, credentials, err := manager.postgresClient(ctx, stored, true)
+	client, _, err := manager.postgresClient(ctx, stored, false)
 	if err != nil {
 		return err
 	}
-	input.Password = credentials.Password
+	input.BootstrapPassword = ""
+	input.Credentials = postgres.CredentialSource{}
 	source, _, err = loadDocument[postgresArchive](ctx, manager.database, "postgres-archive", source.ID)
 	if err != nil {
 		return err
