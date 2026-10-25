@@ -14,6 +14,7 @@ import (
 
 	"github.com/matryer/is"
 	"github.com/stefanmcshane/borq/business/server/apps"
+	"github.com/stefanmcshane/borq/foundations/sqlite"
 )
 
 // TestDecodeBodyPreservesPatchPresence verifies that schema validation and model
@@ -117,6 +118,22 @@ func TestDocumentationRoutes(t *testing.T) {
 // TestErrorResponses distinguishes expected workflow failures from internal
 // errors while ensuring secret-bearing wrapped errors never reach API clients.
 func TestErrorResponses(t *testing.T) {
+	check := is.New(t)
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "state.sqlite")
+	database, err := sqlite.New(ctx, databasePath)
+	check.NoErr(err)
+	check.NoErr(database.Commit(ctx, []sqlite.Write{
+		{Collection: "space", Key: "team/dev", Value: json.RawMessage(`{"space":{"name":"dev"}}`)},
+		{Collection: "postgres", Key: "team/dev/database", Value: json.RawMessage(`{"policyVersion":1,"organization":"team","space":"dev","postgres":{"name":"database","state":"ready"}}`)},
+	}))
+	check.NoErr(database.Close())
+	manager, err := apps.NewManager(ctx, apps.NewInput{DatabasePath: databasePath})
+	check.NoErr(err)
+	defer manager.Close()
+	_, postgresConflict := manager.PutPostgres(ctx, "team", "dev", "database", apps.PostgresInput{}, false)
+	check.True(errors.Is(postgresConflict, apps.ErrConflict))
+	_, postgresError := (apps.Manager{}).RestorePostgres(context.Background(), "team", "dev", "database", apps.PostgresRestoreInput{})
 	for _, input := range []struct {
 		err      error
 		status   int
@@ -124,7 +141,12 @@ func TestErrorResponses(t *testing.T) {
 	}{
 		{apps.ErrNotFound, http.StatusNotFound, nil},
 		{apps.ErrConflict, http.StatusConflict, nil},
+		{errors.Join(apps.ErrConflict, apps.ErrEnvironmentGroupManaged, errors.New("private token secret")), http.StatusConflict, []string{"managed by PostgreSQL", "follows rotating credentials"}},
+		{errors.Join(postgresConflict, errors.New("private token secret")), http.StatusConflict, []string{"PostgreSQL database with this name already exists", "Choose a new name", "use apply"}},
+		{errors.Join(apps.ErrConflict, errors.New("private token secret")), http.StatusConflict, nil},
 		{apps.ErrInvalid, http.StatusBadRequest, nil},
+		{errors.Join(postgresError, errors.New("private token secret")), http.StatusBadRequest, []string{"approved backup ID is required"}},
+		{errors.Join(apps.ErrInvalid, errors.New("private token secret")), http.StatusBadRequest, nil},
 		{errors.New("private token secret"), http.StatusInternalServerError, nil},
 		{errors.Join(apps.ErrComponentsNotReady, apps.ErrConflict, errors.New("private token secret")), http.StatusConflict, []string{"cluster components", "cluster reconcile"}},
 	} {
@@ -256,14 +278,14 @@ func TestApplicationApiLifecycle(t *testing.T) {
 	is.Equal(clusters.StatusCode(), http.StatusOK)
 	is.Equal(len(*clusters.JSON200), 1)
 	is.Equal((*clusters.JSON200)[0].Name, "dev")
-	_, err = client.PutOrganizationWithResponse(ctx, "another")
+	another, err := client.PutOrganizationWithResponse(ctx, "another")
 	is.NoErr(err)
 	otherClusters, err := client.ListClustersWithResponse(ctx, "another")
 	is.NoErr(err)
 	is.Equal(len(*otherClusters.JSON200), 0)
 	organizations, err := client.ListOrganizationsWithResponse(ctx)
 	is.NoErr(err)
-	is.Equal(*organizations.JSON200, []Organization{{Name: "another"}, {Name: "team"}})
+	is.Equal(*organizations.JSON200, []Organization{*another.JSON200, *organization.JSON200})
 	space, err := client.PutSpaceWithResponse(ctx, "team", "dev", SpaceInput{Cluster: "dev"})
 	is.NoErr(err)
 	is.Equal(space.StatusCode(), http.StatusOK)

@@ -112,7 +112,7 @@ func TestApplyCreatesPlanWhenAbsent(t *testing.T) {
 	}))
 	defer server.Close()
 	file := filepath.Join(t.TempDir(), "apps.yaml")
-	is.NoErr(os.WriteFile(file, []byte("apps: []\n"), 0o600))
+	is.NoErr(os.WriteFile(file, []byte("apps:\n- name: api\n  image: example/api:v1\n"), 0o600))
 	output, diagnostics, err := runApplicationCommand(t, "apply", "--server", server.URL, "--organization", "team", "--space", "dev", "-f", file)
 	is.NoErr(err)
 	is.Equal(requests, []string{"/api/v1/organizations/team/spaces/dev/plans", "/api/v1/plans/plan-2/apply"})

@@ -2,6 +2,7 @@ package openbao
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -50,7 +51,8 @@ type WriteKvInput struct {
 }
 
 // ReadKv reads a specific KV v2 version, or the latest when version is zero.
-// Documents contain a values object and an optional planId string.
+// Documents contain a values object or JSON-encoded object string and an
+// optional planId string.
 func (c *Client) ReadKv(ctx context.Context, mount, path string, version int) (KvEntry, error) {
 	mount, path, err := kvLocation(mount, path)
 	if err != nil {
@@ -77,7 +79,10 @@ func (c *Client) ReadKv(ctx context.Context, mount, path string, version int) (K
 		return KvEntry{}, errors.New("openbao kv read returned invalid version metadata")
 	}
 	values, ok := secret.Data["values"].(map[string]any)
-	if !ok {
+	if encoded, isEncoded := secret.Data["values"].(string); isEncoded {
+		ok = json.Unmarshal([]byte(encoded), &values) == nil
+	}
+	if !ok || values == nil {
 		return KvEntry{}, errors.New("openbao kv document must contain a values object")
 	}
 	entry := KvEntry{
@@ -159,6 +164,18 @@ func (c *Client) WriteKv(ctx context.Context, mount, path string, input WriteKvI
 		return KvEntry{}, errors.New("openbao kv write returned invalid version metadata")
 	}
 	return KvEntry{Version: secret.VersionMetadata.Version, Values: values, PlanID: input.PlanID}, nil
+}
+
+// DeleteKvMetadata permanently retires a bootstrap document and every historical version.
+func (c *Client) DeleteKvMetadata(ctx context.Context, mount, path string) error {
+	mount, path, err := kvLocation(mount, path)
+	if err != nil {
+		return err
+	}
+	if err := c.cli.KVv2(mount).DeleteMetadata(ctx, path); err != nil {
+		return kvRequestError(ctx, "delete bootstrap metadata", err)
+	}
+	return nil
 }
 
 func kvLocation(mount, path string) (string, string, error) {

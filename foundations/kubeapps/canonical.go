@@ -27,6 +27,11 @@ func Canonical(manifest map[string]any) map[string]any {
 	}
 	templateMetadata, _ := valueAt(result, "spec", "template", "metadata").(map[string]any)
 	delete(templateMetadata, "creationTimestamp")
+	templateAnnotations, _ := templateMetadata["annotations"].(map[string]any)
+	delete(templateAnnotations, "borq.run/credential-generation")
+	if len(templateAnnotations) == 0 {
+		delete(templateMetadata, "annotations")
+	}
 	canonicalEnvironmentDefaults(result)
 	sortKeyedLists(result, "")
 	return result

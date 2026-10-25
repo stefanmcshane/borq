@@ -1,6 +1,15 @@
 injector:
   enabled: false
 server:
+  volumes:
+    - name: postgres-ca
+      configMap:
+        name: borq-postgres-ca
+        optional: true
+  volumeMounts:
+    - name: postgres-ca
+      mountPath: /openbao/postgres-ca
+      readOnly: true
   dev:
     enabled: true
     devRootToken: unused-borq-secret-overrides-this

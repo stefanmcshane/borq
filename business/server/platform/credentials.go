@@ -126,9 +126,10 @@ func EnsureClusterCredentials(ctx context.Context, input CredentialsInput) (Clus
 		return ClusterCredentials{}, err
 	}
 	policy := fmt.Sprintf(`path %q { capabilities = ["create", "read", "update", "list"] }
+path %q { capabilities = ["read"] }
 path "auth/token/renew-self" { capabilities = ["update"] }
 path "auth/token/lookup-self" { capabilities = ["read"] }
-`, mount+"/*")
+`, mount+"/*", "database-"+input.TargetID+"/static-creds/*")
 	if err := vault.PutPolicy(ctx, mount, policy); err != nil {
 		return ClusterCredentials{}, err
 	}

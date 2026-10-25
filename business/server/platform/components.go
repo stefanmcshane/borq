@@ -15,14 +15,15 @@ import (
 )
 
 type componentRun struct {
-	connection     kubernetes.Connection
-	kubeconfigPath string
-	scope          string
-	values         valuesInput
-	definitions    []component
-	upgrade        bool
-	recoverPending bool
-	target         TargetInput
+	connection        kubernetes.Connection
+	kubeconfigPath    string
+	scope             string
+	values            valuesInput
+	definitions       []component
+	upgrade           bool
+	upgradeComponents []string
+	recoverPending    bool
+	target            TargetInput
 }
 
 func reconcileComponents(ctx context.Context, input componentRun) (Result, error) {
@@ -118,6 +119,11 @@ func reconcileComponents(ctx context.Context, input componentRun) (Result, error
 					finish(fmt.Errorf("component %s is blocked by failed dependency %s", definition.Name, dependency))
 					return
 				}
+				if input.upgrade && componentSelected(input.upgradeComponents, definition.Name) && slices.Contains(definition.DependsOn, dependency) && result.Components[positions[dependency]].Status != "deployed" {
+					state.Status = "blocked"
+					finish(fmt.Errorf("component %s requires deployed dependency %s", definition.Name, dependency))
+					return
+				}
 			}
 			select {
 			case slots <- struct{}{}:
@@ -146,9 +152,21 @@ func reconcileComponents(ctx context.Context, input componentRun) (Result, error
 
 func (input componentRun) reconcile(ctx context.Context, definition component) (ComponentState, error) {
 	state := ComponentState{Name: definition.Name, Chart: definition.Chart, Version: definition.Version, Status: "failed"}
+	if input.upgrade && !componentSelected(input.upgradeComponents, definition.Name) {
+		result, err := readComponents(ctx, input.connection, input.kubeconfigPath, input.values, []component{definition})
+		if err != nil {
+			return state, err
+		}
+		return result.Components[0], nil
+	}
 	if definition.Name == "rustfs" {
 		if err := prepareRustfs(ctx, input.connection, input.values.Settings); err != nil {
 			return state, fmt.Errorf("prepare rustfs credentials: %w", err)
+		}
+	}
+	if definition.Name == "loki" {
+		if err := prepareSharedS3(ctx, input.connection, input.values.Settings); err != nil {
+			return state, err
 		}
 	}
 	if definition.Name == "alloy" {
@@ -162,7 +180,7 @@ func (input componentRun) reconcile(ctx context.Context, definition component) (
 		return state, fmt.Errorf("prepare %s Helm client: %w", definition.Name, err)
 	}
 	defer releases.Close()
-	state, err = reconcileComponent(ctx, releases, definition, input.values, input.upgrade, input.recoverPending)
+	state, err = reconcileComponent(ctx, releases, definition, input.values, input.upgrade && componentSelected(input.upgradeComponents, definition.Name), input.recoverPending)
 	if err != nil {
 		return state, err
 	}

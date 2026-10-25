@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/stefanmcshane/borq/foundations/kubeapps"
 	"github.com/stefanmcshane/borq/foundations/openbao"
@@ -65,17 +66,23 @@ func (manager Manager) prepareEnvironment(ctx context.Context, client kubeapps.C
 			name = prefix + "-" + application.Name
 		}
 		application.Env = EnvReference{Name: name, Version: "0"}
+		group, _, groupErr := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", stored.Space.ID+"/"+name)
+		if groupErr != nil && !errors.Is(groupErr, ErrNotFound) {
+			return Configuration{}, nil, nil, groupErr
+		}
+		catalogKnown := implicit && groupErr == nil
+		if group.PostgresID != "" {
+			if selector.Version != "" && selector.Version != "latest" {
+				return Configuration{}, nil, nil, fmt.Errorf("%w: managed PostgreSQL environment must follow latest; replan with latest", ErrInvalid)
+			}
+			application.Env = EnvReference{Name: name, Version: "latest"}
+			configuration.Apps[index] = application
+			entries = append(entries, plannedEnv{Snapshot: managedEnvSnapshot(stored.Space.ID, application.Name, group)})
+			continue
+		}
 		if selector.Version == "0" {
 			configuration.Apps[index] = application
 			continue
-		}
-		catalogKnown := false
-		if implicit {
-			_, _, catalogErr := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", stored.Space.ID+"/"+name)
-			catalogKnown = catalogErr == nil
-			if catalogErr != nil && !errors.Is(catalogErr, ErrNotFound) {
-				return Configuration{}, nil, nil, catalogErr
-			}
 		}
 		number, err := configVersion(selector.Version)
 		if err != nil {
@@ -160,6 +167,9 @@ func verifyEnvironment(ctx context.Context, client kubeapps.Client, entries []pl
 		return err
 	}
 	for _, entry := range entries {
+		if entry.Snapshot.PostgresID != "" {
+			continue
+		}
 		metadata, err := vault.ReadKvMetadata(ctx, mount, entry.Snapshot.Path)
 		if errors.Is(err, openbao.ErrNotFound) {
 			return fmt.Errorf("%w: pinned environment group %s version %d is unavailable", ErrNotFound, entry.Snapshot.ConfigName, entry.Snapshot.Version)
@@ -185,7 +195,7 @@ func verifyEnvironment(ctx context.Context, client kubeapps.Client, entries []pl
 }
 
 func (manager Manager) runEnvironment(ctx context.Context, operation Operation, client kubeapps.Client, manifests []map[string]any, hasJobs bool) (Operation, error) {
-	operation.Message = "synchronizing pinned environment group"
+	operation.Message = "synchronizing environment group"
 	if err := manager.saveOperation(ctx, operation); err != nil {
 		return operation, err
 	}
@@ -261,4 +271,34 @@ func (manager Manager) RenderApps(ctx context.Context, configuration Configurati
 // InspectApps reconstructs environment group references without retrieving or merging secret values.
 func (manager Manager) InspectApps(ctx context.Context, manifests []map[string]any) (Configuration, error) {
 	return Inspect(manifests)
+}
+
+func managedEnvSnapshot(spaceID, appName string, group environmentGroupRecord) EnvSnapshot {
+	path := group.VaultPath
+	if path == "" {
+		path = environmentGroupPath(spaceID, group.Name)
+	}
+	return EnvSnapshot{PostgresID: group.PostgresID, AppName: appName, ConfigName: group.Name, Store: "borq-openbao", Path: path,
+		SnapshotID: spaceID + "/" + group.Name + "/" + group.PostgresID,
+		Values:     []Variable{{Name: "DATABASE_URL"}, {Name: "PGDATABASE"}, {Name: "PGHOST"}, {Name: "PGPASSWORD"}, {Name: "PGPORT"}, {Name: "PGUSER"}}}
+}
+
+func (manager Manager) verifyEnvironment(ctx context.Context, client kubeapps.Client, entries []plannedEnv) error {
+	for _, entry := range entries {
+		snapshot := entry.Snapshot
+		spaceID, _, _ := strings.Cut(snapshot.SnapshotID, "/")
+		group, _, err := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", spaceID+"/"+snapshot.ConfigName)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if group.PostgresID != snapshot.PostgresID {
+			return fmt.Errorf("%w: managed PostgreSQL environment binding changed; create a new plan using latest", ErrConflict)
+		}
+		if snapshot.PostgresID != "" {
+			if err := validateEnvSnapshot(snapshot, spaceID); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalid, err)
+			}
+		}
+	}
+	return verifyEnvironment(ctx, client, entries)
 }

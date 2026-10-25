@@ -36,6 +36,8 @@ func NewHandler(manager apps.Manager) (http.Handler, error) {
 	}
 	implementation := handler{manager: manager, schemas: specification.Components.Schemas}
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/restore-check", implementation.postgresRestoreCheck)
+	mux.HandleFunc("GET /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/restore-check/{operation}", implementation.postgresRestoreCheckOperation)
 	mux.HandleFunc("GET /api/openapi.yaml", func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/yaml")
 		_, _ = writer.Write(openapiDocument)
@@ -69,6 +71,7 @@ func NewHandler(manager apps.Manager) (http.Handler, error) {
 		if strings.HasPrefix(request.URL.Path, "/api/v1/organizations/") && (strings.HasSuffix(request.URL.Path, "/kubeconfig") || strings.HasSuffix(request.URL.Path, "/metrics")) {
 			writer.Header().Set("Cache-Control", "no-store")
 		}
+		writer.Header().Set("Cache-Control", "no-store")
 		routes.ServeHTTP(writer, request)
 	}), nil
 }
@@ -87,6 +90,7 @@ func (server handler) validatePath(next http.Handler) http.Handler {
 			}
 		}
 		for parameter, schema := range map[string]*openapi3.Schema{
+			"postgres":    server.schemas["Postgres"].Value.Properties["name"].Value,
 			"customChart": server.schemas["CustomChart"].Value.Properties["name"].Value,
 			"application": server.schemas["App"].Value.Properties["name"].Value,
 			"group":       server.schemas["CloneEnvironmentGroupInput"].Value.Properties["sourceName"].Value,
@@ -94,7 +98,11 @@ func (server handler) validatePath(next http.Handler) http.Handler {
 		} {
 			if value := request.PathValue(parameter); value != "" {
 				if err := schema.VisitJSON(value); err != nil {
-					writeProblem(writer, http.StatusBadRequest, "invalid request path")
+					message := "invalid request path"
+					if guidance := SchemaValidationMessage(err); guidance != "" {
+						message = guidance
+					}
+					writeProblem(writer, http.StatusBadRequest, message)
 					return
 				}
 			}
@@ -342,8 +350,11 @@ func (server handler) decodeBody(writer http.ResponseWriter, request *http.Reque
 		return false
 	}
 	if err = server.schemas[schemaName].Value.VisitJSON(value); err != nil {
-		// Schema errors can contain environment values, so do not echo their details.
-		writeProblem(writer, http.StatusBadRequest, "request body does not match the OpenAPI schema")
+		message := SchemaValidationMessage(err)
+		if message == "" {
+			message = "request body does not match the OpenAPI schema"
+		}
+		writeProblem(writer, http.StatusBadRequest, message)
 		return false
 	}
 	if err = json.Unmarshal(data, output); err != nil {
@@ -374,10 +385,20 @@ func respond[Model any](writer http.ResponseWriter, status int, result any, err 
 			writeProblem(writer, http.StatusConflict, "target components are not ready; inspect cluster components or run cluster reconcile before planning applications")
 		case errors.Is(err, apps.ErrAddonExists):
 			writeProblem(writer, http.StatusConflict, "A custom addon with this name already exists in this space. Open it to update its settings, or use apply.")
+		case errors.Is(err, apps.ErrEnvironmentGroupManaged):
+			writeProblem(writer, http.StatusConflict, apps.ErrEnvironmentGroupManaged.Error())
 		case errors.Is(err, apps.ErrConflict):
-			writeProblem(writer, http.StatusConflict, "request conflicts with current state; create a new plan if needed")
+			message := apps.PostgresRequestMessage(err)
+			if message == "" {
+				message = "request conflicts with current state; create a new plan if needed"
+			}
+			writeProblem(writer, http.StatusConflict, message)
 		case errors.Is(err, apps.ErrInvalid):
-			writeProblem(writer, http.StatusBadRequest, "request configuration is invalid")
+			message := apps.PostgresRequestMessage(err)
+			if message == "" {
+				message = "request configuration is invalid"
+			}
+			writeProblem(writer, http.StatusBadRequest, message)
 		default:
 			writeProblem(writer, http.StatusInternalServerError, "application manager request failed")
 		}

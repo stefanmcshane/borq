@@ -37,11 +37,13 @@ type ComponentInstallation struct {
 }
 
 type componentRecord struct {
-	Installation   ComponentInstallation `json:"installation"`
-	TelemetryHash  string                `json:"telemetryHash,omitempty"`
-	Upgrade        bool                  `json:"upgrade,omitempty"`
-	RecoverPending bool                  `json:"recoverPending,omitempty"`
-	Attempts       int                   `json:"attempts,omitempty"`
+	Installation        ComponentInstallation `json:"installation"`
+	TelemetryHash       string                `json:"telemetryHash,omitempty"`
+	Upgrade             bool                  `json:"upgrade,omitempty"`
+	UpgradeComponents   []string              `json:"upgradeComponents,omitempty"`
+	ManagementOperation string                `json:"managementOperation,omitempty"`
+	RecoverPending      bool                  `json:"recoverPending,omitempty"`
+	Attempts            int                   `json:"attempts,omitempty"`
 }
 
 func storeClusterKubeconfig(path, source string) (bool, error) {
@@ -101,6 +103,10 @@ func (manager Manager) saveComponentRecordLocked(ctx context.Context, id string,
 
 // ReconcileManagementComponents installs missing management releases or explicitly upgrades them.
 func (manager Manager) ReconcileManagementComponents(ctx context.Context, upgrade bool) (ComponentInstallation, error) {
+	return manager.reconcileManagementComponents(ctx, upgrade, nil)
+}
+
+func (manager Manager) reconcileManagementComponents(ctx context.Context, upgrade bool, names []string) (ComponentInstallation, error) {
 	if !manager.runtime.infrastructureEnabled {
 		return ComponentInstallation{}, fmt.Errorf("%w: infrastructure management is disabled", ErrInvalid)
 	}
@@ -110,7 +116,11 @@ func (manager Manager) ReconcileManagementComponents(ctx context.Context, upgrad
 	if err := manager.saveComponentRecord(ctx, "management", stored); err != nil {
 		return ComponentInstallation{}, err
 	}
-	result, runErr := platform.ReconcileManagement(ctx, platform.ManagementInput{KubeconfigPath: manager.runtime.managementKubeconfigPath, Settings: manager.runtime.platformSettings, Upgrade: upgrade})
+	settings, settingsErr := manager.GetPlatformSettings(ctx)
+	if settingsErr != nil {
+		return ComponentInstallation{}, settingsErr
+	}
+	result, runErr := platform.ReconcileManagement(ctx, platform.ManagementInput{KubeconfigPath: manager.runtime.managementKubeconfigPath, Settings: settings, Upgrade: upgrade, UpgradeComponents: names})
 	if runErr == nil {
 		runErr = manager.resumeOperationWorkers(ctx)
 	}
@@ -145,10 +155,14 @@ func (manager Manager) reconcileClusterPlatform(ctx context.Context, cluster Clu
 	if err := manager.saveComponentRecord(ctx, id, stored); err != nil {
 		return ComponentInstallation{}, err
 	}
+	settings, settingsErr := manager.GetPlatformSettings(ctx)
+	if settingsErr != nil {
+		return ComponentInstallation{}, settingsErr
+	}
 	input := platform.TargetInput{
 		KubeconfigPath: cluster.KubeconfigPath, Context: cluster.Context, InCluster: cluster.InCluster,
-		Organization: cluster.Organization, Name: cluster.Name, ID: id, Settings: manager.runtime.platformSettings,
-		Upgrade: stored.Upgrade, RecoverPending: stored.RecoverPending,
+		Organization: cluster.Organization, Name: cluster.Name, ID: id, Settings: settings,
+		Upgrade: stored.Upgrade, RecoverPending: stored.RecoverPending, UpgradeComponents: stored.UpgradeComponents,
 	}
 	// The complete live diff is durable before credentials, namespaces, or chart
 	// releases can change. A failed read must never fall through to installation.
@@ -232,7 +246,11 @@ func (manager Manager) GetManagementComponents(ctx context.Context) (ComponentIn
 	if !manager.runtime.infrastructureEnabled || (err != nil && !errors.Is(err, ErrNotFound)) || stored.Installation.Status == "installing" {
 		return stored.Installation, err
 	}
-	result, err := platform.ReadManagement(ctx, platform.ManagementInput{KubeconfigPath: manager.runtime.managementKubeconfigPath, Settings: manager.runtime.platformSettings})
+	settings, err := manager.GetPlatformSettings(ctx)
+	if err != nil {
+		return ComponentInstallation{}, err
+	}
+	result, err := platform.ReadManagement(ctx, platform.ManagementInput{KubeconfigPath: manager.runtime.managementKubeconfigPath, Settings: settings})
 	if err != nil {
 		return ComponentInstallation{}, err
 	}

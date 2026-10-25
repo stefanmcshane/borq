@@ -61,7 +61,8 @@ func (client Client) externalSecretStatus(ctx context.Context, live, desired map
 	if !ownedByExternalSecret(secret.Object, live) {
 		return "running", "waiting for an environment Secret owned by this external secret", nil
 	}
-	if textAt(secret.Object, "type") != "Opaque" || valueAt(secret.Object, "immutable") != true {
+	liveBinding := textAt(desired, "metadata", "annotations", "borq.run/postgres-id") != ""
+	if textAt(secret.Object, "type") != "Opaque" || (!liveBinding && valueAt(secret.Object, "immutable") != true) || (liveBinding && valueAt(secret.Object, "immutable") == true) {
 		return "running", "waiting for an immutable environment Secret", nil
 	}
 	metadata := valueAt(desired, "spec", "target", "template", "metadata")
@@ -76,6 +77,9 @@ func (client Client) externalSecretStatus(ctx context.Context, live, desired map
 		if _, exists := data[key]; !exists {
 			return "running", "environment Secret keys do not match the applied revision", nil
 		}
+	}
+	if liveBinding {
+		return "succeeded", "managed database environment is synchronized", nil
 	}
 	return "succeeded", "pinned environment values are synchronized into an immutable Secret", nil
 }
@@ -101,8 +105,9 @@ func externalSecretSourcesMatch(live, desired map[string]any) bool {
 func externalSecretKeys(desired map[string]any) ([]string, error) {
 	annotations, _ := valueAt(desired, "spec", "target", "template", "metadata", "annotations").(map[string]any)
 	version := textAt(annotations, "borq.run/env-version")
+	producer := textAt(desired, "metadata", "annotations", "borq.run/postgres-id")
 	number, err := strconv.ParseUint(version, 10, 64)
-	if err != nil || number == 0 {
+	if producer == "" && (err != nil || number == 0) {
 		return nil, fmt.Errorf("environment ExternalSecret requires a pinned positive KV version")
 	}
 	sources, _ := valueAt(desired, "spec", "dataFrom").([]any)
@@ -111,8 +116,13 @@ func externalSecretKeys(desired map[string]any) ([]string, error) {
 	}
 	source, _ := sources[0].(map[string]any)
 	path := textAt(annotations, "borq.run/env-path")
-	if path == "" || textAt(source, "extract", "key") != path || textAt(source, "extract", "version") != version || textAt(source, "extract", "property") != "values" {
+	if path == "" || textAt(source, "extract", "key") != path || (producer == "" && textAt(source, "extract", "version") != version) || textAt(source, "extract", "property") != "values" {
 		return nil, fmt.Errorf("environment ExternalSecret KV reference must match its pinned identity")
+	}
+	if producer != "" {
+		if version != "latest" || textAt(annotations, "borq.run/postgres-id") != producer || textAt(source, "extract", "version") != "" || textAt(desired, "spec", "refreshPolicy") != "Periodic" || valueAt(desired, "spec", "target", "immutable") == true {
+			return nil, fmt.Errorf("managed environment requires an owned mutable latest binding")
+		}
 	}
 	var keys []string
 	if err := json.Unmarshal([]byte(textAt(annotations, "borq.run/env-keys")), &keys); err != nil || keys == nil {

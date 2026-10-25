@@ -13,7 +13,7 @@ func newApplicationServerCommand(configuration Config) *cobra.Command {
 		ManagementEnabled:  configuration.ManagementEnabled,
 		PrometheusQueryUrl: configuration.PrometheusQueryUrl, LokiQueryUrl: configuration.LokiQueryUrl,
 		InfrastructureEnabled: configuration.InfrastructureEnabled, ManagementKubeconfigPath: configuration.ManagementKubeconfigPath,
-		PlatformSettings: platform.Settings{ApiUrl: configuration.ApiUrl, Profile: configuration.InfrastructureProfile, Namespace: "borq", OpenBaoURL: configuration.ManagementOpenBaoURL, TelemetryURL: configuration.ManagementTelemetryURL, LokiURL: configuration.ManagementLokiURL, PrometheusURL: configuration.ManagementPrometheusURL, StorageClass: configuration.InfrastructureStorageClass},
+		PlatformSettings: platform.Settings{ApiUrl: configuration.ApiUrl, Profile: configuration.InfrastructureProfile, Namespace: "borq", OpenBaoURL: configuration.ManagementOpenBaoURL, TelemetryURL: configuration.ManagementTelemetryURL, LokiURL: configuration.ManagementLokiURL, PrometheusURL: configuration.ManagementPrometheusURL, S3Endpoint: configuration.ManagementS3Endpoint, StorageClass: configuration.InfrastructureStorageClass},
 	}
 	command := &cobra.Command{
 		Use: "server", Short: "Run the application API with persistent SQLite state.", Args: cobra.NoArgs,
@@ -41,8 +41,9 @@ func newApplicationServerCommand(configuration Config) *cobra.Command {
 	command.Flags().StringVar(&input.PlatformSettings.TelemetryURL, "management-telemetry-url", input.PlatformSettings.TelemetryURL, "Authenticated Borq telemetry gateway URL reachable from targets.")
 	command.Flags().StringVar(&input.PlatformSettings.LokiURL, "management-loki-url", input.PlatformSettings.LokiURL, "Optional authenticated Loki push URL override.")
 	command.Flags().StringVar(&input.PlatformSettings.PrometheusURL, "management-prometheus-url", input.PlatformSettings.PrometheusURL, "Optional authenticated Prometheus remote-write URL override.")
+	command.Flags().StringVar(&input.PlatformSettings.S3Endpoint, "management-s3-endpoint", input.PlatformSettings.S3Endpoint, "Development S3 endpoint reachable from deployment targets.")
 	command.Flags().StringVar(&input.PlatformSettings.StorageClass, "infrastructure-storage-class", input.PlatformSettings.StorageClass, "Storage class used by management components.")
-	for _, name := range []string{"infrastructure-profile", "management-openbao-url", "management-telemetry-url", "management-loki-url", "management-prometheus-url"} {
+	for _, name := range []string{"management-s3-endpoint", "infrastructure-profile", "management-openbao-url", "management-telemetry-url", "management-loki-url", "management-prometheus-url"} {
 		_ = command.Flags().MarkHidden(name)
 	}
 	return command

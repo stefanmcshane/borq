@@ -679,6 +679,9 @@ Secret snapshots are retained. Changing a config's values happens through config
 publication rather than an application update. Application pruning, builds, and autoscaling
 remain deferred. Custom addons have their own explicit uninstall operation.
 
+See [Manage PostgreSQL addons](docs/managed-addons.md) for managed databases, shared
+S3 configuration, automatic backups, and recovery.
+
 ## Custom addons
 
 Custom addons belong to a space and use its fixed namespace. Install and manage them from

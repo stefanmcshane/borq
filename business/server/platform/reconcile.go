@@ -38,7 +38,7 @@ func reconcileManagement(ctx context.Context, input ManagementInput) (Result, er
 	}
 	return reconcileComponents(ctx, componentRun{
 		connection: connection, kubeconfigPath: input.KubeconfigPath, scope: "management",
-		values: valuesInput{Settings: settings}, definitions: managementCatalog(settings, input.Upgrade), upgrade: input.Upgrade,
+		values: valuesInput{Settings: settings}, definitions: managementCatalog(settings, input.Upgrade), upgrade: input.Upgrade, upgradeComponents: input.UpgradeComponents,
 	})
 }
 
@@ -119,8 +119,8 @@ func reconcileTarget(ctx context.Context, input TargetInput) (Result, error) {
 	}
 	return reconcileComponents(ctx, componentRun{
 		connection: connection, kubeconfigPath: input.KubeconfigPath, scope: "target",
-		values: valuesInput{Settings: settings, ClusterID: input.ID}, definitions: targetCatalog(input.Upgrade),
-		upgrade: input.Upgrade, recoverPending: input.RecoverPending, target: input,
+		values: valuesInput{Settings: settings, ClusterID: input.ID}, definitions: overrideComponents(targetCatalog(input.Upgrade), settings.Components),
+		upgrade: input.Upgrade, upgradeComponents: input.UpgradeComponents, recoverPending: input.RecoverPending, target: input,
 	})
 }
 

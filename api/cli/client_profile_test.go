@@ -166,7 +166,7 @@ func TestClientProfilesRouteAndProtectSavedPlans(t *testing.T) {
 	}
 	assert.Equal(paths, []string{"/api/v1/organizations/other/spaces/default/environment-groups", "/api/v1/organizations/other/spaces/preview/environment-groups", "/api/v1/organizations/team/spaces/production/custom-charts"})
 	file := filepath.Join(t.TempDir(), "apps.yaml")
-	assert.NoErr(os.WriteFile(file, []byte("apps: []\n"), 0600))
+	assert.NoErr(os.WriteFile(file, []byte("apps:\n- name: api\n  image: example/api:v1\n"), 0600))
 	_, _, err := runConfiguredApplicationCommand("plan", "-f", file)
 	assert.NoErr(err)
 	_, _, err = runConfiguredApplicationCommand("apply", "--profile", "prod", "-f", file, "--plan-file", file+".borq-plan.json")

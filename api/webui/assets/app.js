@@ -607,3 +607,15 @@ document.addEventListener("click", function (event) {
   }
   if (event.target.closest("[data-dialog-close]")) event.target.closest("dialog").close();
 });
+
+function lowercasePostgresName(event) {
+  const input = event.target;
+  if (event.isComposing || !input.matches('[data-postgres-name]')) return;
+  const value = input.value.replace(/[A-Z]/g, function (character) { return character.toLowerCase(); });
+  if (value === input.value) return;
+  const start = input.selectionStart, end = input.selectionEnd, direction = input.selectionDirection;
+  input.value = value;
+  input.setSelectionRange(start, end, direction);
+}
+document.addEventListener('input', lowercasePostgresName);
+document.addEventListener('compositionend', lowercasePostgresName);

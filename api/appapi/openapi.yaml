@@ -1,5 +1,16 @@
 components:
   parameters:
+    PostgresPath:
+      in: path
+      name: postgres
+      required: true
+      description: Managed PostgreSQL name within this space.
+      schema:
+        x-borq-validation-message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
+        type: string
+        minLength: 1
+        maxLength: 47
+        pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
     CustomChartPath:
       in: path
       name: customChart
@@ -56,6 +67,665 @@ components:
         type: string
         format: date-time
   schemas:
+    PostgresInput:
+      x-borq-validation-message: "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."
+      type: "object"
+      additionalProperties: false
+      properties:
+        instances:
+          x-borq-validation-message: "PostgreSQL instances must be an integer between 1 and 16."
+          type: "integer"
+          description: "Instances is the number of PostgreSQL instances; omission selects one."
+          minimum: 1
+          maximum: 16
+        storage:
+          x-borq-validation-message: "PostgreSQL storage must be a positive Kubernetes quantity string."
+          type: "string"
+          description: "Storage is the capacity of each instance; omission selects 1Gi."
+        storageClass:
+          x-borq-validation-message: "PostgreSQL storageClass must be a string."
+          type: "string"
+          description: "StorageClass selects the persistent storage driver."
+        image:
+          x-borq-validation-message: "PostgreSQL image must be a string pinning a supported 14–18 major and exact minor tag."
+          type: "string"
+          description: "Image pins the PostgreSQL operand; omission selects the tested default."
+        database:
+          x-borq-validation-message: "PostgreSQL database must be a lowercase SQL identifier string."
+          type: "string"
+          description: "Database is the initial application database; omission selects app."
+        username:
+          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres and borq_openbao are reserved."
+          type: "string"
+          description: "Username is the application role; omission selects app."
+        credentials:
+          $ref: "#/components/schemas/PostgresCredentialPolicy"
+        resources:
+          $ref: "#/components/schemas/PostgresResources"
+          description: "Resources sets Kubernetes resource requests and limits."
+        backup:
+          $ref: "#/components/schemas/PostgresBackupPolicy"
+          description: "Backup configures backups and mandatory recovery verification."
+    PostgresCredentialPolicy:
+      type: "object"
+      additionalProperties: false
+      properties:
+        rotationPeriod:
+          type: "string"
+          description: "OpenBao password rotation duration, defaults to 720h (30 days); between 1m and 720h."
+        host:
+          type: "string"
+          description: "Private SQL hostname reachable from management OpenBao; defaults to the target-local database Service."
+        port:
+          type: "integer"
+          minimum: 1
+          maximum: 65535
+          description: "Management SQL port, defaults to 5432."
+    PostgresBackupPolicy:
+      x-borq-validation-message: "PostgreSQL backup settings must use supported configuration fields."
+      type: "object"
+      additionalProperties: false
+      properties:
+        enabled:
+          x-borq-validation-message: "PostgreSQL backup enabled must be a boolean."
+          type: "boolean"
+          description: "Enable backups and mandatory restore tests; omitted on creation selects true."
+        restoreCheck:
+          $ref: "#/components/schemas/PostgresRestoreCheckInput"
+        schedule:
+          x-borq-validation-message: "PostgreSQL backup schedule must be a five-field UTC cron string."
+          type: "string"
+          description: "Five-field UTC cron schedule; omitted selects daily at midnight."
+        recoveryWindowDays:
+          x-borq-validation-message: "PostgreSQL recoveryWindowDays must be an integer between 1 and 3650."
+          type: "integer"
+          description: "RecoveryWindowDays retains a recovery window; omission selects 30 days."
+    PostgresResources:
+      x-borq-validation-message: "PostgreSQL resources must contain requests or limits for cpu and memory."
+      type: "object"
+      additionalProperties: false
+      properties:
+        requests:
+          x-borq-validation-message: "PostgreSQL resource requests must be an object of quantity strings for cpu and memory."
+          type: "object"
+          additionalProperties:
+            x-borq-validation-message: "PostgreSQL resource quantities must be strings for cpu and memory."
+            type: "string"
+          description: "Requests reserves CPU and memory."
+        limits:
+          x-borq-validation-message: "PostgreSQL resource limits must be an object of quantity strings for cpu and memory."
+          type: "object"
+          additionalProperties:
+            x-borq-validation-message: "PostgreSQL resource quantities must be strings for cpu and memory."
+            type: "string"
+          description: "Limits caps CPU and memory."
+    PostgresRestoreCheckInput:
+      x-borq-validation-message: "PostgreSQL restoreCheck settings must use supported configuration fields."
+      type: "object"
+      additionalProperties: false
+      properties:
+        schedule:
+          x-borq-validation-message: "PostgreSQL restoreCheck schedule must be a five-field UTC cron string."
+          type: "string"
+          description: "Schedule is a five-field UTC cron expression; omission selects Sunday at 03:00."
+        timeoutSeconds:
+          x-borq-validation-message: "PostgreSQL restoreCheck timeoutSeconds must be an integer between 60 and 86400."
+          type: "integer"
+          description: "TimeoutSeconds bounds the complete verification and cleanup workflow."
+        resources:
+          $ref: "#/components/schemas/PostgresResources"
+          description: "Resources constrains the temporary recovered database."
+    Postgres:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          description: "ID changes for every new incarnation, including reuse of a deleted name."
+        name:
+          type: "string"
+          description: "Name identifies this managed addon within its space."
+          x-borq-validation-message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
+          minLength: 1
+          maxLength: 47
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+        specification:
+          $ref: "#/components/schemas/PostgresInput"
+          description: "Specification is normalized accepted configuration."
+        namespace:
+          type: "string"
+          description: "Namespace is the fixed namespace of its owning space."
+        clusterName:
+          type: "string"
+          description: "ClusterName is the isolated Kubernetes PostgreSQL cluster identity."
+        environmentGroup:
+          type: "string"
+          description: "Environment group containing this database incarnation's connection values."
+        state:
+          type: "string"
+          description: "State is pending, ready, failed, deleting, or removed."
+        message:
+          type: "string"
+          description: "Message explains the latest durable operation outcome."
+        operation:
+          type: "string"
+          description: "Operation identifies the latest accepted operation."
+        protection:
+          $ref: "#/components/schemas/PostgresProtection"
+          description: "Protection reports observed backup and restore-test health."
+        restoreCheck:
+          $ref: "#/components/schemas/PostgresRestoreCheck"
+          description: "RestoreCheck reports the latest isolated verification outcome."
+        updatedAt:
+          type: "string"
+          format: "date-time"
+          description: "UpdatedAt is the latest accepted or completed state transition."
+      required:
+        - "id"
+        - "name"
+        - "specification"
+        - "namespace"
+        - "clusterName"
+        - "environmentGroup"
+        - "state"
+        - "message"
+        - "operation"
+        - "protection"
+        - "restoreCheck"
+        - "updatedAt"
+    PostgresProtection:
+      type: "object"
+      additionalProperties: false
+      properties:
+        status:
+          type: "string"
+          description: "Protection is disabled, pending, unverified, ready, or degraded."
+        message:
+          type: "string"
+          description: "Message explains protection degradation separately from database readiness."
+        lastBackupAt:
+          type: "string"
+          format: "date-time"
+          description: "LastBackupAt is the last observed completed backup."
+        lastTestAt:
+          type: "string"
+          format: "date-time"
+          description: "Last successful restore test of the current archive."
+        recoveryWindowDays:
+          type: "integer"
+          description: "RecoveryWindowDays is the minimum configured recovery retention window."
+      required:
+        - "status"
+        - "message"
+        - "recoveryWindowDays"
+    PostgresRestoreCheck:
+      type: "object"
+      additionalProperties: false
+      properties:
+        status:
+          type: "string"
+          description: "Status is never, pending, running, succeeded, or failed."
+        operation:
+          type: "string"
+          description: "Operation identifies the durable verification task."
+        message:
+          type: "string"
+          description: "Message describes the SQL verification result without credentials."
+        cleanup:
+          type: "string"
+          description: "Cleanup reports pending, succeeded, or failed resource cleanup."
+        startedAt:
+          type: "string"
+          format: "date-time"
+          description: "StartedAt is the original attempt start."
+        completedAt:
+          type: "string"
+          format: "date-time"
+          description: "CompletedAt is the verification completion time."
+        durationSeconds:
+          type: "number"
+          description: "DurationSeconds measures the complete recovery verification."
+      required:
+        - "status"
+    PostgresBackup:
+      type: "object"
+      additionalProperties: false
+      properties:
+        id:
+          type: "string"
+          description: "ID is an opaque Borq catalogue identity, never a freely supplied object key."
+        archiveId:
+          type: "string"
+          description: "ArchiveID identifies an immutable source archive."
+        sourceId:
+          type: "string"
+          description: "SourceID is the immutable original PostgreSQL incarnation."
+        sourceName:
+          type: "string"
+          description: "SourceName is the friendly source name retained after deletion."
+        backupId:
+          type: "string"
+          description: "BackupID is Barman's physical backup identity."
+        completedAt:
+          type: "string"
+          format: "date-time"
+          description: "CompletedAt records the physical backup completion."
+        majorVersion:
+          type: "integer"
+          description: "MajorVersion is the PostgreSQL physical format major."
+        sizeBytes:
+          type: "integer"
+          description: "SizeBytes is the physical backup size."
+        recoveryStart:
+          type: "string"
+          format: "date-time"
+          description: "RecoveryStart is the earliest safe target for this base backup."
+        recoveryEnd:
+          type: "string"
+          format: "date-time"
+          description: "RecoveryEnd is the latest conservatively established recovery target."
+        eligible:
+          type: "boolean"
+          description: "Eligible means the metadata is complete and compatible."
+        reason:
+          type: "string"
+          description: "Reason explains rejection or recovery bounds."
+      required:
+        - "id"
+        - "archiveId"
+        - "sourceId"
+        - "sourceName"
+        - "backupId"
+        - "completedAt"
+        - "majorVersion"
+        - "sizeBytes"
+        - "recoveryStart"
+        - "recoveryEnd"
+        - "eligible"
+    PostgresRestoreInput:
+      x-borq-validation-message: "PostgreSQL restore requires a non-empty backupId and an optional RFC3339 recoveryTarget."
+      type: "object"
+      additionalProperties: false
+      properties:
+        backupId:
+          x-borq-validation-message: "PostgreSQL restore backupId must be a non-empty approved backup ID string."
+          type: "string"
+          description: "BackupID selects an opaque entry returned by ListPostgresBackups."
+          minLength: 1
+        recoveryTarget:
+          x-borq-validation-message: "PostgreSQL recoveryTarget must be an RFC3339 date-time string."
+          type: "string"
+          format: "date-time"
+          description: "RecoveryTarget optionally selects a point in time within the available recovery window."
+        specification:
+          $ref: "#/components/schemas/PostgresInput"
+          description: "Specification sets destination sizing and verification policy."
+      required:
+        - "backupId"
+    PostgresMetrics:
+      type: "object"
+      additionalProperties: false
+      properties:
+        activityAvailable:
+          type: "boolean"
+          description: "Whether SQL activity and database size were observed."
+        usage:
+          $ref: "#/components/schemas/AppMetrics"
+          description: "Usage contains CPU and memory history."
+        diskBytes:
+          type: "integer"
+          description: "DiskBytes is current database size measured by PostgreSQL."
+        diskAvailable:
+          type: "boolean"
+          description: "DiskAvailable indicates whether volume capacity and usage were observed."
+        diskUsedBytes:
+          type: "integer"
+          description: "DiskUsedBytes is observed storage use across the PostgreSQL volumes."
+        diskCapacityBytes:
+          type: "integer"
+          description: "DiskCapacityBytes is observed total capacity across those volumes."
+        diskAvailableBytes:
+          type: "integer"
+          description: "DiskAvailableBytes is observed remaining capacity across those volumes."
+        connections:
+          type: "integer"
+          description: "Connections is the current number of connected sessions."
+        activeQueries:
+          type: "integer"
+          description: "ActiveQueries is the current number of non-idle sessions."
+        transactions:
+          type: "integer"
+          description: "Transactions is committed plus rolled back transactions since statistics reset."
+        protection:
+          $ref: "#/components/schemas/PostgresProtection"
+          description: "Protection separates backup health from database resource use."
+        notice:
+          type: "string"
+          description: "Notice explains unavailable portions without substituting zero observations."
+      required:
+        - "usage"
+        - "activityAvailable"
+        - "diskBytes"
+        - "diskAvailable"
+        - "diskUsedBytes"
+        - "diskCapacityBytes"
+        - "diskAvailableBytes"
+        - "connections"
+        - "activeQueries"
+        - "transactions"
+        - "protection"
+    PostgresCheckInput:
+      type: "object"
+      additionalProperties: false
+      properties:
+        jobUid:
+          type: "string"
+          description: "JobUID binds idempotent acceptance to one live Job owned by the resource CronJob."
+      required:
+        - "jobUid"
+    PostgresEnv:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "PGHOST"
+        - "PGPORT"
+        - "PGDATABASE"
+        - "PGUSER"
+        - "PGPASSWORD"
+        - "DATABASE_URL"
+      properties:
+        PGHOST:
+          type: "string"
+        PGPORT:
+          type: "string"
+        PGDATABASE:
+          type: "string"
+        PGUSER:
+          type: "string"
+        PGPASSWORD:
+          type: "string"
+        DATABASE_URL:
+          type: "string"
+    ManagementS3Input:
+      type: "object"
+      additionalProperties: false
+      properties:
+        endpoint:
+          type: "string"
+          description: "Endpoint is the S3-compatible HTTP(S) origin."
+        region:
+          type: "string"
+          description: "Region is the S3 signing region."
+        bucket:
+          type: "string"
+          description: "Bucket is the existing shared bucket."
+        prefix:
+          type: "string"
+          description: "Prefix isolates managed-addon archives within the shared bucket."
+        pathStyle:
+          type: "boolean"
+          description: "PathStyle enables compatible S3 bucket paths."
+        accessKey:
+          type: "string"
+          description: "AccessKey is accepted only at the input boundary and moved into OpenBao."
+          writeOnly: true
+        secretKey:
+          type: "string"
+          description: "SecretKey is accepted only at the input boundary and moved into OpenBao."
+          writeOnly: true
+        sessionToken:
+          type: "string"
+          description: "SessionToken optionally supplies temporary credentials."
+          writeOnly: true
+        credentialsRef:
+          type: "string"
+          description: "CredentialsRef selects an immutable management-vault credential document."
+      required:
+        - "region"
+        - "bucket"
+        - "pathStyle"
+    ManagementS3:
+      type: "object"
+      additionalProperties: false
+      properties:
+        endpoint:
+          type: "string"
+          description: "Endpoint is the configured S3 origin."
+        region:
+          type: "string"
+          description: "Region is the S3 signing region."
+        bucket:
+          type: "string"
+          description: "Bucket contains management and granted organization data."
+        prefix:
+          type: "string"
+          description: "Prefix is the shared managed-addon archive root."
+        pathStyle:
+          type: "boolean"
+          description: "PathStyle selects path-style bucket addressing."
+        credentialsRef:
+          type: "string"
+          description: "CredentialsRef points to an immutable OpenBao document and contains no key material."
+      required:
+        - "region"
+        - "bucket"
+        - "pathStyle"
+        - "credentialsRef"
+    ManagementConfiguration:
+      type: "object"
+      additionalProperties: false
+      properties:
+        components:
+          type: "object"
+          additionalProperties:
+            $ref: "#/components/schemas/ComponentOverride"
+          description: "Components overrides known management and target Helm components by name."
+        s3:
+          $ref: "#/components/schemas/ManagementS3Input"
+          description: "S3 is optional so omitted storage remains unchanged. A pointer preserves omission."
+        organizations:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/ManagementOrganization"
+          description: "Organizations updates the named organization hierarchy."
+    ManagementOrganization:
+      type: "object"
+      additionalProperties: false
+      properties:
+        name:
+          type: "string"
+          description: "Name identifies an existing or new organization."
+        managedAddons:
+          type: "boolean"
+          description: "ManagedAddons explicitly grants or revokes shared S3 usage. A pointer preserves omission."
+        clusters:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/ManagementClusterInput"
+        spaces:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/ManagementSpace"
+          description: "Spaces updates named spaces without deleting omitted ones."
+      required:
+        - "name"
+    ManagementSpace:
+      type: "object"
+      additionalProperties: false
+      properties:
+        name:
+          type: "string"
+          description: "Name identifies the space within its organization."
+        cluster:
+          type: "string"
+          description: "Cluster binds a new space to an existing registered cluster."
+        apps:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/AppPatch"
+          description: "Apps merges named applications and preserves all omitted applications."
+        customAddons:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/NamedCustomAddon"
+          description: "CustomAddons merges named pinned Helm charts."
+        managedAddons:
+          $ref: "#/components/schemas/ManagedAddonConfiguration"
+          description: "ManagedAddons contains Borq-managed database services."
+      required:
+        - "name"
+    SpaceConfiguration:
+      type: "object"
+      additionalProperties: false
+      properties:
+        apps:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/AppPatch"
+          description: "Apps merges named applications and preserves all omitted applications."
+        customAddons:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/NamedCustomAddon"
+          description: "CustomAddons merges named pinned Helm charts."
+        managedAddons:
+          $ref: "#/components/schemas/ManagedAddonConfiguration"
+          description: "ManagedAddons contains Borq-managed database services."
+    NamedCustomAddon:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "name"
+        - "repository"
+        - "chart"
+        - "version"
+      properties:
+        name:
+          type: "string"
+        repository:
+          type: "string"
+        chart:
+          type: "string"
+        version:
+          type: "string"
+        values:
+          type: "object"
+          additionalProperties: true
+        logs:
+          type: "boolean"
+        podSelector:
+          type: "object"
+          additionalProperties:
+            type: "string"
+    ManagedAddonConfiguration:
+      type: "object"
+      additionalProperties: false
+      properties:
+        postgres:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/NamedPostgres"
+          description: "Postgres merges named PostgreSQL addons."
+    NamedPostgres:
+      x-borq-validation-message: "PostgreSQL settings require a name and supported configuration fields. Passwords are generated automatically."
+      type: "object"
+      additionalProperties: false
+      properties:
+        name:
+          x-borq-validation-message: "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."
+          type: "string"
+          description: "Name identifies this PostgreSQL addon within its space."
+          minLength: 1
+          maxLength: 47
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+        instances:
+          x-borq-validation-message: "PostgreSQL instances must be an integer between 1 and 16."
+          type: "integer"
+          description: "Instances is the number of PostgreSQL instances; omission selects one."
+          minimum: 1
+          maximum: 16
+        storage:
+          x-borq-validation-message: "PostgreSQL storage must be a positive Kubernetes quantity string."
+          type: "string"
+          description: "Storage is the capacity of each instance; omission selects 1Gi."
+        storageClass:
+          x-borq-validation-message: "PostgreSQL storageClass must be a string."
+          type: "string"
+          description: "StorageClass selects the persistent storage driver."
+        image:
+          x-borq-validation-message: "PostgreSQL image must be a string pinning a supported 14–18 major and exact minor tag."
+          type: "string"
+          description: "Image pins the PostgreSQL operand; omission selects the tested default."
+        database:
+          x-borq-validation-message: "PostgreSQL database must be a lowercase SQL identifier string."
+          type: "string"
+          description: "Database is the initial application database; omission selects app."
+        username:
+          x-borq-validation-message: "PostgreSQL username must be a lowercase SQL identifier string; postgres and borq_openbao are reserved."
+          type: "string"
+          description: "Username is the application role; omission selects app."
+        resources:
+          $ref: "#/components/schemas/PostgresResources"
+          description: "Resources sets Kubernetes resource requests and limits."
+        credentials:
+          $ref: "#/components/schemas/PostgresCredentialPolicy"
+        backup:
+          $ref: "#/components/schemas/PostgresBackupPolicy"
+          description: "Backup configures backups and mandatory recovery verification."
+      required:
+        - "name"
+    ComponentOverride:
+      type: "object"
+      additionalProperties: false
+      properties:
+        repo:
+          type: "string"
+          description: "Repo is the public chart repository URL."
+        chart:
+          type: "string"
+          description: "Chart replaces the upstream chart name."
+        version:
+          type: "string"
+          description: "Version pins an exact chart version."
+        values:
+          type: "object"
+          additionalProperties: true
+          description: "Values merges recursively over Borq's component defaults."
+    ManagementClusterInput:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "name"
+      properties:
+        id:
+          type: "string"
+          readOnly: true
+        organization:
+          type: "string"
+          readOnly: true
+        name:
+          type: "string"
+        kubeconfigPath:
+          type: "string"
+        context:
+          type: "string"
+        inCluster:
+          type: "boolean"
+        kubeconfig:
+          type: "string"
+          writeOnly: true
+        reconcile:
+          type: "boolean"
+        clientApiServer:
+          type: "string"
+    OrganizationManagedAddonsInput:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "enabled"
+      properties:
+        enabled:
+          type: "boolean"
     CustomChartInput:
       type: object
       additionalProperties: false
@@ -852,6 +1522,10 @@ components:
         name:
           description: Environment group name within this deployment space.
           type: string
+        managedBy:
+          description: Producer identity; managed groups are read-only and follow rotating credentials.
+          type: string
+          x-go-type-skip-optional-pointer: true
         values:
           description: Complete environment group values, including empty strings.
           items:
@@ -1041,6 +1715,12 @@ components:
     Organization:
       additionalProperties: false
       properties:
+        id:
+          type: string
+          description: Immutable organization identity.
+        managedAddons:
+          type: boolean
+          description: Explicit grant to use shared managed addon storage.
         name:
           description: A nonempty user-selected identifier.
           maxLength: 63
@@ -1049,6 +1729,8 @@ components:
           type: string
       required:
       - name
+      - id
+      - managedAddons
       type: object
     Patch:
       additionalProperties: false
@@ -3814,5 +4496,747 @@ paths:
                 $ref: '#/components/schemas/Problem'
           description: Unexpected server failure.
       summary: Accept and execute the exact saved plan for the whole space.
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres:
+    get:
+      operationId: "ListPostgres"
+      summary: "List managed PostgreSQL addons"
+      description: ""
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                type: "array"
+                items:
+                  $ref: "#/components/schemas/Postgres"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}:
+    get:
+      operationId: "GetPostgres"
+      summary: "Inspect managed PostgreSQL"
+      description: ""
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Postgres"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    put:
+      operationId: "PutPostgres"
+      summary: "Create or apply managed PostgreSQL"
+      description: "Name-only creation enables automatic backups with mandatory restore tests, weekly by default. Credentials are returned only by GetPostgresEnv. Poll GetPostgresOperation for completion."
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+        -
+          in: "query"
+          name: "apply"
+          schema:
+            type: "boolean"
+            default: false
+          description: "Explicitly allow updating an existing addon."
+      responses:
+        "202":
+          description: "Accepted operation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Postgres"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostgresInput"
+    delete:
+      operationId: "DeletePostgres"
+      summary: "Delete managed PostgreSQL and preserve its backup archive"
+      description: ""
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+      responses:
+        "202":
+          description: "Accepted operation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Postgres"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/env:
+    get:
+      operationId: "GetPostgresEnv"
+      summary: "Get PostgreSQLEnv"
+      description: "Explicit secret response. Never cache, log, or include it in exports."
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostgresEnv"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/backups:
+    get:
+      operationId: "ListPostgresBackups"
+      summary: "List PostgreSQLBackups"
+      description: "Reads actual object storage metadata. Deleted sources retain their archives. Only eligible completed compatible entries can be restored."
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                type: "array"
+                items:
+                  $ref: "#/components/schemas/PostgresBackup"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/restore:
+    post:
+      operationId: "RestorePostgres"
+      summary: "Restore PostgreSQL"
+      description: "The path name is a new destination. Select an opaque backup ID returned by ListPostgresBackups. Eligibility and recovery bounds are revalidated before execution."
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+      responses:
+        "202":
+          description: "Accepted operation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Postgres"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostgresRestoreInput"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/backup:
+    post:
+      operationId: "BackupPostgres"
+      summary: "Backup PostgreSQL"
+      description: "Automation capability. When enabled, backups start automatically and follow the configured schedule."
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+      responses:
+        "202":
+          description: "Accepted operation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/metrics:
+    get:
+      operationId: "GetPostgresMetrics"
+      summary: "Read PostgreSQL CPU, memory, disk and activity"
+      description: ""
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+        -
+          $ref: "#/components/parameters/HistoryRange"
+        -
+          $ref: "#/components/parameters/HistoryEnd"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostgresMetrics"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/spaces/{space}/managed-addons/postgres/{postgres}/logs:
+    get:
+      operationId: "GetPostgresLogs"
+      summary: "Read bounded PostgreSQL logs"
+      description: ""
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+        -
+          $ref: "#/components/parameters/PostgresPath"
+        -
+          $ref: "#/components/parameters/HistoryRange"
+        -
+          $ref: "#/components/parameters/HistoryEnd"
+        -
+          in: "query"
+          name: "search"
+          schema:
+            type: "string"
+        -
+          in: "query"
+          name: "limit"
+          schema:
+            type: "integer"
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppLogs"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/postgres-operations/{operation}:
+    get:
+      operationId: "GetPostgresOperation"
+      summary: "Inspect a durable PostgreSQL operation"
+      description: ""
+      parameters:
+        -
+          in: "path"
+          name: "operation"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/management/configuration:
+    get:
+      operationId: "GetManagementConfiguration"
+      summary: "Export management configuration with safe credential references"
+      description: ""
+      parameters: []
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementConfiguration"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    put:
+      operationId: "ApplyManagementConfiguration"
+      summary: "Apply management configuration and component upgrades"
+      description: "Omitted and empty named collections preserve existing resources. Inline S3 credentials are stored privately before work is accepted. Poll GetManagementOperation."
+      parameters: []
+      responses:
+        "202":
+          description: "Accepted operation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagementConfiguration"
+
+  /api/v1/management/operations/{operation}:
+    get:
+      operationId: "GetManagementOperation"
+      summary: "Inspect aggregate management apply progress"
+      description: ""
+      parameters:
+        -
+          in: "path"
+          name: "operation"
+          required: true
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/management/s3:
+    get:
+      operationId: "GetManagementS3"
+      summary: "Inspect shared storage without credentials"
+      description: ""
+      parameters: []
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementS3"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    put:
+      operationId: "PutManagementS3"
+      summary: "Validate and save or rotate shared storage credentials"
+      description: ""
+      parameters: []
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementS3"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ManagementS3Input"
+    delete:
+      operationId: "DeleteManagementS3"
+      summary: "Remove unused shared storage"
+      description: "Removal is blocked while resources, work, management data or preserved archives depend on the connection."
+      parameters: []
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagementS3"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/organizations/{organization}/managed-addons:
+    put:
+      operationId: "SetOrganizationManagedAddons"
+      summary: "Explicitly grant shared storage to an organization"
+      description: ""
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+      responses:
+        "200":
+          description: "Successful response."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrganizationManagedAddonsInput"
+
+  /api/v1/organizations/{organization}/spaces/{space}/configuration:
+    put:
+      operationId: "ApplySpaceConfiguration"
+      summary: "Apply applications, custom addons and managed addons in a space"
+      description: "Uses exactly the same fragment fields as a named management space. Omission never deletes resources."
+      parameters:
+        -
+          $ref: "#/components/parameters/OrganizationPath"
+        -
+          $ref: "#/components/parameters/SpacePath"
+      responses:
+        "202":
+          description: "Accepted operation."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          description: "Invalid request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "Resource not found."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpaceConfiguration"
+
 servers:
 - url: /

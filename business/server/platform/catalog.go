@@ -40,6 +40,9 @@ type valuesInput struct {
 }
 
 func normalizeSettings(settings Settings) (Settings, error) {
+	if err := ValidateComponentOverrides(settings.Components); err != nil {
+		return Settings{}, err
+	}
 	settings, err := managedEndpointDefaults(settings)
 	if err != nil {
 		return Settings{}, err
@@ -92,7 +95,7 @@ func managementCatalog(settings Settings, upgrade bool) []component {
 			}
 		}
 	}
-	return orderedComponents(components, upgrade)
+	return orderedComponents(overrideComponents(components, settings.Components), upgrade)
 }
 
 func targetCatalog(upgrade bool) []component {
@@ -120,8 +123,21 @@ func renderComponentValues(definition component, input valuesInput) (map[string]
 		return nil, fmt.Errorf("load %s values: %w", definition.Name, err)
 	}
 	parsed, err := template.New(definition.Name).Funcs(template.FuncMap{
-		"quote":           strconv.Quote,
+		"quote":              strconv.Quote,
+		"sharedS3SecretName": sharedS3SecretName,
+		"s3Endpoint": func(endpoint string) string {
+			location, err := url.Parse(endpoint)
+			if err != nil {
+				return ""
+			}
+			return location.Host
+		},
+		"s3Insecure": func(endpoint string) bool {
+			location, err := url.Parse(endpoint)
+			return err == nil && location.Scheme == "http"
+		},
 		"openBaoNodePort": func() int { return OpenBaoNodePort },
+		"rustfsNodePort":  func() int { return RustfsNodePort },
 		"podHistoryScript": func() (string, error) {
 			script, err := componentValues.ReadFile("values/pod-history.py")
 			return string(script), err
@@ -138,5 +154,5 @@ func renderComponentValues(definition component, input valuesInput) (map[string]
 	if err := yaml.UnmarshalStrict(rendered.Bytes(), &values); err != nil {
 		return nil, fmt.Errorf("decode %s values: %w", definition.Name, err)
 	}
-	return values, nil
+	return mergeComponentValues(values, input.Components[definition.Name].Values), nil
 }

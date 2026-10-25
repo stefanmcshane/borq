@@ -57,6 +57,9 @@ func TestRequestValidate(t *testing.T) {
 		{"image", func(r Request) Request { r.BorqImage = " "; return r }, "image must"},
 		{"invalid image", func(r Request) Request { r.BorqImage = "invalid image:tag"; return r }, "valid image reference"},
 		{"endpoint", func(r Request) Request { r.OpenbaoUrl = "ftp://vault"; return r }, "invalid management endpoint"},
+		{"S3 endpoint", func(r Request) Request { r.S3Endpoint = "ftp://storage"; return r }, "invalid management endpoint"},
+		{"S3 credentials", func(r Request) Request { r.S3Endpoint = "https://key:secret@storage.test"; return r }, "invalid management endpoint"},
+		{"S3 path", func(r Request) Request { r.S3Endpoint = "https://storage.test/bucket"; return r }, "origin without a path"},
 		{"kubeconfig path", func(r Request) Request { r.KubeconfigPath = ""; return r }, "kubeconfig path must not be empty"},
 	}
 	for _, current := range cases {
@@ -67,6 +70,9 @@ func TestRequestValidate(t *testing.T) {
 			err := current.change(request).validate()
 			is.True(err != nil)
 			is.True(strings.Contains(err.Error(), current.want))
+			if current.name == "S3 credentials" {
+				is.True(!strings.Contains(err.Error(), "key:secret"))
+			}
 		})
 	}
 	request := DefaultRequest()
@@ -131,6 +137,19 @@ func TestManagementAddressDiscovery(t *testing.T) {
 	assert.NoErr(err)
 	assert.Equal(resolved.TelemetryUrl, "http://borq.example.test:31836")
 	assert.Equal(calls, 1)
+	request.Mode = "dev"
+	request.ApiUrl = "http://localhost:17833"
+	request.OpenbaoUrl = "http://vault.test:8200"
+	request.TelemetryUrl = "http://telemetry.test:7834"
+	resolved, err = resolveManagementAddresses(context.Background(), request, connection)
+	assert.NoErr(err)
+	assert.Equal(resolved.advertisedApiUrl, "http://172.21.0.2:31835")
+	assert.Equal(calls, 2)
+	request.S3Endpoint = "http://storage.test:9000"
+	resolved, err = resolveManagementAddresses(context.Background(), request, connection)
+	assert.NoErr(err)
+	assert.Equal(resolved.S3Endpoint, request.S3Endpoint)
+	assert.Equal(calls, 2)
 }
 
 // TestManagementNodeApiUrl handles IPv6 and missing addresses when discovering
@@ -183,6 +202,7 @@ func TestBorqDeployment(t *testing.T) {
 	request := DefaultRequest()
 	request.OpenbaoUrl = "http://management.example:8200"
 	request.TelemetryUrl = "http://management.example:7833"
+	request.S3Endpoint = "http://storage.example:9000"
 	deployment := borqDeployment(request)
 	is.Equal(deployment.Namespace, "borq")
 	is.Equal(string(deployment.Spec.Strategy.Type), "Recreate")
@@ -195,6 +215,7 @@ func TestBorqDeployment(t *testing.T) {
 	for _, expected := range []string{"--management-enabled", "--infrastructure-enabled", "--telemetry-port=7834", "--infrastructure-profile=prod", "--management-openbao-url=http://management.example:8200", "--management-telemetry-url=http://management.example:7833", "--infrastructure-storage-class=borq-local"} {
 		is.True(strings.Contains(args, expected))
 	}
+	is.True(strings.Contains(args, "--management-s3-endpoint=http://storage.example:9000"))
 	is.True(!strings.Contains(args, "--management-kubeconfig"))
 	is.Equal(container.ReadinessProbe.HTTPGet.Path, "/api/readyz")
 	is.Equal(container.Ports[1].Name, "telemetry")

@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/foundations/kubernetes"
+	"github.com/stefanmcshane/borq/foundations/logger"
 	chartv2 "helm.sh/helm/v4/pkg/chart/v2"
 	"helm.sh/helm/v4/pkg/release/common"
 	releasev1 "helm.sh/helm/v4/pkg/release/v1"
@@ -79,6 +81,60 @@ func TestDiffTargetReadOnlyActions(t *testing.T) {
 				assert.True(strings.HasPrefix(<-requests, "GET "))
 			}
 		})
+	}
+}
+
+// TestDiffTargetSparseUpgrade preserves unrelated existing release versions.
+func TestDiffTargetSparseUpgrade(t *testing.T) {
+	assert := is.New(t)
+	input := diffTestInput()
+	input.Upgrade = true
+	input.UpgradeComponents = []string{"alloy"}
+	var records []releasev1.Release
+	for _, definition := range targetCatalog(false) {
+		record := diffTestRelease(t, definition, input)
+		record.Chart.Metadata.Version = "0.0.1"
+		if definition.Name == "traefik" {
+			record.Info.Status = common.StatusFailed
+		}
+		records = append(records, record)
+	}
+	path, _ := diffTestServer(t, diffTestInventory{releases: records})
+	input.KubeconfigPath = path
+	result, err := DiffTarget(context.Background(), input)
+	assert.NoErr(err)
+	for _, change := range result.Components {
+		expected := "none"
+		if change.Name == "alloy" {
+			expected = "upgrade"
+		}
+		assert.Equal(change.Action, expected)
+		assert.True(change.UpgradeAvailable)
+	}
+}
+
+// TestSparseComponentLeavesFailedReleaseUntouched prevents implicit repair of an unmentioned release.
+func TestSparseComponentLeavesFailedReleaseUntouched(t *testing.T) {
+	assert := is.New(t)
+	input := diffTestInput()
+	definition := targetCatalog(false)[2]
+	assert.Equal(definition.Name, "traefik")
+	record := diffTestRelease(t, definition, input)
+	record.Info.Status = common.StatusFailed
+	record.Chart.Metadata.Version = "0.0.1"
+	path, requests := diffTestServer(t, diffTestInventory{releases: []releasev1.Release{record}})
+	connection, err := kubernetes.NewConnection(kubernetes.Config{KubeconfigPath: path, Context: input.Context}, logger.Logger{})
+	assert.NoErr(err)
+	settings, err := targetSettings(input)
+	assert.NoErr(err)
+	state, err := (componentRun{connection: connection, kubeconfigPath: path, values: valuesInput{Settings: settings, ClusterID: input.ID}, upgrade: true, upgradeComponents: []string{"alloy"}}).reconcile(context.Background(), definition)
+	assert.NoErr(err)
+	assert.Equal(state.Status, "failed")
+	assert.Equal(state.Version, "0.0.1")
+	assert.Equal(state.Revision, record.Version)
+	assert.True(len(requests) > 0)
+	for len(requests) > 0 {
+		assert.True(strings.HasPrefix(<-requests, "GET "))
 	}
 }
 

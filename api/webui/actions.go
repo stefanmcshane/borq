@@ -50,6 +50,10 @@ func (web handler) execute(request *http.Request) (actionResult, error) {
 	}
 	base := organizationPath(organization)
 	switch form.Get("action") {
+	case "put-postgres", "delete-postgres", "restore-postgres":
+		return web.executePostgresAction(request, result)
+	case "put-management-s3", "delete-management-s3", "grant-managed-addons", "put-management-component":
+		return web.executeManagementSettings(request, result)
 	case "cancel-deployment":
 		id := form.Get("deployment")
 		operation, err := requestApi[appapi.Operation](request.Context(), web.api, http.MethodGet, "/api/v1/operations/"+url.PathEscape(id), nil)

@@ -85,7 +85,7 @@ func addDeploymentFlags(command *cobra.Command, options *deploymentOptions) {
 	addApplicationServerFlag(command, &options.scope)
 	command.Flags().StringVar(&options.scope.organization, "organization", "", "Organization owning the space.")
 	command.Flags().StringVar(&options.scope.space, "space", "", "Deployment space.")
-	command.Flags().StringVarP(&options.file, "file", "f", "apps.yaml", "Partial application configuration.")
+	command.Flags().StringVarP(&options.file, "file", "f", "apps.yaml", "Space configuration with apps, customAddons and managedAddons.")
 	command.Flags().StringVar(&options.planFile, "plan-file", "", "Saved plan metadata path; defaults to <file>.borq-plan.json.")
 }
 
@@ -187,6 +187,30 @@ func executeApplicationApply(command *cobra.Command, options deploymentOptions) 
 	if planID == "" {
 		if err := validateApplicationScope(options.scope); err != nil {
 			return err
+		}
+		source, readError := os.ReadFile(options.file)
+		if readError != nil {
+			return fmt.Errorf("read apps file: %w", readError)
+		}
+		var keys map[string]json.RawMessage
+		jsonSource, jsonError := yaml.YAMLToJSONStrict(source)
+		if jsonError == nil {
+			_ = json.Unmarshal(jsonSource, &keys)
+		}
+		_, custom := keys["customAddons"]
+		_, managed := keys["managedAddons"]
+		emptyApps := bytes.Equal(bytes.TrimSpace(keys["apps"]), []byte("[]"))
+		if custom || managed || emptyApps {
+			var fragment appapi.SpaceConfiguration
+			if err := decodeManagedDocument(source, "SpaceConfiguration", &fragment); err != nil {
+				return err
+			}
+			response, err := client.ApplySpaceConfiguration(command.Context(), options.scope.organization, options.scope.space, fragment)
+			operation, err := readManagedResponse[appapi.Operation](response, err)
+			if err != nil {
+				return err
+			}
+			return finishManagedOperation(command, client, operation, options.wait, options.timeout, true)
 		}
 		planID, err = loadApplicationPlan(command.Context(), client, options)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -47,7 +47,7 @@ func TestCustomChartCommands(t *testing.T) {
 	defer server.Close()
 	file := filepath.Join(t.TempDir(), "values.yaml")
 	assert.NoErr(os.WriteFile(file, []byte("replicas: 0\n"), 0o600))
-	arguments := []string{"addons", "custom", "upgrade", "cache", "--server", server.URL, "--organization", "team", "--space", "dev", "--repo", "oci://registry.example.com/charts", "--chart", "redis", "--version", "1.2.3", "--logs=false", "--pod-selector", "role=api", "-f", file}
+	arguments := []string{"addons", "custom", "apply", "cache", "--server", server.URL, "--organization", "team", "--space", "dev", "--repo", "oci://registry.example.com/charts", "--chart", "redis", "--version", "1.2.3", "--logs=false", "--pod-selector", "role=api", "-f", file}
 	output, _, err := runApplicationCommand(t, arguments...)
 	assert.NoErr(err)
 	assert.True(strings.Contains(output, "succeeded"))

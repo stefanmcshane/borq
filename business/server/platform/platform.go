@@ -13,6 +13,12 @@ import (
 
 // Settings describes the topology shared by bootstrap and cluster registration.
 type Settings struct {
+	// S3Endpoint advertises the same development RustFS service to all deployment targets.
+	S3Endpoint string `json:"s3Endpoint,omitempty"`
+	// Components holds validated chart coordinate and values overrides.
+	Components map[string]ComponentOverride `json:"components,omitempty"`
+	// S3 selects shared object storage through vault references only.
+	S3 S3Settings `json:"s3,omitempty"`
 	// ApiUrl is the management API base used for default vault and telemetry routes.
 	ApiUrl string `json:"apiUrl,omitempty"`
 	// Profile selects lightweight "dev" or persistent "production" defaults.
@@ -39,6 +45,8 @@ type ManagementInput struct {
 	KubeconfigPath string
 	// Settings determines the installed topology and resource defaults.
 	Settings Settings
+	// UpgradeComponents limits existing release upgrades; nil upgrades the full catalog.
+	UpgradeComponents []string
 	// Upgrade permits changing existing managed chart versions or values.
 	Upgrade bool
 }
@@ -59,6 +67,8 @@ type TargetInput struct {
 	ID string
 	// Settings supplies the reachable management endpoints.
 	Settings Settings
+	// UpgradeComponents limits existing release upgrades; nil upgrades the full catalog.
+	UpgradeComponents []string
 	// Upgrade permits changing existing managed chart versions or values.
 	Upgrade bool
 	// RecoverPending resumes Borq-owned Helm operations interrupted by a server

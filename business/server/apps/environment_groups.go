@@ -17,6 +17,9 @@ import (
 // Keep the latest version and this many earlier versions available for deployment.
 const previousEnvironmentGroupVersions = 10
 
+// ErrEnvironmentGroupManaged lets transports explain producer ownership without exposing backend errors.
+var ErrEnvironmentGroupManaged = errors.New("environment group is managed by PostgreSQL and follows rotating credentials")
+
 func validateEnvironmentGroupVersion(name string, version, latest int) error {
 	if version < 1 || version > latest {
 		return fmt.Errorf("%w: environment group %s version %d is unavailable", ErrNotFound, name, version)
@@ -39,6 +42,8 @@ type EnvironmentGroupTarget struct {
 type EnvironmentGroup struct {
 	// Name selects the configuration family independently of an application image.
 	Name string `json:"name"`
+	// ManagedBy identifies a producer; managed values are read-only and can be cloned.
+	ManagedBy string `json:"managedBy,omitempty"`
 	// Version is the existing KV v2 version allocated when the values were published.
 	Version int `json:"version"`
 	// Values exposes the complete values to trusted API and CLI callers.
@@ -73,7 +78,9 @@ type environmentGroupRecord struct {
 	SpaceID string `json:"spaceId"`
 	Name    string `json:"name"`
 	// VaultPath retains the original KV history when a group predates the rename.
-	VaultPath string `json:"vaultPath,omitempty"`
+	VaultPath    string `json:"vaultPath,omitempty"`
+	PostgresID   string `json:"postgresId,omitempty"`
+	PostgresName string `json:"postgresName,omitempty"`
 }
 
 func (manager Manager) environmentGroupConnection(ctx context.Context, target EnvironmentGroupTarget) (Space, kubeapps.Client, error) {
@@ -146,12 +153,29 @@ func validateConfigValues(values []Variable) error {
 }
 
 func (manager Manager) registerEnvironmentGroup(ctx context.Context, environmentID, name string) error {
+	record, _, err := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", environmentID+"/"+name)
+	if err == nil {
+		if record.PostgresID != "" {
+			return errors.Join(ErrConflict, ErrEnvironmentGroupManaged)
+		}
+		return nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	write, err := documentWrite("environment-group", environmentID+"/"+name, environmentGroupRecord{SpaceID: environmentID, Name: name}, 0)
 	if err != nil {
 		return err
 	}
 	err = manager.database.Commit(ctx, []sqlite.Write{write})
 	if errors.Is(err, sqlite.ErrConflict) {
+		record, _, err = loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", environmentID+"/"+name)
+		if err != nil {
+			return err
+		}
+		if record.PostgresID != "" {
+			return errors.Join(ErrConflict, ErrEnvironmentGroupManaged)
+		}
 		return nil
 	}
 	return err
@@ -171,6 +195,9 @@ func (manager Manager) PublishEnvironmentGroup(ctx context.Context, input Publis
 	}
 	environment, client, err := manager.environmentGroupConnection(ctx, input.Target)
 	if err != nil {
+		return EnvironmentGroup{}, err
+	}
+	if err := manager.registerEnvironmentGroup(ctx, environment.ID, input.Name); err != nil {
 		return EnvironmentGroup{}, err
 	}
 	vault, mount, err := openEnvironmentVault(ctx, client)
@@ -195,15 +222,8 @@ func (manager Manager) PublishEnvironmentGroup(ctx context.Context, input Publis
 			return EnvironmentGroup{}, readErr
 		}
 		if readErr == nil && maps.Equal(entry.Values, values) {
-			if err := manager.registerEnvironmentGroup(ctx, environment.ID, input.Name); err != nil {
-				return EnvironmentGroup{}, err
-			}
 			return EnvironmentGroup{Name: input.Name, Version: entry.Version, Values: sortedVariables(entry.Values)}, nil
 		}
-	}
-	// Register the family before writing so a crash after the vault commit remains discoverable.
-	if err := manager.registerEnvironmentGroup(ctx, environment.ID, input.Name); err != nil {
-		return EnvironmentGroup{}, err
 	}
 	if err := vault.SetKvRetention(ctx, mount, path, previousEnvironmentGroupVersions+1); err != nil {
 		return EnvironmentGroup{}, err
@@ -235,6 +255,13 @@ func (manager Manager) GetEnvironmentGroup(ctx context.Context, target Environme
 	if err != nil {
 		return EnvironmentGroup{}, err
 	}
+	record, _, recordErr := loadDocument[environmentGroupRecord](ctx, manager.database, "environment-group", environment.ID+"/"+name)
+	if recordErr != nil && !errors.Is(recordErr, ErrNotFound) {
+		return EnvironmentGroup{}, recordErr
+	}
+	if record.PostgresID != "" && number != 0 {
+		return EnvironmentGroup{}, fmt.Errorf("%w: managed PostgreSQL credentials are available only as latest", ErrInvalid)
+	}
 	vault, mount, err := openEnvironmentVault(ctx, client)
 	if err != nil {
 		return EnvironmentGroup{}, err
@@ -250,7 +277,11 @@ func (manager Manager) GetEnvironmentGroup(ctx context.Context, target Environme
 	if err != nil {
 		return EnvironmentGroup{}, err
 	}
-	return EnvironmentGroup{Name: name, Version: entry.Version, Values: sortedVariables(entry.Values)}, nil
+	managedBy := ""
+	if record.PostgresID != "" {
+		managedBy = "postgres/" + record.PostgresName
+	}
+	return EnvironmentGroup{Name: name, ManagedBy: managedBy, Version: entry.Version, Values: sortedVariables(entry.Values)}, nil
 }
 
 // CloneEnvironmentGroup publishes a complete copy under a new family name without deploying it.
@@ -258,6 +289,9 @@ func (manager Manager) CloneEnvironmentGroup(ctx context.Context, input CloneEnv
 	source, err := manager.GetEnvironmentGroup(ctx, input.Target, input.SourceName, input.SourceVersion)
 	if err != nil {
 		return EnvironmentGroup{}, err
+	}
+	if source.ManagedBy != "" {
+		return EnvironmentGroup{}, fmt.Errorf("%w: rotating PostgreSQL credentials cannot be cloned into a pinned environment group", ErrConflict)
 	}
 	expected := 0
 	return manager.PublishEnvironmentGroup(ctx, PublishEnvironmentGroupInput{Target: input.Target, Name: input.Name, Values: source.Values, BaseVersion: &expected})

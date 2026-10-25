@@ -23,7 +23,7 @@
       {{if and .Draft.Env.Name (ne .Draft.Env.Version "0")}}<option value="{{.Draft.Env.Name}}" selected>{{.Draft.Env.Name}}</option>{{end}}
       {{range .GroupNames}}{{if or (ne . $.Draft.Env.Name) (eq $.Draft.Env.Version "0")}}<option value="{{.}}">{{.}}</option>{{end}}{{end}}
     </select><small>Select a published group in this space. <a class="text-link" href="{{.EnvironmentUrl}}" hx-get="{{.EnvironmentUrl}}">Manage groups</a></small></label>
-    <label>Environment version<input class="input" name="environmentVersion" value="{{if ne .Draft.Env.Version "0"}}{{.Draft.Env.Version}}{{end}}" placeholder="latest" pattern="latest|[0-9]+" spellcheck="false"><small>Choose latest or a published version number. You can change the version on its own.</small></label>
+    <label>Environment version<input class="input" name="environmentVersion" value="{{if ne .Draft.Env.Version "0"}}{{.Draft.Env.Version}}{{end}}" placeholder="latest" pattern="latest|[0-9]+" spellcheck="false"><small>Choose latest for database credentials. Other groups also accept a published version number.</small></label>
   </div>
 </fieldset>
 {{end}}

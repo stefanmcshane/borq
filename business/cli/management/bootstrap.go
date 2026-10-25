@@ -83,6 +83,8 @@ type Request struct {
 	LokiUrl string
 	// PrometheusUrl optionally selects a full authenticated metrics ingestion endpoint.
 	PrometheusUrl string
+	// S3Endpoint overrides the development object store address reachable from target clusters.
+	S3Endpoint string
 	// StorageClass selects persistent storage; borq-local uses k3s local-path.
 	StorageClass string
 }
@@ -257,13 +259,19 @@ func (request Request) validate() error {
 	if request.ServerImageArchivePath != "" && request.localRuntime == "native" {
 		return errors.New("local server image archives require the Docker runtime")
 	}
-	for _, endpoint := range []string{request.ApiUrl, request.ProbeURL, request.OpenbaoUrl, request.TelemetryUrl, request.LokiUrl, request.PrometheusUrl} {
+	for _, endpoint := range []string{request.ApiUrl, request.ProbeURL, request.OpenbaoUrl, request.TelemetryUrl, request.LokiUrl, request.PrometheusUrl, request.S3Endpoint} {
 		if endpoint == "" {
 			continue
 		}
 		parsed, err := url.Parse(endpoint)
 		if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
-			return fmt.Errorf("invalid management endpoint %q: expected an http or https URL", endpoint)
+			return errors.New("invalid management endpoint: expected an HTTP(S) URL without credentials, query, or fragment")
+		}
+	}
+	if request.S3Endpoint != "" {
+		endpoint, _ := url.Parse(request.S3Endpoint)
+		if endpoint.Path != "" && endpoint.Path != "/" {
+			return errors.New("management S3 endpoint must be an origin without a path")
 		}
 	}
 	return nil
@@ -275,7 +283,7 @@ func resolveManagementAddresses(ctx context.Context, request Request, connection
 	}
 	request.ApiUrl = strings.TrimRight(request.ApiUrl, "/")
 	request.advertisedApiUrl = request.ApiUrl
-	if request.OpenbaoUrl != "" && request.TelemetryUrl != "" {
+	if request.OpenbaoUrl != "" && request.TelemetryUrl != "" && (request.Mode != "dev" || request.S3Endpoint != "") {
 		return request, nil
 	}
 	address, err := url.Parse(request.ApiUrl)

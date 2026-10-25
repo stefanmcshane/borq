@@ -58,7 +58,7 @@ func inspectEnvironments(resources []inspectedResource, snapshots []EnvSnapshot)
 		environment, exists := environments[snapshot.AppName]
 		if !exists || snapshot.ConfigName != environment.snapshot.ConfigName ||
 			snapshot.Store != environment.snapshot.Store || snapshot.Path != environment.snapshot.Path ||
-			snapshot.Version != environment.snapshot.Version || snapshot.SnapshotID != environment.snapshot.SnapshotID {
+			snapshot.Version != environment.snapshot.Version || snapshot.PostgresID != environment.snapshot.PostgresID || snapshot.SnapshotID != environment.snapshot.SnapshotID {
 			return nil, fmt.Errorf("app %q snapshot does not match its pinned ExternalSecret binding", snapshot.AppName)
 		}
 	}
@@ -105,13 +105,17 @@ func inspectExternalSecret(resource inspectedResource) (inspectedEnvironment, er
 	if err := decodeManifest(resource.manifest, &secret); err != nil {
 		return inspectedEnvironment{}, err
 	}
-	if secret.Labels["borq.run/phase"] != "environment" || secret.Spec.RefreshPolicy != "OnChange" ||
+	if secret.Labels["borq.run/phase"] != "environment" || (secret.Spec.RefreshPolicy != "OnChange" && secret.Annotations["borq.run/postgres-id"] == "") ||
 		secret.Spec.SecretStoreRef.Kind != "ClusterSecretStore" || len(secret.Spec.Data) != 0 || len(secret.Spec.DataFrom) != 1 {
 		return inspectedEnvironment{}, fmt.Errorf("environment must use one versioned ClusterSecretStore extract with OnChange refresh")
 	}
 	extract := secret.Spec.DataFrom[0].Extract
 	version, err := strconv.Atoi(extract.Version)
-	if err != nil || extract.Version != strconv.Itoa(version) || extract.Property != "values" ||
+	producer := secret.Annotations["borq.run/postgres-id"]
+	if producer != "" && extract.Version == "" {
+		version, err = 0, nil
+	}
+	if err != nil || (producer == "" && extract.Version != strconv.Itoa(version)) || extract.Property != "values" ||
 		(extract.ConversionStrategy != "" && extract.ConversionStrategy != "Default") ||
 		(extract.DecodingStrategy != "" && extract.DecodingStrategy != "None") ||
 		(extract.MetadataPolicy != "" && extract.MetadataPolicy != "None") ||
@@ -120,7 +124,7 @@ func inspectExternalSecret(resource inspectedResource) (inspectedEnvironment, er
 	}
 	snapshot := EnvSnapshot{
 		AppName: resource.app, ConfigName: cmp.Or(secret.Annotations["borq.run/environment-group-name"], secret.Annotations["borq.run/env-config-name"]), Store: secret.Spec.SecretStoreRef.Name,
-		Path: extract.Key, Version: version, SnapshotID: secret.Annotations["borq.run/env-snapshot"],
+		Path: extract.Key, Version: version, PostgresID: producer, SnapshotID: secret.Annotations["borq.run/env-snapshot"],
 	}
 	if err := validateEnvSnapshot(snapshot, resource.target); err != nil {
 		return inspectedEnvironment{}, err
@@ -128,7 +132,7 @@ func inspectExternalSecret(resource inspectedResource) (inspectedEnvironment, er
 	target := secret.Spec.Target
 	template := target.Template
 	if resource.name != EnvSecretName(snapshot) || target.Name != resource.name ||
-		target.CreationPolicy != "Owner" || target.DeletionPolicy != "Merge" || !target.Immutable ||
+		target.CreationPolicy != "Owner" || target.DeletionPolicy != "Merge" || target.Immutable != (producer == "") ||
 		template.Type != "Opaque" || (template.EngineVersion != "" && template.EngineVersion != "v2") ||
 		(template.MergePolicy != "" && template.MergePolicy != "Replace") || len(template.Data) != 0 || len(template.TemplateFrom) != 0 {
 		return inspectedEnvironment{}, fmt.Errorf("environment must create the owned immutable Opaque Secret for its snapshot")
@@ -138,7 +142,9 @@ func inspectExternalSecret(resource inspectedResource) (inspectedEnvironment, er
 		template.Metadata.Labels["borq.run/target-id"] != resource.target ||
 		template.Metadata.Annotations["borq.run/env-path"] != snapshot.Path ||
 		cmp.Or(template.Metadata.Annotations["borq.run/environment-group-name"], template.Metadata.Annotations["borq.run/env-config-name"]) != snapshot.ConfigName ||
-		template.Metadata.Annotations["borq.run/env-version"] != extract.Version {
+		template.Metadata.Annotations["borq.run/env-version"] != cmp.Or(extract.Version, "latest") ||
+		template.Metadata.Annotations["borq.run/postgres-id"] != producer ||
+		(producer != "" && (secret.Spec.RefreshPolicy != "Periodic" || extract.Version != "")) {
 		return inspectedEnvironment{}, fmt.Errorf("environment Secret template must identify its application, target, path and version")
 	}
 	keys := []string{}
@@ -208,13 +214,17 @@ func inspectEnvironmentReference(variables []corev1.EnvVar, sources []corev1.Env
 	if err := validateEnvReference(reference); err != nil {
 		return EnvReference{}, err
 	}
-	if reference.Version == "latest" || reference.Version == "0" {
+	if reference.Version == "latest" && environment.snapshot.PostgresID != "" {
+		if reference.Name != environment.snapshot.ConfigName || len(sources) != 1 {
+			return EnvReference{}, fmt.Errorf("managed environment must match one live ExternalSecret")
+		}
+	} else if reference.Version == "latest" || reference.Version == "0" {
 		if len(sources) != 0 || environment.snapshot.AppName != "" {
 			return EnvReference{}, fmt.Errorf("unbound environment group cannot reference a Secret")
 		}
 		return reference, nil
 	}
-	if environment.snapshot.ConfigName != reference.Name || strconv.Itoa(environment.snapshot.Version) != reference.Version || len(sources) != 1 {
+	if environment.snapshot.ConfigName != reference.Name || (environment.snapshot.PostgresID == "" && strconv.Itoa(environment.snapshot.Version) != reference.Version) || len(sources) != 1 {
 		return EnvReference{}, fmt.Errorf("environment group must match one pinned ExternalSecret")
 	}
 	source := sources[0]

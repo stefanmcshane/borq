@@ -232,12 +232,59 @@ func TestEnvironmentCloneNavigation(t *testing.T) {
 	assert.Equal(location.Query().Get("group"), "copy")
 }
 
+// TestManagedEnvironmentGroupPages keeps rotating credentials read-only and prevents static copies.
+func TestManagedEnvironmentGroupPages(t *testing.T) {
+	for _, input := range []struct {
+		query, present, absent string
+	}{
+		{"view=environment", `title="Managed by postgres/database"`, "managed-current-value"},
+		{"view=environment-group&group=postgres-database-immutable-id", "managed-current-value", "managed-old-value"},
+		{"view=environment-group&group=postgres-database-immutable-id&version=1", "managed-old-value", "managed-current-value"},
+		{"view=environment-group&group=postgres-database-immutable-id&tab=versions", "View variables", "publish those values"},
+		{"view=environment-group&group=postgres-database-immutable-id&tab=settings", "Credentials cannot be pinned or cloned.", `name="sourceName"`},
+	} {
+		t.Run(input.query, func(t *testing.T) {
+			assert := is.New(t)
+			response := httptest.NewRecorder()
+			environmentPageTestHandler(t).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?organization=team&space=dev&"+input.query, nil))
+			assert.Equal(response.Code, http.StatusOK)
+			assert.Equal(response.Header().Get("Cache-Control"), "no-store")
+			body := response.Body.String()
+			assert.True(strings.Contains(body, input.present))
+			assert.True(!strings.Contains(body, input.absent))
+			assert.True(!strings.Contains(body, `value="publish-group"`))
+			assert.True(!strings.Contains(body, "Publish new version"))
+			assert.True(!strings.Contains(body, "Add Variable"))
+			assert.True(!strings.Contains(body, "Remove variable"))
+			if !strings.Contains(input.query, "tab=") && strings.Contains(input.query, "group=") {
+				assert.True(strings.Contains(body, "Managed by postgres/database"))
+				document, err := html.Parse(strings.NewReader(body))
+				assert.NoErr(err)
+				values := []string{}
+				for node := range document.Descendants() {
+					if node.Data != "textarea" {
+						continue
+					}
+					readonly := false
+					for _, attribute := range node.Attr {
+						readonly = readonly || attribute.Key == "readonly"
+					}
+					assert.True(readonly)
+					values = append(values, node.FirstChild.Data)
+				}
+				assert.Equal(values, []string{input.present})
+			}
+		})
+	}
+}
+
 func environmentPageTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	assert := is.New(t)
 	groups := []appapi.EnvironmentGroup{
 		{Name: "web-config", Version: 4, Values: []appapi.Variable{{Name: "LABEL", Value: "private-current-value"}}},
 		{Name: "worker-config", Version: 2, Values: []appapi.Variable{{Name: "TOKEN", Value: "worker-private-value"}}},
+		{Name: "postgres-database-immutable-id", ManagedBy: "postgres/database", Version: 2, Values: []appapi.Variable{{Name: "PGPASSWORD", Value: "managed-current-value"}}},
 	}
 	web, err := NewHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		assert.Equal(request.Method, http.MethodGet)
@@ -258,6 +305,10 @@ func environmentPageTestHandler(t *testing.T) http.Handler {
 			output = groups[0]
 		case "/api/v1/organizations/team/spaces/dev/environment-groups/web-config/versions/3":
 			output = appapi.EnvironmentGroup{Name: "web-config", Version: 3, Values: []appapi.Variable{{Name: "LABEL", Value: "private-old-value"}}}
+		case "/api/v1/organizations/team/spaces/dev/environment-groups/postgres-database-immutable-id":
+			output = groups[2]
+		case "/api/v1/organizations/team/spaces/dev/environment-groups/postgres-database-immutable-id/versions/1":
+			output = appapi.EnvironmentGroup{Name: "postgres-database-immutable-id", ManagedBy: "postgres/database", Version: 1, Values: []appapi.Variable{{Name: "PGPASSWORD", Value: "managed-old-value"}}}
 		case "/api/v1/organizations/team/spaces/dev/environment-groups/missing":
 			writer.WriteHeader(http.StatusNotFound)
 			output = appapi.Problem{Message: "The environment group was not found."}

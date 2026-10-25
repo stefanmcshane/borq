@@ -163,6 +163,8 @@ type Manager struct {
 
 type managerRuntime struct {
 	addonSlots               chan struct{}
+	postgresSlots            chan struct{}
+	storageMutex             sync.Mutex
 	observability            observability.Client
 	context                  context.Context
 	cancel                   context.CancelFunc
@@ -227,8 +229,9 @@ func NewManager(ctx context.Context, input NewInput) (Manager, error) {
 	}
 	workerContext, cancel := context.WithCancel(ctx)
 	manager := Manager{database: database, runtime: &managerRuntime{
-		addonSlots: make(chan struct{}, 3),
-		context:    workerContext, cancel: cancel,
+		addonSlots:    make(chan struct{}, 3),
+		postgresSlots: make(chan struct{}, 3),
+		context:       workerContext, cancel: cancel,
 		observability:  telemetry,
 		rolloutTimeout: input.RolloutTimeout, pollInterval: input.PollInterval,
 		credentialsDir:           filepath.Join(filepath.Dir(input.DatabasePath), "clusters"),
@@ -315,6 +318,12 @@ func (manager Manager) resumeOperationWorkers(ctx context.Context) error {
 	}
 	manager.runtime.deferredOperations, manager.runtime.deferredQueue = nil, nil
 	if err := manager.resumeAddonOperations(ctx); err != nil {
+		return err
+	}
+	if err := manager.resumeManagementOperations(ctx); err != nil {
+		return err
+	}
+	if err := manager.resumePostgresOperations(ctx); err != nil {
 		return err
 	}
 	manager.runtime.operationsResumed = true
@@ -571,7 +580,7 @@ func (manager Manager) Apply(ctx context.Context, id string) (Operation, error) 
 		return Operation{}, err
 	}
 	// Validate before reserving a revision. Queue execution checks again when its turn arrives.
-	if err := verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
+	if err := manager.verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
 		return Operation{}, err
 	}
 	return manager.enqueuePlan(ctx, id)
@@ -630,7 +639,7 @@ func (manager Manager) runOperation(ctx context.Context, operation Operation) {
 			operation.Phase = "predeploy"
 		}
 	}
-	if err := verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
+	if err := manager.verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
 		manager.failOperation(operation, client, jobs, err)
 		return
 	}
@@ -663,7 +672,7 @@ func (manager Manager) runOperation(ctx context.Context, operation Operation) {
 		}
 	}
 	// A predeploy task or server restart may have outlived the pinned version's deployment window.
-	if err := verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
+	if err := manager.verifyEnvironment(ctx, client, saved.EnvironmentSecrets); err != nil {
 		manager.failOperation(operation, client, jobs, err)
 		return
 	}
@@ -692,7 +701,7 @@ func (manager Manager) runPredeploy(ctx context.Context, operation Operation, cl
 		}
 	}
 	for _, job := range jobs {
-		if err := verifyEnvironment(ctx, client, entries); err != nil {
+		if err := manager.verifyEnvironment(ctx, client, entries); err != nil {
 			return operation, err
 		}
 		operation.Status, operation.Message = "applying", "starting predeploy Job "+manifestName(job)

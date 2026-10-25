@@ -52,6 +52,7 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 		"yaml":           func(value any) (string, error) { data, err := yaml.Marshal(value); return string(data), err },
 		"terminal":       operationComplete,
 		"timeLabel":      timeLabel,
+		"bytesLabel":     func(value int) string { return clusterBytesLabel(int64(value)) },
 		"appPanelUrl":    appPanelUrl,
 		"componentLabel": componentLabel,
 		"variant": func(value any) string {
@@ -79,6 +80,8 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 	mux.HandleFunc("POST /ui/actions", web.action)
 	mux.HandleFunc("POST /ui/environment-editor", web.environmentEditor)
 	mux.HandleFunc("POST /ui/application-editor", web.applicationEditor)
+	mux.HandleFunc("GET /ui/postgres", web.postgresPanel)
+	mux.HandleFunc("GET /ui/postgres/operations/{operation}", web.postgresOperation)
 	mux.HandleFunc("GET /ui/application", web.applicationPanel)
 	mux.HandleFunc("GET /ui/custom-charts", web.applicationPanel)
 	mux.HandleFunc("GET /ui/custom-charts/repository", web.customChartRepository)

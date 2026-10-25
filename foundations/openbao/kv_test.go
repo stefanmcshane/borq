@@ -55,6 +55,41 @@ func TestKvReadsPinnedAndLatestVersions(t *testing.T) {
 	assert.Equal(requests, 2)
 }
 
+// TestKvReadsEncodedValues covers the JSON object strings written by External
+// Secrets PushSecret while preserving string contents and optional plan tags.
+func TestKvReadsEncodedValues(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		values   string
+		expected map[string]string
+	}{
+		{
+			name:     "string values",
+			values:   `{"EMPTY":"","TOKEN":"sensitive-value","ESCAPED":"line\n\"quoted\" café"}`,
+			expected: map[string]string{"EMPTY": "", "TOKEN": "sensitive-value", "ESCAPED": "line\n\"quoted\" café"},
+		},
+		{name: "empty object", values: `{}`, expected: map[string]string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := is.New(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				assert.NoErr(json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{
+						"data":     map[string]any{"values": test.values, "planId": "plan-1"},
+						"metadata": map[string]any{"version": 7, "deletion_time": "", "destroyed": false},
+					},
+				}))
+			}))
+			defer server.Close()
+			client, err := openbao.NewClient(openbao.NewClientInput{Address: server.URL})
+			assert.NoErr(err)
+			entry, err := client.ReadKv(t.Context(), "secret", "app", 0)
+			assert.NoErr(err)
+			assert.Equal(entry, openbao.KvEntry{Version: 7, Values: test.expected, PlanID: "plan-1"})
+		})
+	}
+}
+
 // TestKvWriteAlwaysChecksVersion ensures both creation and replacement use CAS,
 // preserve empty string values, and return a detached copy of supplied data.
 func TestKvWriteAlwaysChecksVersion(t *testing.T) {
@@ -177,12 +212,27 @@ func TestKvReadRejectsMalformedDocuments(t *testing.T) {
 		data     string
 		version  int
 		notFound bool
+		expected string
 	}{
 		{name: "deleted", data: `null`, version: 1, notFound: true},
 		{name: "missing envelope", data: `{"TOKEN":"secret-value"}`, version: 1},
 		{name: "non-string value", data: `{"values":{"TOKEN":{"secret-value":true}}}`, version: 1},
 		{name: "invalid tag", data: `{"values":{},"planId":{"secret-value":true}}`, version: 1},
 		{name: "invalid version", data: `{"values":{"TOKEN":"secret-value"}}`, version: 0},
+		{name: "null values", data: `{"values":null}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded null", data: `{"values":"null"}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded array", data: `{"values":"[\"secret-value\"]"}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded scalar", data: `{"values":"\"secret-value\""}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded number", data: `{"values":"123"}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded boolean", data: `{"values":"true"}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded malformed", data: `{"values":"{\"TOKEN\":\"secret-value\""}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded trailing data", data: `{"values":"{\"TOKEN\":\"secret-value\"} trailing-garbage"}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded trailing object", data: `{"values":"{\"TOKEN\":\"secret-value\"} {}"}`, version: 1, expected: "openbao kv document must contain a values object"},
+		{name: "encoded null value", data: `{"values":"{\"TOKEN\":null}"}`, version: 1, expected: "openbao kv values must all be strings"},
+		{name: "encoded object value", data: `{"values":"{\"TOKEN\":{\"secret-value\":true}}"}`, version: 1, expected: "openbao kv values must all be strings"},
+		{name: "encoded array value", data: `{"values":"{\"TOKEN\":[\"secret-value\"]}"}`, version: 1, expected: "openbao kv values must all be strings"},
+		{name: "encoded number value", data: `{"values":"{\"TOKEN\":123}"}`, version: 1, expected: "openbao kv values must all be strings"},
+		{name: "encoded boolean value", data: `{"values":"{\"TOKEN\":true}"}`, version: 1, expected: "openbao kv values must all be strings"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			assert := is.New(t)
@@ -195,6 +245,9 @@ func TestKvReadRejectsMalformedDocuments(t *testing.T) {
 			_, err = client.ReadKv(t.Context(), "secret", "app", 0)
 			assert.True(err != nil)
 			assert.Equal(errors.Is(err, openbao.ErrNotFound), test.notFound)
+			if test.expected != "" {
+				assert.Equal(err.Error(), test.expected)
+			}
 			assert.True(!strings.Contains(err.Error(), "secret-value"))
 		})
 	}

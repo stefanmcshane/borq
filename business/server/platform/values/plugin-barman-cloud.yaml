@@ -1,0 +1,7 @@
+fullnameOverride: borq-plugin-barman-cloud
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    memory: 256Mi

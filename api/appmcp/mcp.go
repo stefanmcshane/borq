@@ -60,8 +60,11 @@ func NewHandler(api http.Handler) (http.Handler, error) {
 					return toolError("Invalid tool arguments."), nil
 				}
 				if err := input.VisitJSON(values); err != nil {
-					// Schema errors may include secret-bearing values from the input.
-					return toolError("Tool arguments do not match the input schema."), nil
+					message := appapi.SchemaValidationMessage(err)
+					if message == "" {
+						message = "Tool arguments do not match the input schema."
+					}
+					return toolError(message), nil
 				}
 				var raw map[string]json.RawMessage
 				if err := json.Unmarshal(arguments, &raw); err != nil {

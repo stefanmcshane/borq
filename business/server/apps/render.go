@@ -170,7 +170,7 @@ func renderValues(configuration Configuration, namespace, targetID string, snaps
 			}
 			application["envFrom"] = []any{map[string]any{"secretRef": map[string]any{"name": secret}}}
 			application["envSnapshot"] = map[string]any{
-				"store": snapshot.Store, "path": snapshot.Path, "version": snapshot.Version,
+				"store": snapshot.Store, "path": snapshot.Path, "version": snapshot.Version, "postgresId": snapshot.PostgresID,
 				"snapshotId": snapshot.SnapshotID, "secretName": secret, "keys": keys, "configName": snapshot.ConfigName,
 			}
 		}

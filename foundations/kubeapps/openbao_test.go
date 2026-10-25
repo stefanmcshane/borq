@@ -12,6 +12,7 @@ import (
 
 	"github.com/matryer/is"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
@@ -209,4 +210,19 @@ func TestOpenBaoStoreMissingClassification(t *testing.T) {
 		assert.True(err != nil)
 		assert.True(!errors.Is(err, ErrSecretStoreNotFound))
 	}
+}
+
+// TestOpenBaoProviderCopiesPublicControllerConfiguration preserves the server origin and token reference without copying credentials.
+func TestOpenBaoProviderCopiesPublicControllerConfiguration(t *testing.T) {
+	check := is.New(t)
+	client, fakeClient := testClient(openBaoStoreManifest(), openBaoTokenManifest())
+	client.config = rest.Config{Host: "https://registered-cluster.example.test"}
+	provider, err := client.OpenBaoProvider(t.Context(), "borq-openbao")
+	check.NoErr(err)
+	check.Equal(textAt(provider, "server"), "http://openbao.borq-system.svc:8200")
+	check.Equal(textAt(provider, "auth", "tokenSecretRef", "name"), "openbao-token")
+	provider["server"] = "https://changed.example.test"
+	stored, err := fakeClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1", Resource: "clustersecretstores"}).Get(t.Context(), "borq-openbao", metav1.GetOptions{})
+	check.NoErr(err)
+	check.Equal(textAt(stored.Object, "spec", "provider", "vault", "server"), "http://openbao.borq-system.svc:8200")
 }

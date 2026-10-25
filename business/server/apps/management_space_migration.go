@@ -8,8 +8,6 @@ import (
 	"github.com/stefanmcshane/borq/foundations/sqlite"
 )
 
-// retireUnusedManagementSpace archives only pristine placeholders created by old
-// cluster registration. It never deletes Kubernetes resources or deployment data.
 func (manager Manager) retireUnusedManagementSpace(ctx context.Context) error {
 	const migration = "unused-management-space-v1"
 	if _, err := manager.database.Get(ctx, "migration", migration); err == nil {

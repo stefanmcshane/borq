@@ -24,7 +24,8 @@ import (
 )
 
 // TestReleaseLifecycleIntegration verifies real Helm records, explicit upgrade
-// gating, idempotent repeats, live rendered values, and CRD schema upgrades.
+// gating, idempotent repeats, live rendered values, and active CRD schema upgrades
+// without changing disabled dependencies or reevaluating imported conditions.
 func TestReleaseLifecycleIntegration(t *testing.T) {
 	kubeconfigPath := os.Getenv("BORQ_KUBECONFIG")
 	if kubeconfigPath == "" {
@@ -53,7 +54,7 @@ func TestReleaseLifecycleIntegration(t *testing.T) {
 	})
 	chartPath := t.TempDir()
 	writeLifecycleChart(t, chartPath, namespace, "0.1.0", false)
-	input := InstallOrUpgradeInput{Namespace: namespace, ReleaseName: "lifecycle", ChartRef: chartPath, Version: "v0.1.0", Values: map[string]any{"message": "first"}, Timeout: 30 * time.Second}
+	input := InstallOrUpgradeInput{Namespace: namespace, ReleaseName: "lifecycle", ChartRef: chartPath, Version: "v0.1.0", Values: map[string]any{"message": "first", "legacy": map[string]any{"enabled": false}}, Timeout: 30 * time.Second}
 	first, err := manager.Reconcile(ctx, input)
 	is.NoErr(err)
 	is.Equal(first.Revision, 1)
@@ -87,6 +88,8 @@ func TestReleaseLifecycleIntegration(t *testing.T) {
 	live, err = client.CoreV1().ConfigMaps(namespace).Get(ctx, "lifecycle", metav1.GetOptions{})
 	is.NoErr(err)
 	is.Equal(live.Data["message"], "second")
+	_, err = client.CoreV1().ConfigMaps(namespace).Get(ctx, "lifecycle-feature", metav1.GetOptions{})
+	is.NoErr(err)
 	definition, err := extensions.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crdName, metav1.GetOptions{})
 	is.NoErr(err)
 	_, exists := definition.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties["updated"]
@@ -169,6 +172,28 @@ func TestReleaseLifecycleIntegration(t *testing.T) {
 	history, err := configurationAction.Releases.History("lifecycle")
 	is.NoErr(err)
 	is.Equal(len(history), 4)
+	writeLifecycleChart(t, chartPath, namespace, "0.1.2", true)
+	input.Version, input.Values, input.Upgrade = "0.1.2", nil, true
+	retained, err := manager.Reconcile(ctx, input)
+	is.NoErr(err)
+	is.Equal(retained.Revision, 5)
+	live, err = client.CoreV1().ConfigMaps(namespace).Get(ctx, "lifecycle", metav1.GetOptions{})
+	is.NoErr(err)
+	is.Equal(live.Data["message"], "second")
+	storedRelease, err = configurationAction.Releases.Last("lifecycle")
+	is.NoErr(err)
+	failedAttempt, err := releaseRecord(storedRelease)
+	is.NoErr(err)
+	failedAttempt.Version = 6
+	failedAttempt.Info.Status = common.StatusFailed
+	failedAttempt.Config = map[string]any{"message": "failed", "legacy": map[string]any{"enabled": true}}
+	is.NoErr(configurationAction.Releases.Create(failedAttempt))
+	retried, err := manager.Reconcile(ctx, input)
+	is.NoErr(err)
+	is.Equal(retried.Revision, 7)
+	live, err = client.CoreV1().ConfigMaps(namespace).Get(ctx, "lifecycle", metav1.GetOptions{})
+	is.NoErr(err)
+	is.Equal(live.Data["message"], "second")
 	uninstall := action.NewUninstall(configurationAction)
 	uninstall.WaitStrategy = kube.HookOnlyStrategy
 	_, err = uninstall.Run("lifecycle")
@@ -177,15 +202,20 @@ func TestReleaseLifecycleIntegration(t *testing.T) {
 
 func writeLifecycleChart(t *testing.T, path, namespace, version string, updated bool) {
 	t.Helper()
-	for _, directory := range []string{"templates", "crds"} {
+	for _, directory := range []string{"templates", "crds", "charts/legacy/crds", "charts/exporter", "charts/feature/templates"} {
 		if err := os.MkdirAll(filepath.Join(path, directory), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	files := map[string]string{
-		"Chart.yaml":               "apiVersion: v2\nname: lifecycle\nversion: " + version + "\n",
-		"values.yaml":              "message: first\n",
-		"templates/configmap.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: lifecycle\ndata:\n  message: {{ .Values.message | quote }}\n",
+		"Chart.yaml":                              "apiVersion: v2\nname: lifecycle\nversion: " + version + "\ndependencies:\n  - name: legacy\n    version: 0.1.0\n    condition: legacy.enabled\n  - name: exporter\n    version: 0.1.0\n    import-values:\n      - switches\n  - name: feature\n    version: 0.1.0\n    condition: feature.enabled\n",
+		"values.yaml":                             "message: first\nlegacy:\n  enabled: true\n",
+		"charts/legacy/Chart.yaml":                "apiVersion: v2\nname: legacy\nversion: 0.1.0\n",
+		"charts/exporter/Chart.yaml":              "apiVersion: v2\nname: exporter\nversion: 0.1.0\n",
+		"charts/exporter/values.yaml":             "exports:\n  switches:\n    feature:\n      enabled: false\n",
+		"charts/feature/Chart.yaml":               "apiVersion: v2\nname: feature\nversion: 0.1.0\n",
+		"charts/feature/templates/configmap.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: lifecycle-feature\ndata:\n  message: enabled child\n",
+		"templates/configmap.yaml":                "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: lifecycle\ndata:\n  message: {{ .Values.message | quote }}\n",
 		"crds/widgets.yaml": fmt.Sprintf(`apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -215,6 +245,7 @@ spec:
 	if updated {
 		files["crds/widgets.yaml"] += "                updated:\n                  type: string\n"
 	}
+	files["charts/legacy/crds/widgets.yaml"] = strings.ReplaceAll(files["crds/widgets.yaml"], "name: v1\n", "name: v1alpha1\n")
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(path, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)

@@ -1,3 +1,7 @@
+service:
+  type: NodePort
+  endpoint:
+    nodePort: {{ rustfsNodePort }}
 fullnameOverride: rustfs
 replicaCount: 1
 mode:

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/stefanmcshane/borq/business/server/platform"
@@ -72,6 +73,10 @@ func (manager Manager) commitClusterRegistration(ctx context.Context, cluster Cl
 }
 
 func (manager Manager) queueClusterComponents(ctx context.Context, cluster Cluster, upgrade bool) (ComponentInstallation, error) {
+	return manager.queueClusterComponentsSelection(ctx, cluster, upgrade, nil, "")
+}
+
+func (manager Manager) queueClusterComponentsSelection(ctx context.Context, cluster Cluster, upgrade bool, names []string, managementOperation string) (ComponentInstallation, error) {
 	manager.runtime.componentMutex.Lock()
 	defer manager.runtime.componentMutex.Unlock()
 	id := platform.ClusterID(cluster.Organization, cluster.Name)
@@ -80,7 +85,10 @@ func (manager Manager) queueClusterComponents(ctx context.Context, cluster Clust
 		return ComponentInstallation{}, err
 	}
 	if componentActive(stored.Installation.Status) {
-		if upgrade && !stored.Upgrade {
+		if managementOperation != "" && stored.ManagementOperation != managementOperation {
+			return ComponentInstallation{}, errors.Join(ErrConflict, errors.New("another component reconciliation is already active"))
+		}
+		if upgrade && (!stored.Upgrade || !slices.Equal(stored.UpgradeComponents, names)) {
 			return ComponentInstallation{}, errors.Join(ErrConflict, errors.New("a component reconciliation is already active; retry the upgrade when it completes"))
 		}
 		return stored.Installation, nil
@@ -89,6 +97,8 @@ func (manager Manager) queueClusterComponents(ctx context.Context, cluster Clust
 	if err != nil {
 		return ComponentInstallation{}, err
 	}
+	stored.UpgradeComponents = names
+	stored.ManagementOperation = managementOperation
 	if err := manager.saveComponentRecordLocked(ctx, id, stored); err != nil {
 		return ComponentInstallation{}, err
 	}
@@ -201,7 +211,7 @@ func (manager Manager) processComponentRuns() {
 			continue
 		}
 		if stored.Installation.Status != "queued" {
-			if _, err := manager.queueClusterComponents(ctx, cluster, stored.Upgrade); err != nil {
+			if _, err := manager.queueClusterComponentsSelection(ctx, cluster, stored.Upgrade, stored.UpgradeComponents, stored.ManagementOperation); err != nil {
 				continue
 			}
 		}

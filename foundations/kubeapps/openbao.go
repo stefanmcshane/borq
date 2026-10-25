@@ -56,6 +56,10 @@ func (client Client) OpenBaoStore(ctx context.Context, storeName string) (OpenBa
 	if err != nil {
 		return OpenBaoAccess{}, fmt.Errorf("OpenBao ClusterSecretStore %s: %w", storeName, err)
 	}
+	return client.openBaoAccess(ctx, provider)
+}
+
+func (client Client) openBaoAccess(ctx context.Context, provider map[string]any) (OpenBaoAccess, error) {
 	service, err := url.Parse(textAt(provider, "server"))
 	if err != nil || service == nil || (service.Scheme != "http" && service.Scheme != "https") || service.Hostname() == "" || service.User != nil || (service.Path != "" && service.Path != "/") || service.RawQuery != "" || service.Fragment != "" {
 		return OpenBaoAccess{}, fmt.Errorf("OpenBao server must be an HTTP or HTTPS origin")
@@ -145,4 +149,24 @@ func openBaoProvider(store map[string]any) (map[string]any, error) {
 		return openBao, nil
 	}
 	return nil, fmt.Errorf("a Vault-compatible OpenBao provider is required")
+}
+
+// OpenBaoProvider copies the validated target provider for an ESO generator without exposing its token.
+func (client Client) OpenBaoProvider(ctx context.Context, storeName string) (map[string]any, error) {
+	if storeName == "" || client.dynamic == nil || client.config.Host == "" {
+		return nil, fmt.Errorf("registered Kubernetes credentials and store name are required")
+	}
+	resource := schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1", Resource: "clustersecretstores"}
+	store, err := client.dynamic.Resource(resource).Get(ctx, storeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("read validated OpenBao provider: %w", err)
+	}
+	provider, err := openBaoProvider(store.Object)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := client.openBaoAccess(ctx, provider); err != nil {
+		return nil, err
+	}
+	return copyMap(provider), nil
 }
