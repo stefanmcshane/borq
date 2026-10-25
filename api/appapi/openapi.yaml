@@ -134,7 +134,7 @@ components:
       properties:
         rotationPeriod:
           type: "string"
-          description: "OpenBao password rotation duration, defaults to 24h; between 1m and 720h."
+          description: "OpenBao password rotation duration, defaults to 720h (30 days); between 1m and 720h."
         host:
           type: "string"
           description: "Private SQL hostname reachable from management OpenBao; defaults to the target-local database Service."

@@ -161,7 +161,7 @@ Open the database's **Overview** page and follow the group link under
 **Application connection**. Borq creates a managed environment group named
 `postgres-<database-name>-<database-id>` with the same six connection variables.
 The database ID keeps the group tied to this database for its lifetime.
-OpenBao owns the PostgreSQL application password and rotates it every 24 hours by
+OpenBao owns the PostgreSQL application password and rotates it every 30 days by
 default. External Secrets reads the current credential from its database engine,
 then publishes the connection variables into the managed group. Reconciliation
 also enrolls existing databases automatically.
@@ -199,7 +199,7 @@ managedAddons:
   postgres:
     - name: database
       credentials:
-        rotationPeriod: 24h
+        rotationPeriod: 720h
 ```
 
 The duration must use whole seconds between `1m` and `720h`. OpenBao schedules

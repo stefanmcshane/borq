@@ -104,7 +104,7 @@ func normalizePostgres(input PostgresInput) (PostgresInput, error) {
 		return input, postgresValidationError{message: "database and application username must be lowercase SQL identifiers; postgres and borq_openbao are reserved"}
 	}
 	if input.Credentials.RotationPeriod == "" {
-		input.Credentials.RotationPeriod = "24h"
+		input.Credentials.RotationPeriod = "720h"
 	}
 	period, err := time.ParseDuration(input.Credentials.RotationPeriod)
 	if err != nil || period < time.Minute || period > 30*24*time.Hour || period%time.Second != 0 {

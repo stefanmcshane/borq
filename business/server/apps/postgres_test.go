@@ -25,7 +25,7 @@ func TestPostgresDefaults(t *testing.T) {
 	check.Equal(input.SnapshotRetentionHours, 24)
 	check.Equal(input.RestoreCheck.Schedule, "0 3 * * 0")
 	check.Equal(input.RestoreCheck.TimeoutSeconds, 1800)
-	check.Equal(input.Credentials, PostgresCredentialPolicy{RotationPeriod: "24h", Port: 5432})
+	check.Equal(input.Credentials, PostgresCredentialPolicy{RotationPeriod: "720h", Port: 5432})
 	for _, bad := range []struct {
 		input   PostgresInput
 		message string

@@ -36,7 +36,7 @@ type PostgresInput struct {
 
 // PostgresCredentialPolicy controls automatically rotated database passwords.
 type PostgresCredentialPolicy struct {
-	// RotationPeriod defaults to 24h and cannot disable rotation.
+	// RotationPeriod defaults to 720h (30 days) and cannot disable rotation.
 	RotationPeriod string `json:"rotationPeriod,omitempty"`
 	// Host overrides the private SQL hostname reachable from management OpenBao.
 	Host string `json:"host,omitempty"`

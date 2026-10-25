@@ -41,7 +41,7 @@ func (manager Manager) RotatePostgresCredentials(ctx context.Context, organizati
 func postgresRotationPeriod(policy PostgresCredentialPolicy) time.Duration {
 	period, err := time.ParseDuration(policy.RotationPeriod)
 	if err != nil || period < time.Minute {
-		return 24 * time.Hour
+		return 30 * 24 * time.Hour
 	}
 	return period
 }
