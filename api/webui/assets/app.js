@@ -619,3 +619,9 @@ function lowercasePostgresName(event) {
 }
 document.addEventListener('input', lowercasePostgresName);
 document.addEventListener('compositionend', lowercasePostgresName);
+
+document.addEventListener("change", function (event) {
+  if (event.target.matches("select[data-settings-navigation]")) {
+    htmx.ajax("GET", event.target.value, {source: event.target, target: "#workspace", swap: "outerHTML"});
+  }
+});

@@ -28,8 +28,8 @@ func TestCatalogDependencyOrder(t *testing.T) {
 	prod, err := normalizeSettings(Settings{Profile: "prod"})
 	is.NoErr(err)
 	is.Equal(componentNames(managementCatalog(prod, false)), "openbao,external-secrets,prometheus,loki")
-	is.Equal(componentNames(targetCatalog(false)), "cert-manager,external-secrets,traefik,alloy")
-	is.Equal(componentNames(targetCatalog(true)), "cert-manager,external-secrets,alloy,traefik")
+	is.Equal(componentNames(targetCatalog(false)), "cert-manager,external-secrets,traefik,alloy,snapshot-controller")
+	is.Equal(componentNames(targetCatalog(true)), "cert-manager,external-secrets,alloy,traefik,snapshot-controller")
 	for _, catalog := range [][]component{managementCatalog(dev, false), managementCatalog(dev, true), managementCatalog(prod, false), managementCatalog(prod, true), targetCatalog(false), targetCatalog(true)} {
 		seen := map[string]bool{}
 		for _, definition := range catalog {

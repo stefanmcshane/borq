@@ -27,6 +27,24 @@ func TestComponentOverrides(t *testing.T) {
 	for _, overrides := range []map[string]ComponentOverride{{"unknown": {}}, {"loki": {Repo: "https://secret:password@charts.example"}}, {"loki": {Version: "latest"}}} {
 		assert.True(ValidateComponentOverrides(overrides) != nil)
 	}
+	targetSettings := Settings{Components: map[string]ComponentOverride{"snapshot-controller": {Repo: "https://charts.example/snapshots", Chart: "custom-snapshot-controller", Version: "5.2.1", Values: map[string]any{"controller": map[string]any{"replicaCount": 2}}}}}
+	setup, err := GetTargetSetup(targetSettings)
+	assert.NoErr(err)
+	assert.Equal(setup.Components[len(setup.Components)-1].Name, "snapshot-controller")
+	assert.Equal(setup.Components[len(setup.Components)-1].Version, "5.2.1")
+	for _, definition := range overrideComponents(targetCatalog(false), targetSettings.Components) {
+		if definition.Name != "snapshot-controller" {
+			continue
+		}
+		assert.Equal(definition.Repository, "https://charts.example/snapshots")
+		assert.Equal(definition.Chart, "custom-snapshot-controller")
+		values, err := renderComponentValues(definition, valuesInput{Settings: targetSettings})
+		assert.NoErr(err)
+		assert.Equal(values["installCRDs"], true)
+		controller := values["controller"].(map[string]any)
+		assert.Equal(controller["enabled"], true)
+		assert.Equal(controller["replicaCount"], 2)
+	}
 }
 
 // TestSharedS3PlatformValues verifies management consumes the same configured S3 bucket through secret references.

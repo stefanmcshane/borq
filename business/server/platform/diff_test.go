@@ -22,6 +22,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -50,7 +51,7 @@ func TestDiffTargetReadOnlyActions(t *testing.T) {
 			input.KubeconfigPath = path
 			result, err := DiffTarget(context.Background(), input)
 			assert.NoErr(err)
-			assert.Equal(len(result.Components), 4)
+			assert.Equal(len(result.Components), 5)
 			changes := map[string]ComponentChange{}
 			for _, change := range result.Components {
 				changes[change.Name] = change
@@ -171,18 +172,24 @@ func TestDiffTargetForeignInstallations(t *testing.T) {
 	// A monitoring release is unrelated to the target catalog.
 	records = append(records, releasev1.Release{Name: "monitoring", Namespace: "monitoring", Version: 1, Info: &releasev1.Info{Status: common.StatusDeployed}, Chart: &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "prometheus", Version: "1.0.0"}}})
 	path, requests := diffTestServer(t, diffTestInventory{
-		releases:    records,
-		deployments: []appsv1.Deployment{{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager", Namespace: "cert-system", Labels: map[string]string{"app.kubernetes.io/name": "cert-manager"}}}},
-		daemonSets:  []appsv1.DaemonSet{{ObjectMeta: metav1.ObjectMeta{Name: "collector", Namespace: "observability", Labels: map[string]string{"app.kubernetes.io/name": "alloy"}}}},
+		releases: records,
+		deployments: []appsv1.Deployment{
+			{ObjectMeta: metav1.ObjectMeta{Name: "cert-manager", Namespace: "cert-system", Labels: map[string]string{"app.kubernetes.io/name": "cert-manager"}}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "snapshot-controller", Namespace: "kube-system", Labels: map[string]string{"app.kubernetes.io/name": "snapshot-controller"}}},
+		},
+		daemonSets: []appsv1.DaemonSet{{ObjectMeta: metav1.ObjectMeta{Name: "collector", Namespace: "observability", Labels: map[string]string{"app.kubernetes.io/name": "alloy"}}}},
 	})
 	input.KubeconfigPath = path
 	result, err := DiffTarget(context.Background(), input)
 	assert.NoErr(err)
-	assert.Equal(len(result.Components), 4)
+	assert.Equal(len(result.Components), 5)
 	for _, change := range result.Components {
 		assert.Equal(change.Action, "conflict")
 		assert.True(strings.Contains(change.Reason, change.Name) || strings.Contains(change.Reason, "observability/collector"))
 		assert.True(!strings.Contains(change.Reason, "prometheus"))
+		if change.Name == "snapshot-controller" {
+			assert.Equal(change.Reason, "Deployment kube-system/snapshot-controller already runs snapshot-controller")
+		}
 	}
 	for len(requests) > 0 {
 		assert.True(strings.HasPrefix(<-requests, "GET "))
@@ -259,11 +266,12 @@ func diffTestRelease(t *testing.T, definition component, input TargetInput) rele
 }
 
 type diffTestInventory struct {
-	releases     []releasev1.Release
-	owner        map[string]string
-	deployments  []appsv1.Deployment
-	daemonSets   []appsv1.DaemonSet
-	statefulSets []appsv1.StatefulSet
+	releases      []releasev1.Release
+	failedRelease string
+	owner         map[string]string
+	deployments   []appsv1.Deployment
+	daemonSets    []appsv1.DaemonSet
+	statefulSets  []appsv1.StatefulSet
 }
 
 func diffTestServer(t *testing.T, inventory diffTestInventory) (string, chan string) {
@@ -290,10 +298,14 @@ func diffTestServer(t *testing.T, inventory diffTestInventory) (string, chan str
 				return
 			}
 			writeOwnershipResponse(writer, http.StatusOK, corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "borq-platform-owner", Namespace: "borq"}, Data: inventory.owner})
-		case "/api/v1/secrets", "/api/v1/namespaces/borq/secrets":
+		case "/api/v1/secrets", "/api/v1/namespaces/borq/secrets", "/api/v1/namespaces/selected-postgres/secrets":
+			if inventory.failedRelease != "" && strings.Contains(request.URL.Query().Get("labelSelector"), "name="+inventory.failedRelease) {
+				writeOwnershipResponse(writer, http.StatusForbidden, metav1.Status{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Status"}, Reason: metav1.StatusReasonForbidden, Code: 403, Message: "private-cluster-error"})
+				return
+			}
 			namespace := ""
 			if strings.Contains(request.URL.Path, "/namespaces/") {
-				namespace = "borq"
+				namespace = strings.Split(request.URL.Path, "/")[4]
 			}
 			secrets, err := client.CoreV1().Secrets(namespace).List(request.Context(), metav1.ListOptions{LabelSelector: request.URL.Query().Get("labelSelector")})
 			if err != nil {
@@ -304,11 +316,35 @@ func diffTestServer(t *testing.T, inventory diffTestInventory) (string, chan str
 			secrets.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "SecretList"}
 			writeOwnershipResponse(writer, http.StatusOK, secrets)
 		case "/apis/apps/v1/deployments":
-			writeOwnershipResponse(writer, http.StatusOK, appsv1.DeploymentList{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DeploymentList"}, Items: inventory.deployments})
+			selector, err := labels.Parse(request.URL.Query().Get("labelSelector"))
+			assert.NoErr(err)
+			list := appsv1.DeploymentList{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DeploymentList"}}
+			for _, deployment := range inventory.deployments {
+				if selector.Matches(labels.Set(deployment.Labels)) {
+					list.Items = append(list.Items, deployment)
+				}
+			}
+			writeOwnershipResponse(writer, http.StatusOK, list)
 		case "/apis/apps/v1/daemonsets":
-			writeOwnershipResponse(writer, http.StatusOK, appsv1.DaemonSetList{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSetList"}, Items: inventory.daemonSets})
+			selector, err := labels.Parse(request.URL.Query().Get("labelSelector"))
+			assert.NoErr(err)
+			list := appsv1.DaemonSetList{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSetList"}}
+			for _, daemonSet := range inventory.daemonSets {
+				if selector.Matches(labels.Set(daemonSet.Labels)) {
+					list.Items = append(list.Items, daemonSet)
+				}
+			}
+			writeOwnershipResponse(writer, http.StatusOK, list)
 		case "/apis/apps/v1/statefulsets":
-			writeOwnershipResponse(writer, http.StatusOK, appsv1.StatefulSetList{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSetList"}, Items: inventory.statefulSets})
+			selector, err := labels.Parse(request.URL.Query().Get("labelSelector"))
+			assert.NoErr(err)
+			list := appsv1.StatefulSetList{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSetList"}}
+			for _, statefulSet := range inventory.statefulSets {
+				if selector.Matches(labels.Set(statefulSet.Labels)) {
+					list.Items = append(list.Items, statefulSet)
+				}
+			}
+			writeOwnershipResponse(writer, http.StatusOK, list)
 		default:
 			t.Errorf("unexpected diff read: %s", request.URL.Path)
 			http.Error(writer, "unexpected", 500)

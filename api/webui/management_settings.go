@@ -10,45 +10,111 @@ import (
 type managementSettingsData struct {
 	// Storage contains only safe connection coordinates and a credential reference.
 	Storage appapi.ManagementS3
-	// Components lists the editable chart overrides by known component name.
+	// Catalog contains desired Helm input for the selected installation context.
+	Catalog appapi.ComponentCatalog
+	// Components links the compact catalog to one selected component.
 	Components []managementComponentRow
+	// Selected supplies effective input and separately saved customization.
+	Selected appapi.ComponentConfiguration
+	// Scope, Organization, and Cluster preserve the component preview context.
+	Scope, Organization, Cluster string
+	// Scopes and Targets provide canonical context navigation.
+	Scopes, Targets []managementSettingsOption
 	// Operation reports aggregate apply progress.
 	Operation appapi.Operation
 }
 
+type managementSettingsOption struct {
+	// Label names one navigation choice.
+	Label string
+	// URL retains only safe component selection parameters.
+	URL string
+	// Selected identifies the current choice.
+	Selected bool
+}
+
 type managementComponentRow struct {
-	// Name identifies one component in the shared management configuration.
-	Name string
-	// Configuration retains accepted repo, chart, pin and inline values.
-	Configuration appapi.ComponentOverride
+	appapi.ComponentConfiguration
+	// URL opens this component in the current installation context.
+	URL string
+	// Selected identifies the component shown in the detail panel.
+	Selected bool
+}
+
+func managementSettingsUrl(scope, organization, cluster, component, operation string) string {
+	selection := url.Values{"view": {"settings"}, "componentScope": {scope}}
+	for key, value := range map[string]string{"componentOrganization": organization, "componentCluster": cluster, "component": component, "managementOperation": operation} {
+		if value != "" {
+			selection.Set(key, value)
+		}
+	}
+	return "/?" + selection.Encode()
 }
 
 func (web handler) loadManagementSettings(request *http.Request, selection url.Values, page pageData) (pageData, error) {
-	configuration, err := requestApi[appapi.ManagementConfiguration](request.Context(), web.api, http.MethodGet, "/api/v1/management/configuration", nil)
-	if err != nil {
-		return page, err
-	}
+	var err error
 	page.Settings.Storage, err = requestApi[appapi.ManagementS3](request.Context(), web.api, http.MethodGet, "/api/v1/management/s3", nil)
 	if problem, ok := err.(apiProblem); err != nil && (!ok || problem.status != http.StatusNotFound) {
 		return page, err
 	}
-	for _, name := range []string{"openbao", "external-secrets", "prometheus", "loki", "rustfs", "cert-manager", "traefik", "alloy", "cloudnative-pg", "plugin-barman-cloud"} {
-		row := managementComponentRow{Name: name}
-		if configuration.Components != nil {
-			row.Configuration = (*configuration.Components)[name]
-		}
-		page.Settings.Components = append(page.Settings.Components, row)
+	settings := page.Settings
+	operation := selection.Get("managementOperation")
+	settings.Scope = selection.Get("componentScope")
+	if settings.Scope == "" {
+		settings.Scope = "management"
 	}
-	if id := selection.Get("managementOperation"); id != "" {
-		page.Settings.Operation, err = requestApi[appapi.Operation](request.Context(), web.api, http.MethodGet, "/api/v1/management/operations/"+url.PathEscape(id), nil)
+	settings.Organization, settings.Cluster = selection.Get("componentOrganization"), selection.Get("componentCluster")
+	for _, scope := range []struct{ name, label string }{{"management", "Management"}, {"target", "Deployment clusters"}, {"postgres", "PostgreSQL controllers"}} {
+		settings.Scopes = append(settings.Scopes, managementSettingsOption{Label: scope.label, URL: managementSettingsUrl(scope.name, "", "", "", operation), Selected: settings.Scope == scope.name})
+	}
+	if settings.Scope == "target" {
+		var targets []appapi.Cluster
+		for _, organization := range page.Organizations {
+			clusters, err := requestApi[[]appapi.Cluster](request.Context(), web.api, http.MethodGet, organizationPath(organization.Name)+"/clusters", nil)
+			if err != nil {
+				return page, err
+			}
+			for _, cluster := range clusters {
+				cluster.Organization = organization.Name
+				targets = append(targets, cluster)
+			}
+		}
+		if settings.Organization == "" && settings.Cluster == "" && len(targets) > 0 {
+			settings.Organization, settings.Cluster = targets[0].Organization, targets[0].Name
+		}
+		for _, cluster := range targets {
+			settings.Targets = append(settings.Targets, managementSettingsOption{Label: cluster.Organization + " / " + cluster.Name, URL: managementSettingsUrl(settings.Scope, cluster.Organization, cluster.Name, selection.Get("component"), operation), Selected: settings.Organization == cluster.Organization && settings.Cluster == cluster.Name})
+		}
+	}
+	if settings.Scope != "target" || settings.Organization != "" || settings.Cluster != "" {
+		query := url.Values{"scope": {settings.Scope}, "organization": {settings.Organization}, "cluster": {settings.Cluster}}
+		settings.Catalog, err = requestApi[appapi.ComponentCatalog](request.Context(), web.api, http.MethodGet, "/api/v1/management/component-catalog?"+query.Encode(), nil)
+		if err != nil {
+			return page, err
+		}
+		selected := selection.Get("component")
+		if selected == "" && len(settings.Catalog.Components) > 0 {
+			selected = settings.Catalog.Components[0].Name
+		}
+		for _, component := range settings.Catalog.Components {
+			row := managementComponentRow{ComponentConfiguration: component, Selected: selected == component.Name, URL: managementSettingsUrl(settings.Scope, settings.Organization, settings.Cluster, component.Name, operation)}
+			settings.Components = append(settings.Components, row)
+			if row.Selected {
+				settings.Selected = component
+			}
+		}
+		if selected != "" && settings.Selected.Name == "" {
+			return page, apiProblem{status: http.StatusNotFound, message: "This component is not available in the selected installation context."}
+		}
+	}
+	if operation != "" {
+		settings.Operation, err = requestApi[appapi.Operation](request.Context(), web.api, http.MethodGet, "/api/v1/management/operations/"+url.PathEscape(operation), nil)
 		if err != nil {
 			return page, err
 		}
 	}
-	page.Location = pageUrl("settings", page.Organization, "")
-	if id := selection.Get("managementOperation"); id != "" {
-		page.Location = pageUrl("settings", page.Organization, "", "managementOperation", id)
-	}
+	page.Settings = settings
+	page.Location = managementSettingsUrl(settings.Scope, settings.Organization, settings.Cluster, settings.Selected.Name, operation)
 	return page, nil
 }
 
@@ -87,6 +153,11 @@ func (web handler) executeManagementSettings(request *http.Request, result actio
 		}
 		result.notice = "Organization managed addon grant saved."
 	case "put-management-component":
+		for _, key := range []string{"componentScope", "componentOrganization", "componentCluster", "component"} {
+			if value := form.Get(key); value != "" {
+				result.selection.Set(key, value)
+			}
+		}
 		body := appapi.ComponentOverride{}
 		repository, chart, version := form.Get("repo"), form.Get("chart"), form.Get("version")
 		if repository != "" {

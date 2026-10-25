@@ -1,4 +1,4 @@
-.PHONY: pre-commit test-slow test-dev test-unit test-pod-history test-ui test-apps test-managed-addons test-apps-e2e generate-api dev-cluster dev-certificates dev-secrets test-integration-server test-bootstrap test-platform-sdk test-platform-vault test-integration-bootstrap test-custom-charts test-telemetry test-chart-defaults fmt
+.PHONY: pre-commit test-slow test-dev test-unit test-pod-history test-ui test-apps test-managed-addons test-apps-e2e generate-api dev-cluster dev-certificates dev-secrets test-integration-server test-bootstrap test-platform-sdk test-platform-snapshots test-platform-vault test-integration-bootstrap test-custom-charts test-telemetry test-chart-defaults fmt
 
 # The older application acceptance fixture stays separate from the full dev installation.
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
@@ -80,6 +80,9 @@ test-bootstrap: ## Run management bootstrap unit tests, optionally with ARGS.
 
 test-platform-sdk: ## Verify Helm SDK install, unchanged reconciliation, and explicit upgrades on local k3d.
 	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./foundations/helm -run TestReleaseLifecycleIntegration -v -count=1
+
+test-platform-snapshots: ## Verify the default snapshot chart, controller reconciliation, ownership, and repeat setup on a cluster without snapshots.
+	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestSnapshotControllerIntegration -v -count=1 -timeout=6m $(ARGS)
 
 test-custom-charts: ## Verify custom chart defaults, real Helm installation, upgrade, CRDs, persistence, and uninstall.
 	BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" $(GO_TEST_ENV) go test -tags=integration ./api/appserver -run TestApplicationIntegrationCustomCharts -v -count=1 $(ARGS)

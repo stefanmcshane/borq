@@ -2,8 +2,27 @@ package appapi
 
 import (
 	"github.com/stefanmcshane/borq/business/server/apps"
+	"github.com/stefanmcshane/borq/business/server/platform"
 	"net/http"
 )
+
+// GetComponentCatalog returns desired Helm input without connecting to an installation.
+func (server handler) GetComponentCatalog(writer http.ResponseWriter, request *http.Request, params GetComponentCatalogParams) {
+	writer.Header().Set("Cache-Control", "no-store")
+	scope := platform.ComponentScopeManagement
+	if params.Scope != nil {
+		scope = platform.ComponentScope(*params.Scope)
+	}
+	organization, cluster := "", ""
+	if params.Organization != nil {
+		organization = *params.Organization
+	}
+	if params.Cluster != nil {
+		cluster = *params.Cluster
+	}
+	result, err := server.manager.GetComponentCatalog(request.Context(), scope, organization, cluster)
+	respond[ComponentCatalog](writer, http.StatusOK, result, err)
+}
 
 // GetManagementConfiguration exports accepted configuration with credential references.
 func (server handler) GetManagementConfiguration(writer http.ResponseWriter, request *http.Request) {

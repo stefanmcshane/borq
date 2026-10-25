@@ -24,7 +24,7 @@ type ComponentOverride struct {
 func ValidateComponentOverrides(overrides map[string]ComponentOverride) error {
 	for name, override := range overrides {
 		switch name {
-		case "openbao", "external-secrets", "prometheus", "loki", "rustfs", "cert-manager", "traefik", "alloy", "cloudnative-pg", "plugin-barman-cloud":
+		case "openbao", "external-secrets", "prometheus", "loki", "rustfs", "cert-manager", "traefik", "alloy", "snapshot-controller", "cloudnative-pg", "plugin-barman-cloud":
 		default:
 			return fmt.Errorf("unknown component %q", name)
 		}

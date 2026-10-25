@@ -621,8 +621,8 @@ func bootstrapAssertComponentDiff(t *testing.T, diff map[string]any, action stri
 	assert := is.New(t)
 	components, ok := diff["components"].([]any)
 	assert.True(ok)
-	assert.Equal(len(components), 4)
-	expected := map[string]bool{"cert-manager": true, "external-secrets": true, "traefik": true, "alloy": true}
+	assert.Equal(len(components), 5)
+	expected := map[string]bool{"cert-manager": true, "external-secrets": true, "traefik": true, "alloy": true, "snapshot-controller": true}
 	for _, entry := range components {
 		component, ok := entry.(map[string]any)
 		assert.True(ok)
@@ -740,7 +740,7 @@ func bootstrapAssertBareCluster(t *testing.T, ctx context.Context, kube *kubecli
 	deployments, err := kube.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 	assert.NoErr(err)
 	for _, deployment := range deployments.Items {
-		for _, name := range []string{"borq", "openbao", "rustfs", "loki", "prometheus", "cert-manager", "external-secrets", "traefik", "alloy"} {
+		for _, name := range []string{"borq", "openbao", "rustfs", "loki", "prometheus", "cert-manager", "external-secrets", "traefik", "alloy", "snapshot-controller"} {
 			if strings.Contains(deployment.Name, name) {
 				t.Fatalf("bare cluster unexpectedly installed %s/%s", deployment.Namespace, deployment.Name)
 			}
@@ -763,7 +763,7 @@ func bootstrapAssertNoPlatformWrites(t *testing.T, ctx context.Context, kube *ku
 func bootstrapAssertNoTargetRole(t *testing.T, ctx context.Context, endpoint string, kube *kubeclient.Clientset) {
 	t.Helper()
 	assert := is.New(t)
-	for _, name := range []string{"cert-manager", "traefik", "alloy"} {
+	for _, name := range []string{"cert-manager", "traefik", "alloy", "snapshot-controller"} {
 		_, err := kube.AppsV1().Deployments(defaultNamespace).Get(ctx, name, metav1.GetOptions{})
 		assert.True(apierrors.IsNotFound(err))
 	}
@@ -1159,7 +1159,7 @@ func bootstrapAssertSingleApiSetting(t *testing.T, ctx context.Context, kube *ku
 func bootstrapAssertTarget(t *testing.T, ctx context.Context, kube *kubeclient.Clientset) {
 	t.Helper()
 	assert := is.New(t)
-	for _, name := range []string{"external-secrets", "external-secrets-webhook", "external-secrets-cert-controller", "cert-manager", "cert-manager-webhook", "traefik", "alloy"} {
+	for _, name := range []string{"external-secrets", "external-secrets-webhook", "external-secrets-cert-controller", "cert-manager", "cert-manager-webhook", "traefik", "alloy", "snapshot-controller"} {
 		_, err := kube.AppsV1().Deployments(defaultNamespace).Get(ctx, name, metav1.GetOptions{})
 		assert.NoErr(err)
 	}

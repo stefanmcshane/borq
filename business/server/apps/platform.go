@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -32,6 +33,8 @@ type ComponentInstallation struct {
 	Message string `json:"message"`
 	// UpdatedAt identifies when the installation state was saved.
 	UpdatedAt time.Time `json:"updatedAt"`
+	// InspectionWarning reports an incomplete optional component observation.
+	InspectionWarning string `json:"inspectionWarning,omitempty"`
 	// NextRetryAt is the next automatic retry after a failed reconciliation.
 	NextRetryAt time.Time `json:"nextRetryAt"`
 }
@@ -265,14 +268,42 @@ func (manager Manager) GetClusterSetup() (platform.TargetSetup, error) {
 	return platform.GetTargetSetup(manager.runtime.platformSettings)
 }
 
-// GetClusterComponents returns saved worker state without waiting for the target cluster.
+// GetClusterComponents preserves saved worker progress and reads optional
+// PostgreSQL releases on idle targets with a bounded, read-only observation.
 func (manager Manager) GetClusterComponents(ctx context.Context, organization, name string) (ComponentInstallation, error) {
-	_, _, err := loadDocument[Cluster](ctx, manager.database, "cluster", organization+"/"+name)
+	cluster, _, err := loadDocument[Cluster](ctx, manager.database, "cluster", organization+"/"+name)
 	if err != nil {
 		return ComponentInstallation{}, err
 	}
 	stored, _, err := loadDocument[componentRecord](ctx, manager.database, "components", platform.ClusterID(organization, name))
-	return stored.Installation, err
+	if err != nil {
+		return ComponentInstallation{}, err
+	}
+	installation := stored.Installation
+	if !manager.runtime.infrastructureEnabled || componentActive(installation.Status) {
+		return installation, nil
+	}
+	settings, err := manager.GetPlatformSettings(ctx)
+	if err != nil {
+		installation.InspectionWarning = "Some installed PostgreSQL components could not be read."
+		slog.WarnContext(ctx, "component_inspection_failed", "cluster_id", installation.ClusterID, "error", err)
+		return installation, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	observed, inspectionError := platform.ReadPostgresComponents(ctx, platform.TargetInput{KubeconfigPath: cluster.KubeconfigPath, Context: cluster.Context, InCluster: cluster.InCluster, Settings: settings})
+	installation.Result.Components = append(installation.Result.Components, observed.Components...)
+	if installation.Result.Profile == "" {
+		installation.Result.Profile = observed.Profile
+	}
+	if installation.Result.Namespace == "" {
+		installation.Result.Namespace = observed.Namespace
+	}
+	if inspectionError != nil {
+		installation.InspectionWarning = "Some installed PostgreSQL components could not be read."
+		slog.WarnContext(ctx, "component_inspection_failed", "cluster_id", installation.ClusterID, "error", inspectionError)
+	}
+	return installation, nil
 }
 
 // GetClusterManagementComponents reads management services on this saved cluster

@@ -520,3 +520,37 @@ details[open]>.disclosure-button::after { transform: rotate(225deg); }
 .cluster-setup-list dt { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
 .cluster-setup-list dt>strong { font-weight: 500; }
 .cluster-setup-list dd { margin: 5px 0 0; color: var(--muted-foreground); font-size: 11px; line-height: 1.65; }
+
+.component-scopes { display: flex; flex-wrap: wrap; gap: 5px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+.component-scopes a { padding: 6px 10px; border-radius: var(--radius); color: var(--muted-foreground); font-size: 12px; text-decoration: none; }
+.component-scopes a[aria-current="page"] { color: var(--foreground); background: var(--muted); }
+.component-target { display: grid; gap: 7px; max-width: 360px; font-size: 12px; }
+.component-catalog-context { display: flex; flex-wrap: wrap; gap: 18px; color: var(--muted-foreground); font-size: 11px; }
+.component-catalog-context code { color: var(--foreground); margin-left: 6px; }
+.component-catalog-table { overflow-x: auto; }
+.component-catalog-table table { width: 100%; font-size: 12px; }
+.component-catalog-table th, .component-catalog-table td { padding: 9px 12px; text-align: left; }
+.component-catalog-table td:first-child a { display: block; font-weight: 500; }
+.component-catalog-table td:nth-child(2) span { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.component-catalog-table tr[data-selected="true"] { background: var(--muted); }
+.management-panel.card .component-detail { display: grid; gap: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.management-panel.card .component-detail header h3 { margin: 0; font-size: 15px; }
+.component-metadata { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 20px; font-size: 12px; }
+.component-metadata div:first-child, .component-metadata div:nth-child(2) { grid-column: 1 / -1; }
+.component-metadata dt { color: var(--muted-foreground); font-size: 11px; margin-bottom: 4px; }
+.component-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.component-effective-values { display: grid; gap: 8px; min-width: 0; }
+.component-effective-values h4 { font-size: 12px; font-weight: 550; }
+.component-effective-values pre { max-height: 360px; overflow: auto; padding: 14px; background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius); line-height: 1.65; white-space: pre; }
+.management-panel section>details.component-customize { margin: 0; border-top: 1px solid var(--border); padding-top: 14px; }
+.component-customize summary { font-size: 12px; font-weight: 500; cursor: pointer; }
+.component-customize form { margin-top: 16px; }
+.component-mobile-picker { display: none; }
+@media (max-width: 760px) {
+  .component-catalog-table { display: none; }
+  .component-mobile-picker { display: grid; gap: 7px; font-size: 12px; }
+  .component-scopes { gap: 3px; }
+  .component-scopes a { padding: 6px 8px; }
+  .component-target { max-width: 100%; }
+  .component-metadata { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
