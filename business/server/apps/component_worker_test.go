@@ -16,6 +16,12 @@ import (
 
 	"github.com/matryer/is"
 	"github.com/stefanmcshane/borq/business/server/platform"
+	chartv2 "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/release/common"
+	releasev1 "helm.sh/helm/v4/pkg/release/v1"
+	"helm.sh/helm/v4/pkg/storage/driver"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // TestClusterRegistrationQueuesDurableWork verifies registration commits a run
@@ -101,7 +107,7 @@ func TestComponentWorkerDiffPrecedesCredentials(t *testing.T) {
 	management := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		vaultCalls.Add(1)
 		state, err := manager.GetClusterComponents(context.Background(), "acme", "remote")
-		if err == nil && state.Status == "installing" && len(state.Diff.Components) == 4 {
+		if err == nil && state.Status == "installing" && len(state.Diff.Components) == 5 {
 			durableDiff.Store(true)
 		}
 		managerStatus(writer, http.StatusForbidden, "Forbidden", "management vault unavailable")
@@ -187,12 +193,19 @@ func TestComponentReadinessBlocksNewPlans(t *testing.T) {
 type componentTarget struct {
 	kubeconfig string
 	writes     atomic.Int64
+	reads      atomic.Int64
 	failDiff   atomic.Bool
 }
 
-func newComponentTarget(t *testing.T) *componentTarget {
+func newComponentTarget(t *testing.T, records ...releasev1.Release) *componentTarget {
 	t.Helper()
 	target := &componentTarget{}
+	client := fake.NewSimpleClientset()
+	for _, record := range records {
+		if err := driver.NewSecrets(client.CoreV1().Secrets(record.Namespace)).Create(fmt.Sprintf("sh.helm.release.v1.%s.v%d", record.Name, record.Version), &record); err != nil {
+			t.Fatal(err)
+		}
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		if request.Method != http.MethodGet {
@@ -200,6 +213,7 @@ func newComponentTarget(t *testing.T) *componentTarget {
 			managerStatus(writer, http.StatusForbidden, "Forbidden", "fixture rejects writes")
 			return
 		}
+		target.reads.Add(1)
 		switch {
 		case request.URL.Path == "/version":
 			_ = json.NewEncoder(writer).Encode(map[string]string{"major": "1", "minor": "35", "gitVersion": "v1.35.0"})
@@ -208,7 +222,14 @@ func newComponentTarget(t *testing.T) *componentTarget {
 				managerStatus(writer, http.StatusForbidden, "Forbidden", "diff unavailable")
 				return
 			}
-			_, _ = writer.Write([]byte(`{"apiVersion":"v1","kind":"SecretList","items":[]}`))
+			secrets, err := client.CoreV1().Secrets("borq").List(request.Context(), metav1.ListOptions{LabelSelector: request.URL.Query().Get("labelSelector")})
+			if err != nil {
+				t.Error(err)
+				http.Error(writer, "fixture", 500)
+				return
+			}
+			secrets.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "SecretList"}
+			_ = json.NewEncoder(writer).Encode(secrets)
 		case strings.HasSuffix(request.URL.Path, "/deployments"):
 			_, _ = writer.Write([]byte(`{"apiVersion":"apps/v1","kind":"DeploymentList","items":[]}`))
 		case strings.HasSuffix(request.URL.Path, "/daemonsets"):
@@ -257,5 +278,94 @@ func waitComponentStatus(t *testing.T, manager Manager, status string) Component
 			t.Fatalf("component reconciliation did not reach %s: %+v", status, state)
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+// TestClusterComponentsIncludesInstalledPostgres reproduces already installed
+// optional controllers missing from idle target reads and protects worker state.
+func TestClusterComponentsIncludesInstalledPostgres(t *testing.T) {
+	assert := is.New(t)
+	// Helm's SDK requires concrete chart and status pointers in release fixtures.
+	target := newComponentTarget(t, releasev1.Release{Name: "cloudnative-pg", Namespace: "borq", Version: 4, Chart: &chartv2.Chart{Metadata: &chartv2.Metadata{Name: "cloudnative-pg", Version: "0.28.0"}}, Info: &releasev1.Info{Status: common.StatusFailed}})
+	manager, err := NewManager(context.Background(), componentManagerInput(t, target.kubeconfig))
+	assert.NoErr(err)
+	defer manager.Close()
+	_, err = manager.CreateOrganization(context.Background(), "acme")
+	assert.NoErr(err)
+	disabled := false
+	cluster, err := manager.RegisterCluster(context.Background(), ClusterInput{Organization: "acme", Name: "remote", KubeconfigPath: target.kubeconfig, Reconcile: &disabled})
+	assert.NoErr(err)
+	stored, _, err := loadDocument[componentRecord](context.Background(), manager.database, "components", cluster.ID)
+	assert.NoErr(err)
+	stored.Installation.Status = "ready"
+	stored.Installation.Message = "saved baseline result"
+	stored.Installation.ID = "persisted-run"
+	stored.Installation.Diff.Components = []platform.ComponentChange{{Name: "cert-manager", Action: "none"}}
+	stored.Installation.UpdatedAt = time.Now().UTC().Truncate(time.Second)
+	stored.Installation.NextRetryAt = stored.Installation.UpdatedAt.Add(time.Hour)
+	stored.Installation.Result = platform.Result{Profile: "dev", Namespace: "borq", Components: []platform.ComponentState{{Name: "cert-manager", Status: "deployed"}}}
+	assert.NoErr(manager.saveComponentRecord(context.Background(), cluster.ID, stored))
+	stored, _, err = loadDocument[componentRecord](context.Background(), manager.database, "components", cluster.ID)
+	assert.NoErr(err)
+	observed, err := manager.GetClusterComponents(context.Background(), "acme", "remote")
+	assert.NoErr(err)
+	assert.Equal(len(observed.Result.Components), 2)
+	if len(observed.Result.Components) != 2 {
+		return
+	}
+	assert.Equal(observed.Result.Components[1].Name, "cloudnative-pg")
+	observed.Result = stored.Installation.Result
+	assert.Equal(observed, stored.Installation)
+	unchanged, _, err := loadDocument[componentRecord](context.Background(), manager.database, "components", cluster.ID)
+	assert.NoErr(err)
+	assert.Equal(unchanged, stored)
+	assert.Equal(target.writes.Load(), int64(0))
+}
+
+// TestClusterComponentInspectionAvailability keeps active progress and disabled
+// infrastructure offline, while unavailable idle reads retain safe saved state.
+func TestClusterComponentInspectionAvailability(t *testing.T) {
+	for _, scenario := range []struct {
+		status         string
+		infrastructure bool
+	}{
+		{"queued", true}, {"diffing", true}, {"installing", true}, {"ready", false}, {"ready", true}, {"disabled", true},
+	} {
+		t.Run(fmt.Sprintf("%s/infrastructure=%v", scenario.status, scenario.infrastructure), func(t *testing.T) {
+			assert := is.New(t)
+			target := newComponentTarget(t)
+			input := componentManagerInput(t, target.kubeconfig)
+			input.InfrastructureEnabled = scenario.infrastructure
+			input.ManagementEnabled = scenario.infrastructure
+			manager, err := NewManager(context.Background(), input)
+			assert.NoErr(err)
+			defer manager.Close()
+			_, err = manager.CreateOrganization(context.Background(), "acme")
+			assert.NoErr(err)
+			disabled := false
+			cluster, err := manager.RegisterCluster(context.Background(), ClusterInput{Organization: "acme", Name: "remote", KubeconfigPath: target.kubeconfig, Reconcile: &disabled})
+			assert.NoErr(err)
+			stored, _, err := loadDocument[componentRecord](context.Background(), manager.database, "components", cluster.ID)
+			assert.NoErr(err)
+			stored.Installation.Status = scenario.status
+			stored.Installation.Result = platform.Result{Profile: "dev", Namespace: "borq", Components: []platform.ComponentState{{Name: "cert-manager", Status: "deployed"}}}
+			assert.NoErr(manager.saveComponentRecord(context.Background(), cluster.ID, stored))
+			stored, _, err = loadDocument[componentRecord](context.Background(), manager.database, "components", cluster.ID)
+			assert.NoErr(err)
+			before := target.reads.Load()
+			target.failDiff.Store(true)
+			observed, err := manager.GetClusterComponents(context.Background(), "acme", "remote")
+			assert.NoErr(err)
+			inspect := scenario.infrastructure && (scenario.status == "ready" || scenario.status == "disabled")
+			if inspect {
+				assert.Equal(observed.InspectionWarning, "Some installed PostgreSQL components could not be read.")
+				assert.True(target.reads.Load() > before)
+				observed.InspectionWarning = ""
+			} else {
+				assert.Equal(target.reads.Load(), before)
+			}
+			assert.Equal(observed, stored.Installation)
+			assert.Equal(target.writes.Load(), int64(0))
+		})
 	}
 }

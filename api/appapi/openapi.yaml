@@ -674,6 +674,52 @@ components:
           description: "Backup configures backups and mandatory recovery verification."
       required:
         - "name"
+    ComponentScope:
+      type: "string"
+      enum: ["management", "target", "postgres"]
+      description: "Installation context for desired Helm configuration."
+    ComponentCatalog:
+      type: "object"
+      additionalProperties: false
+      required: ["scope", "profile", "namespace", "components"]
+      properties:
+        scope:
+          $ref: "#/components/schemas/ComponentScope"
+        profile:
+          type: "string"
+          description: "Profile selects Borq resource and storage defaults."
+        namespace:
+          type: "string"
+          description: "Namespace is the Helm release namespace, separate from chart values."
+        clusterId:
+          type: "string"
+          description: "ClusterID identifies the registered target used to expand runtime values."
+        components:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/ComponentConfiguration"
+    ComponentConfiguration:
+      type: "object"
+      additionalProperties: false
+      required: ["name", "description", "repository", "chart", "version", "values", "override"]
+      properties:
+        name:
+          type: "string"
+        description:
+          type: "string"
+        repository:
+          type: "string"
+          description: "Effective Helm repository, empty for direct chart archives."
+        chart:
+          type: "string"
+        version:
+          type: "string"
+        values:
+          type: "object"
+          additionalProperties: true
+          description: "Borq rendered defaults merged with saved values overrides, without upstream chart defaults."
+        override:
+          $ref: "#/components/schemas/ComponentOverride"
     ComponentOverride:
       type: "object"
       additionalProperties: false
@@ -1454,6 +1500,9 @@ components:
           type: string
         diff:
           $ref: '#/components/schemas/ComponentDiff'
+        inspectionWarning:
+          description: Safe warning when optional installed components could not be fully read; saved worker status is unchanged.
+          type: string
         message:
           type: string
         nextRetryAt:
@@ -4947,6 +4996,43 @@ paths:
                 $ref: "#/components/schemas/Problem"
         "409":
           description: "Current state conflicts with the request."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /api/v1/management/component-catalog:
+    get:
+      operationId: "GetComponentCatalog"
+      summary: "Read desired Helm configuration for an installation context"
+      parameters:
+        - in: "query"
+          name: "scope"
+          schema:
+            $ref: "#/components/schemas/ComponentScope"
+        - in: "query"
+          name: "organization"
+          schema:
+            type: "string"
+        - in: "query"
+          name: "cluster"
+          schema:
+            type: "string"
+      responses:
+        "200":
+          description: "Rendered Borq defaults and saved overrides. No cluster connection is made."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ComponentCatalog"
+        "400":
+          description: "Invalid scope or missing target selector."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: "The target organization or cluster is not registered."
           content:
             application/json:
               schema:

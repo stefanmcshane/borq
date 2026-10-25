@@ -347,7 +347,17 @@ func (manager ReleaseManager) InspectWithValues(ctx context.Context, input Insta
 		return ReleaseInspection{}, err
 	}
 	actionConfig := action.NewConfiguration()
-	if err := actionConfig.Init(manager.restClientGetter(input.Namespace), input.Namespace, "secrets"); err != nil {
+	getter := manager.restClientGetter(input.Namespace)
+	// Helm storage reads do not accept a context. Bound their underlying transport
+	// to the caller's remaining deadline so inventory reads cannot hang indefinitely.
+	getter.restConfig.Timeout = 10 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		getter.restConfig.Timeout = min(getter.restConfig.Timeout, time.Until(deadline))
+	}
+	if err := ctx.Err(); err != nil {
+		return ReleaseInspection{}, err
+	}
+	if err := actionConfig.Init(getter, input.Namespace, "secrets"); err != nil {
 		return ReleaseInspection{}, fmt.Errorf("initialize helm read configuration: %w", err)
 	}
 	stored, err := actionConfig.Releases.Last(input.ReleaseName)

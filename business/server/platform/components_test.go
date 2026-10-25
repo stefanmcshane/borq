@@ -37,7 +37,7 @@ func TestComponentFailureIsolation(t *testing.T) {
 			})
 			is.True(err != nil)
 			is.True(strings.Contains(err.Error(), "helm requires a Kubernetes connection"))
-			is.Equal(len(result.Components), 4)
+			is.Equal(len(result.Components), 5)
 			for index, state := range result.Components {
 				expected := "failed"
 				if state.Name == "alloy" || upgrade && index > 0 {

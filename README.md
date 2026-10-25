@@ -9,8 +9,9 @@ otherwise `default-<cluster name>`. Space names are unique within an organizatio
 must be bound to a registered cluster at creation. Borq assigns its namespace and uses
 the `borq` certificate issuer automatically. Spaces have independent app state,
 rollout history, queues, and named environment groups; multiple spaces can share a cluster.
-Traefik, ESO, cert-manager, and Alloy are shared per cluster. Namespaces separate
-resources; cross-namespace network policy and user permissions are future work.
+Traefik, ESO, cert-manager, Alloy, and the CSI snapshot controller are shared per
+cluster. Namespaces separate resources; cross-namespace network policy and user
+permissions are future work.
 The `apps.yaml` file contains no organization, cluster, or space information.
 
 ## Development and deployment testing
@@ -249,8 +250,8 @@ check the selection and `borq config set --api-url URL` to change it, adding the
 same `--profile NAME` when using a named profile. Failed writes are not automatically
 retried by this error handler.
 Targets should be fresh or already managed by this Borq installation. Existing
-Traefik, ESO, or cert-manager releases in other namespaces are not adopted; migrate
-those installations before registering the target.
+Traefik, ESO, cert-manager, or snapshot controller releases in other namespaces
+are not adopted; migrate those installations before registering the target.
 Detection uses Helm release records and standard component labels on controllers;
 custom installations without either may need manual inspection.
 
@@ -998,9 +999,15 @@ component state is also recorded in Kubernetes ConfigMaps and the Borq database.
 | Target | External Secrets Operator | 2.5.0 | Materialize app and Alloy secrets from management OpenBao |
 | Target | Traefik | 42.0.0 | Application ingress |
 | Target | Alloy | 1.12.1 | Collect target logs and metrics |
+| Target | CSI snapshot controller | 5.2.0 | Install snapshot APIs and their shared controller |
 
 Components use the `borq` namespace on each cluster. A management cluster can also be
 registered as a target; ESO is shared rather than installed as a competing release.
+The snapshot controller uses the Piraeus chart recommended in
+[k3s issue #2865](https://github.com/k3s-io/k3s/issues/2865). Snapshots also require
+a compatible CSI storage driver and a matching `VolumeSnapshotClass`. Borq does
+not create driver-specific snapshot classes. The k3s `local-path` provisioner
+does not support CSI snapshots.
 ExternalDNS is deferred until the DNS story is defined. RustFS is development-only:
 dev Loki stores its objects in a Borq-created RustFS bucket using credentials supplied
 through OpenBao and ESO. Production Loki currently uses filesystem storage.
@@ -1122,7 +1129,7 @@ left for their owner to finish or recover.
 | Scope | Install dependencies | Upgrade order |
 | --- | --- | --- |
 | Management | OpenBao, ESO and Prometheus can start together. RustFS (dev) waits for OpenBao and ESO; development Loki waits for RustFS and its bucket. Production Loki is independent. | ESO → OpenBao → RustFS (dev) → Loki → Prometheus |
-| Target | cert-manager, ESO and Traefik can start together. Alloy waits for ESO and its telemetry Secret. | cert-manager → ESO → Alloy → Traefik |
+| Target | cert-manager, ESO, Traefik, and the snapshot controller can start together. Alloy waits for ESO and its telemetry Secret. | cert-manager → ESO → Alloy → Traefik → snapshot controller |
 
 ```sh
 borq cluster link local --organization example --kubeconfig ./target.yaml --reconcile=false

@@ -190,7 +190,7 @@ func TestManagedPostgresDeletionProgress(t *testing.T) {
 	}
 }
 
-// TestManagedSettingsAndLogBoundaries protects blank credential fields, explicit grants and inert untrusted database log output.
+// TestManagedSettingsAndLogBoundaries protects exclusive Settings navigation, blank credential fields, explicit grants and inert untrusted database log output.
 func TestManagedSettingsAndLogBoundaries(t *testing.T) {
 	assert := is.New(t)
 	web, err := NewHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -198,8 +198,8 @@ func TestManagedSettingsAndLogBoundaries(t *testing.T) {
 		switch request.URL.Path {
 		case "/api/v1/organizations":
 			output = []appapi.Organization{{Name: "team", ManagedAddons: false}}
-		case "/api/v1/management/configuration":
-			output = appapi.ManagementConfiguration{}
+		case "/api/v1/management/component-catalog":
+			output = appapi.ComponentCatalog{Scope: "management", Namespace: "borq", Profile: "dev", Components: []appapi.ComponentConfiguration{{Name: "openbao", Values: map[string]any{"server": map[string]any{"enabled": true}}}}}
 		case "/api/v1/management/s3":
 			output = appapi.ManagementS3{CredentialsRef: "vault:shared/1", Region: "us-east-1", Bucket: "shared"}
 		case "/api/v1/organizations/team/spaces/dev/managed-addons/postgres/database/logs":
@@ -219,12 +219,17 @@ func TestManagedSettingsAndLogBoundaries(t *testing.T) {
 	response := httptest.NewRecorder()
 	web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/?view=settings", nil))
 	assert.Equal(response.Code, http.StatusOK)
+	assert.True(strings.Contains(response.Body.String(), `name="component" value="openbao"`))
 	document, err := html.Parse(response.Body)
 	assert.NoErr(err)
+	var selectedNavigation []string
 	for node := range document.Descendants() {
 		attributes := map[string]string{}
 		for _, attribute := range node.Attr {
 			attributes[attribute.Key] = attribute.Val
+		}
+		if node.Data == "a" && strings.Contains(attributes["class"], "nav-item") && attributes["aria-current"] == "page" {
+			selectedNavigation = append(selectedNavigation, navigationText(node))
 		}
 		if attributes["name"] == "secretKey" || attributes["name"] == "accessKey" || attributes["name"] == "sessionToken" {
 			assert.Equal(attributes["value"], "")
@@ -234,6 +239,7 @@ func TestManagedSettingsAndLogBoundaries(t *testing.T) {
 			assert.True(!checked)
 		}
 	}
+	assert.Equal(selectedNavigation, []string{"Settings"})
 	response = httptest.NewRecorder()
 	web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/postgres?organization=team&space=dev&postgres=database&panel=logs&search=error&range=12h&end=2026-10-24T12%3A00%3A00Z", nil))
 	assert.Equal(response.Code, http.StatusOK)

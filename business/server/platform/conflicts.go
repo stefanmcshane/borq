@@ -35,7 +35,7 @@ func targetComponentConflicts(ctx context.Context, connection kubernetes.Connect
 	if err != nil {
 		return nil, fmt.Errorf("create controller inventory client: %w", err)
 	}
-	selector := "app.kubernetes.io/name in (cert-manager,external-secrets,traefik,alloy)"
+	selector := "app.kubernetes.io/name in (cert-manager,external-secrets,traefik,alloy,snapshot-controller)"
 	options := metav1.ListOptions{LabelSelector: selector}
 	deployments, err := client.AppsV1().Deployments("").List(ctx, options)
 	if err != nil {

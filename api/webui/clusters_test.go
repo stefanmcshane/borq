@@ -281,3 +281,21 @@ func TestClusterMetricsPanel(t *testing.T) {
 		})
 	}
 }
+
+// TestTargetComponentInspectionWarning keeps baseline and optional component
+// rows visible alongside an incomplete observation warning.
+func TestTargetComponentInspectionWarning(t *testing.T) {
+	assert := is.New(t)
+	web, err := NewHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(request.Method, http.MethodGet)
+		assert.Equal(request.URL.Path, "/api/v1/organizations/team/clusters/production/components")
+		_, _ = writer.Write([]byte(`{"status":"ready","message":"Components are ready","inspectionWarning":"Some installed PostgreSQL components could not be read.","result":{"components":[{"name":"cert-manager","status":"deployed"},{"name":"cloudnative-pg","status":"failed"}]}}`))
+	}))
+	assert.NoErr(err)
+	response := httptest.NewRecorder()
+	web.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/components?organization=team&cluster=production", nil))
+	assert.Equal(response.Code, http.StatusOK)
+	for _, content := range []string{"cert-manager", "cloudnative-pg", "Some installed PostgreSQL components could not be read.", ">Ready</span>"} {
+		assert.True(strings.Contains(response.Body.String(), content))
+	}
+}

@@ -385,6 +385,9 @@ func (web handler) components(writer http.ResponseWriter, request *http.Request)
 		web.problem(writer, request, err)
 		return
 	}
+	if data.Installation.InspectionWarning != nil {
+		data.Problem = *data.Installation.InspectionWarning
+	}
 	web.render(writer, request, "ui-components", data, http.StatusOK)
 }
 

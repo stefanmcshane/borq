@@ -2,6 +2,8 @@ package helm
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -61,4 +63,35 @@ func TestNewReleaseManagerRejectsMissingConnection(t *testing.T) {
 	_, err := NewReleaseManager(NewReleaseManagerInput{Connection: kubernetes.Connection{}})
 	is.True(err != nil)
 	is.Equal(err.Error(), "helm requires a Kubernetes connection or kubeconfig path")
+}
+
+// TestInspectHonorsDeadline proves Helm storage requests inherit the caller's
+// deadline even though Helm's release storage API does not accept a context.
+func TestInspectHonorsDeadline(t *testing.T) {
+	assert := is.New(t)
+	canceled := make(chan bool, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-request.Context().Done():
+			canceled <- true
+		case <-timer.C:
+			canceled <- false
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"apiVersion":"v1","kind":"SecretList","items":[]}`))
+		}
+	}))
+	defer server.Close()
+	manager := ReleaseManager{restConfig: rest.Config{Host: server.URL}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, err := manager.InspectWithValues(ctx, InstallOrUpgradeInput{Namespace: "borq", ReleaseName: "cloudnative-pg", ChartRef: "cloudnative-pg"})
+	assert.True(err != nil)
+	select {
+	case interrupted := <-canceled:
+		assert.True(interrupted)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Helm inspection did not reach the fixture request")
+	}
 }

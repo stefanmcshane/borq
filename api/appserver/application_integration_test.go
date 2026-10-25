@@ -468,7 +468,7 @@ func sharedApplicationControllers(t *testing.T, ctx context.Context, kube *kuber
 	controllers := make(map[string]string)
 	for _, deployment := range deployments.Items {
 		name := deployment.Labels["app.kubernetes.io/name"]
-		if strings.HasPrefix(name, "cert-manager") || strings.HasPrefix(name, "external-secrets") || name == "traefik" || name == "alloy" {
+		if strings.HasPrefix(name, "cert-manager") || strings.HasPrefix(name, "external-secrets") || name == "traefik" || name == "alloy" || name == "snapshot-controller" {
 			controllers[deployment.Namespace+"/"+deployment.Name] = string(deployment.UID)
 		}
 	}

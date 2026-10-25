@@ -239,6 +239,11 @@ restore tests. Existing backups remain available in the catalogue. Organization
 S3 assignment is still required. Enabling backups again starts a fresh recovery
 window and a new restore test. Recovery bounds never span the disabled interval.
 
+Target setup installs the CSI snapshot APIs and shared snapshot controller by
+default. Supplemental snapshots require a compatible CSI storage driver and a matching
+`VolumeSnapshotClass` with deletion policy `Delete`. The k3s `local-path`
+provisioner does not support CSI snapshots.
+
 List real backup metadata and select an entry with `eligible: true`:
 
 ```sh

@@ -80,15 +80,15 @@ func normalizeSettings(settings Settings) (Settings, error) {
 
 func managementCatalog(settings Settings, upgrade bool) []component {
 	components := []component{
-		{Name: "openbao", Chart: "openbao", Repository: "https://openbao.github.io/openbao-helm", Version: "0.30.3", Values: "openbao-" + settings.Profile + ".yaml", InstallOrder: 10, UpgradeOrder: 20},
-		{Name: "external-secrets", Chart: "external-secrets", Repository: "https://charts.external-secrets.io", Version: "2.5.0", Values: "external-secrets.yaml", InstallOrder: 20, UpgradeOrder: 10},
-		{Name: "prometheus", Chart: "prometheus", Repository: "https://prometheus-community.github.io/helm-charts", Version: "29.36.2", Values: "prometheus.yaml", InstallOrder: 40, UpgradeOrder: 50},
-		{Name: "loki", Chart: "loki", Repository: "https://grafana.github.io/helm-charts", Version: "7.2.0", Values: "loki.yaml", InstallOrder: 50, UpgradeOrder: 40},
+		{Name: "openbao", Description: "Stores application and platform credentials.", Chart: "openbao", Repository: "https://openbao.github.io/openbao-helm", Version: "0.30.3", Values: "openbao-" + settings.Profile + ".yaml", InstallOrder: 10, UpgradeOrder: 20},
+		{Name: "external-secrets", Description: "Syncs secrets from the management vault.", Chart: "external-secrets", Repository: "https://charts.external-secrets.io", Version: "2.5.0", Values: "external-secrets.yaml", InstallOrder: 20, UpgradeOrder: 10},
+		{Name: "prometheus", Description: "Stores platform and application metrics.", Chart: "prometheus", Repository: "https://prometheus-community.github.io/helm-charts", Version: "29.36.2", Values: "prometheus.yaml", InstallOrder: 40, UpgradeOrder: 50},
+		{Name: "loki", Description: "Stores platform and application logs.", Chart: "loki", Repository: "https://grafana.github.io/helm-charts", Version: "7.2.0", Values: "loki.yaml", InstallOrder: 50, UpgradeOrder: 40},
 	}
 	if settings.Profile == "dev" {
 		// This is the official published archive, served by the upstream GitHub
 		// repository as well as charts.rustfs.com, which rejects some networks.
-		components = append(components, component{Name: "rustfs", Chart: "https://raw.githubusercontent.com/rustfs/helm/main/rustfs-1.0.1.tgz", Version: "1.0.1", Values: "rustfs.yaml", InstallOrder: 30, UpgradeOrder: 30, DependsOn: []string{"openbao", "external-secrets"}})
+		components = append(components, component{Name: "rustfs", Description: "Provides shared object storage for development.", Chart: "https://raw.githubusercontent.com/rustfs/helm/main/rustfs-1.0.1.tgz", Version: "1.0.1", Values: "rustfs.yaml", InstallOrder: 30, UpgradeOrder: 30, DependsOn: []string{"openbao", "external-secrets"}})
 		for index := range components {
 			if components[index].Name == "loki" {
 				components[index].DependsOn = []string{"rustfs"}
@@ -104,6 +104,7 @@ func targetCatalog(upgrade bool) []component {
 		{Name: "external-secrets", Description: "Syncs application secrets from the management vault.", Chart: "external-secrets", Repository: "https://charts.external-secrets.io", Version: "2.5.0", Values: "external-secrets.yaml", InstallOrder: 20, UpgradeOrder: 20},
 		{Name: "traefik", Description: "Routes web traffic to applications.", Chart: "traefik", Repository: "https://traefik.github.io/charts", Version: "42.0.0", Values: "traefik.yaml", InstallOrder: 30, UpgradeOrder: 40},
 		{Name: "alloy", Description: "Collects application metrics and logs.", Chart: "alloy", Repository: "https://grafana.github.io/helm-charts", Version: "1.12.1", Values: "alloy.yaml", InstallOrder: 40, UpgradeOrder: 30, DependsOn: []string{"external-secrets"}},
+		{Name: "snapshot-controller", Description: "Provides Kubernetes snapshot APIs and coordinates snapshots for compatible CSI storage.", Chart: "snapshot-controller", Repository: "https://piraeus.io/helm-charts/", Version: "5.2.0", Values: "snapshot-controller.yaml", InstallOrder: 50, UpgradeOrder: 50},
 	}, upgrade)
 }
 
