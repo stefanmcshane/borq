@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/stefanmcshane/borq/foundations/postgres"
 	"strconv"
 	"strings"
 	"time"
@@ -48,8 +49,12 @@ func (manager Manager) GetPostgresMetrics(ctx context.Context, input TelemetryIn
 	stats, err := client.Statistics(ctx, clusterInput)
 	if err != nil {
 		result.Notice = strings.Trim(result.Notice+"; live PostgreSQL statistics unavailable", "; ")
-		result.Protection.Backups, result.Protection.Wal = "unavailable", "unavailable"
-		result.Protection.Message = "live PostgreSQL protection could not be observed"
+		if postgresBackupsEnabled(stored.Postgres.Specification) {
+			result.Protection.Status = "degraded"
+			result.Protection.Message = "live PostgreSQL protection could not be observed"
+		} else {
+			result.Protection = postgresProtection(stored, postgres.Observation{}, time.Now().UTC())
+		}
 		return result, nil
 	}
 	result.ActivityAvailable = true
@@ -60,10 +65,14 @@ func (manager Manager) GetPostgresMetrics(ctx context.Context, input TelemetryIn
 	}
 	observed, err := client.Observe(ctx, clusterInput)
 	if err == nil {
-		result.Protection = postgresProtection(result.Protection, observed)
+		result.Protection = postgresProtection(stored, observed, time.Now().UTC())
 	} else {
-		result.Protection.Backups, result.Protection.Wal = "unavailable", "unavailable"
-		result.Protection.Message = "live PostgreSQL protection could not be observed"
+		if postgresBackupsEnabled(stored.Postgres.Specification) {
+			result.Protection.Status = "degraded"
+			result.Protection.Message = "live PostgreSQL protection could not be observed"
+		} else {
+			result.Protection = postgresProtection(stored, postgres.Observation{}, time.Now().UTC())
+		}
 	}
 	return result, nil
 }

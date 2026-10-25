@@ -21,10 +21,10 @@ import (
 type postgresOptions struct {
 	scope                                                       applicationScope
 	action, name, file, backup, target, history, search, output string
-	wait                                                        bool
+	wait, backups                                               bool
 	timeout                                                     time.Duration
 	limit, instances                                            int
-	storage, image, snapshots                                   string
+	storage, image, checkSchedule                               string
 }
 
 func newManagedAddonCommand() *cobra.Command {
@@ -77,7 +77,8 @@ func newPostgresAction(action string) *cobra.Command {
 		command.Flags().IntVar(&options.instances, "instances", 1, "PostgreSQL instance count.")
 		command.Flags().StringVar(&options.storage, "storage", "1Gi", "Persistent storage per instance.")
 		command.Flags().StringVar(&options.image, "image", "", "Pinned PostgreSQL image; omitted uses the tested default.")
-		command.Flags().StringVar(&options.snapshots, "snapshots", "preferred", "CSI protection: preferred, required, or disabled.")
+		command.Flags().BoolVar(&options.backups, "backups", true, "Enable backups and mandatory restore tests.")
+		command.Flags().StringVar(&options.checkSchedule, "restore-test-schedule", "0 3 * * 0", "UTC restore-test schedule; weekly by default.")
 	}
 	if action == "apply" {
 		command.Flags().StringVarP(&options.file, "file", "f", "", "Space fragment with apps, customAddons and managedAddons.")
@@ -218,9 +219,14 @@ func executePostgres(command *cobra.Command, options postgresOptions) error {
 		if command.Flags().Changed("image") {
 			body.Image = &options.image
 		}
-		if command.Flags().Changed("snapshots") {
-			value := appapi.PostgresInputSnapshots(options.snapshots)
-			body.Snapshots = &value
+		if command.Flags().Changed("backups") || command.Flags().Changed("restore-test-schedule") {
+			body.Backup = &appapi.PostgresBackupPolicy{}
+			if command.Flags().Changed("backups") {
+				body.Backup.Enabled = &options.backups
+			}
+			if command.Flags().Changed("restore-test-schedule") {
+				body.Backup.RestoreCheck = &appapi.PostgresRestoreCheckInput{Schedule: &options.checkSchedule}
+			}
 		}
 		apply := options.action == "apply"
 		response, err = client.PutPostgres(ctx, org, space, name, &appapi.PutPostgresParams{Apply: &apply}, body)

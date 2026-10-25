@@ -17,22 +17,31 @@ import (
 	"github.com/robfig/cron/v3"
 	"github.com/stefanmcshane/borq/foundations/objectstore"
 	"github.com/stefanmcshane/borq/foundations/openbao"
+	"github.com/stefanmcshane/borq/foundations/postgres"
 	"github.com/stefanmcshane/borq/foundations/sqlite"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 type postgresRecord struct {
-	Postgres        Postgres                `json:"postgres"`
-	Organization    string                  `json:"organization"`
-	Space           string                  `json:"space"`
-	Cluster         string                  `json:"cluster"`
-	ID              string                  `json:"id"`
-	ArchiveID       string                  `json:"archiveId"`
-	CredentialsRef  string                  `json:"credentialsRef"`
-	ActiveOperation string                  `json:"activeOperation"`
-	ActiveCheck     string                  `json:"activeCheck,omitempty"`
-	Credentials     postgresCredentialState `json:"credentials,omitempty"`
+	Postgres               Postgres                `json:"postgres"`
+	Organization           string                  `json:"organization"`
+	Space                  string                  `json:"space"`
+	Cluster                string                  `json:"cluster"`
+	ID                     string                  `json:"id"`
+	ArchiveID              string                  `json:"archiveId"`
+	CredentialsRef         string                  `json:"credentialsRef"`
+	ActiveOperation        string                  `json:"activeOperation"`
+	ActiveCheck            string                  `json:"activeCheck,omitempty"`
+	Credentials            postgresCredentialState `json:"credentials,omitempty"`
+	PolicyVersion          int                     `json:"policyVersion,omitempty"`
+	NeedsPolicyApply       bool                    `json:"needsPolicyApply,omitempty"`
+	SnapshotClass          string                  `json:"snapshotClass,omitempty"`
+	LastTestArchive        string                  `json:"lastTestArchive,omitempty"`
+	LastTestAt             time.Time               `json:"lastTestAt,omitempty"`
+	InitialCheck           string                  `json:"initialCheck,omitempty"`
+	LastTestOutcome        string                  `json:"lastTestOutcome,omitempty"`
+	LastTestOutcomeArchive string                  `json:"lastTestOutcomeArchive,omitempty"`
 }
 
 type postgresArchive struct {
@@ -119,12 +128,16 @@ func normalizePostgres(input PostgresInput) (PostgresInput, error) {
 	if host := input.Credentials.Host; host != "" && (net.ParseIP(host) != nil || len(validation.IsDNS1123Subdomain(host)) != 0) {
 		return input, postgresValidationError{message: "credential host must be a private SQL DNS hostname reachable from OpenBao"}
 	}
+	if input.Backup.Enabled == nil {
+		enabled := true
+		input.Backup.Enabled = &enabled
+	}
 	if input.Backup.Schedule == "" {
 		input.Backup.Schedule = "0 0 * * *"
 	}
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	if _, err := parser.Parse(input.Backup.Schedule); err != nil {
-		return input, postgresValidationError{message: "full backup schedule requires five cron fields"}
+		return input, postgresValidationError{message: "backup schedule requires five cron fields"}
 	}
 	if input.Backup.RecoveryWindowDays == 0 {
 		input.Backup.RecoveryWindowDays = 30
@@ -132,37 +145,19 @@ func normalizePostgres(input PostgresInput) (PostgresInput, error) {
 	if input.Backup.RecoveryWindowDays < 1 || input.Backup.RecoveryWindowDays > 3650 {
 		return input, postgresValidationError{message: "recovery window must be 1–3650 days"}
 	}
-	if input.Snapshots == "" {
-		input.Snapshots = "preferred"
+	if input.Backup.RestoreCheck.Schedule == "" {
+		input.Backup.RestoreCheck.Schedule = "0 3 * * 0"
 	}
-	if input.Snapshots != "preferred" && input.Snapshots != "required" && input.Snapshots != "disabled" {
-		return input, postgresValidationError{message: "snapshots must be preferred, required, or disabled"}
-	}
-	if input.SnapshotSchedule == "" {
-		input.SnapshotSchedule = "0 * * * *"
-	}
-	if _, err := parser.Parse(input.SnapshotSchedule); err != nil {
-		return input, postgresValidationError{message: "snapshot schedule requires five cron fields"}
-	}
-	if input.SnapshotRetentionHours == 0 {
-		input.SnapshotRetentionHours = 24
-	}
-	if input.SnapshotRetentionHours < 1 || input.SnapshotRetentionHours > 8760 {
-		return input, postgresValidationError{message: "snapshot retention must be 1–8760 hours"}
-	}
-	if input.RestoreCheck.Schedule == "" {
-		input.RestoreCheck.Schedule = "0 3 * * 0"
-	}
-	if _, err := cron.ParseStandard(input.RestoreCheck.Schedule); err != nil {
+	if _, err := cron.ParseStandard(input.Backup.RestoreCheck.Schedule); err != nil {
 		return input, postgresValidationError{message: "restore check schedule requires five cron fields"}
 	}
-	if input.RestoreCheck.TimeoutSeconds == 0 {
-		input.RestoreCheck.TimeoutSeconds = 1800
+	if input.Backup.RestoreCheck.TimeoutSeconds == 0 {
+		input.Backup.RestoreCheck.TimeoutSeconds = 1800
 	}
-	if input.RestoreCheck.TimeoutSeconds < 60 || input.RestoreCheck.TimeoutSeconds > 86400 {
+	if input.Backup.RestoreCheck.TimeoutSeconds < 60 || input.Backup.RestoreCheck.TimeoutSeconds > 86400 {
 		return input, postgresValidationError{message: "restore check timeout must be 60–86400 seconds"}
 	}
-	for _, resources := range []PostgresResources{input.Resources, input.RestoreCheck.Resources} {
+	for _, resources := range []PostgresResources{input.Resources, input.Backup.RestoreCheck.Resources} {
 		for _, quantities := range []map[string]string{resources.Requests, resources.Limits} {
 			for name, value := range quantities {
 				if name != "cpu" && name != "memory" {
@@ -218,7 +213,11 @@ func (manager Manager) ListPostgres(ctx context.Context, organization, space str
 			return nil, err
 		}
 		if stored.Organization == organization && stored.Space == space && stored.Postgres.State != "removed" {
-			result = append(result, stored.Postgres)
+			observed, err := manager.GetPostgres(ctx, organization, space, stored.Postgres.Name)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, observed)
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
@@ -236,8 +235,12 @@ func (manager Manager) GetPostgres(ctx context.Context, organization, space, nam
 	}
 	client, input, err := manager.postgresClient(ctx, stored, false)
 	if err != nil {
-		stored.Postgres.Protection.Backups, stored.Postgres.Protection.Wal = "unavailable", "unavailable"
-		stored.Postgres.Protection.Message = "live PostgreSQL protection could not be observed"
+		if postgresBackupsEnabled(stored.Postgres.Specification) {
+			stored.Postgres.Protection.Status = "degraded"
+			stored.Postgres.Protection.Message = "live PostgreSQL protection could not be observed"
+		} else {
+			stored.Postgres.Protection = postgresProtection(stored, postgres.Observation{}, time.Now().UTC())
+		}
 		if stored.ActiveOperation == "" {
 			stored.Postgres.State = "unavailable"
 		}
@@ -245,7 +248,7 @@ func (manager Manager) GetPostgres(ctx context.Context, organization, space, nam
 	}
 	observed, err := client.Observe(ctx, input)
 	if err == nil {
-		stored.Postgres.Protection = postgresProtection(stored.Postgres.Protection, observed)
+		stored.Postgres.Protection = postgresProtection(stored, observed, time.Now().UTC())
 		if stored.ActiveOperation == "" {
 			stored.Postgres.State = "degraded"
 			if observed.Ready {
@@ -253,8 +256,12 @@ func (manager Manager) GetPostgres(ctx context.Context, organization, space, nam
 			}
 		}
 	} else {
-		stored.Postgres.Protection.Backups, stored.Postgres.Protection.Wal = "unavailable", "unavailable"
-		stored.Postgres.Protection.Message = "live PostgreSQL protection could not be observed"
+		if postgresBackupsEnabled(stored.Postgres.Specification) {
+			stored.Postgres.Protection.Status = "degraded"
+			stored.Postgres.Protection.Message = "live PostgreSQL protection could not be observed"
+		} else {
+			stored.Postgres.Protection = postgresProtection(stored, postgres.Observation{}, time.Now().UTC())
+		}
 		if stored.ActiveOperation == "" {
 			stored.Postgres.State = "unavailable"
 		}
@@ -349,6 +356,9 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 			return Postgres{}, fmt.Errorf("%w: PostgreSQL deletion was accepted; retry deletion before reusing the name", ErrConflict)
 		}
 	}
+	if action == "backup" && !postgresBackupsEnabled(stored.Postgres.Specification) {
+		return Postgres{}, postgresValidationError{message: "backups are disabled for this database"}
+	}
 	archive := postgresArchive{}
 	newResource := !exists
 	if newResource {
@@ -400,34 +410,31 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 		}
 		archive.OrganizationID = org.ID
 	}
+	newArchive := newResource
+	if exists && action == "apply" && !postgresBackupsEnabled(stored.Postgres.Specification) && postgresBackupsEnabled(input) {
+		previousArchive, _, err := loadDocument[postgresArchive](ctx, manager.database, "postgres-archive", stored.ArchiveID)
+		if err != nil {
+			return Postgres{}, err
+		}
+		archive, err = nextPostgresArchive(previousArchive, input)
+		if err != nil {
+			return Postgres{}, err
+		}
+		stored.ArchiveID = archive.ID
+		stored.LastTestArchive, stored.LastTestAt, stored.InitialCheck = "", time.Time{}, ""
+		stored.LastTestOutcome, stored.LastTestOutcomeArchive = "", ""
+		stored.Postgres.RestoreCheck = PostgresRestoreCheck{Status: "never"}
+		newArchive = true
+	}
+	stored.PolicyVersion = 1
 	if action == "apply" || newResource {
+		stored.NeedsPolicyApply = false
 		stored.Postgres.Specification = input
+		stored.Postgres.Protection = postgresProtection(stored, postgres.Observation{}, time.Now().UTC())
 	}
 	if action != "delete" {
 		if _, _, err := manager.ResolvePostgresStorage(ctx, organization); err != nil {
 			return Postgres{}, err
-		}
-		client, clusterInput, err := manager.postgresClient(ctx, stored, false)
-		if err != nil {
-			return Postgres{}, err
-		}
-		snapshotClass := ""
-		if stored.Postgres.Specification.Snapshots != "disabled" {
-			snapshotClass, err = client.SnapshotClass(ctx, clusterInput.StorageClass, stored.Postgres.Specification.SnapshotClass)
-			if err != nil {
-				return Postgres{}, fmt.Errorf("%w: inspect CSI snapshots: %v", ErrComponentsNotReady, err)
-			}
-		}
-		if snapshotClass == "" && stored.Postgres.Specification.Snapshots == "required" {
-			return Postgres{}, postgresValidationError{message: "CSI snapshots are required but no matching CSI driver and deleting VolumeSnapshotClass are installed"}
-		}
-		stored.Postgres.Protection.Snapshots = "unsupported"
-		if stored.Postgres.Specification.Snapshots == "disabled" {
-			stored.Postgres.Protection.Snapshots = "disabled"
-		}
-		if snapshotClass != "" {
-			stored.Postgres.Protection.Snapshots = "supported"
-			stored.Postgres.Specification.SnapshotClass = snapshotClass
 		}
 	}
 	manager.runtime.mutex.Lock()
@@ -480,7 +487,7 @@ func (manager Manager) acceptPostgres(ctx context.Context, organization, space, 
 		}
 		writes = append(writes, write)
 	}
-	if newResource {
+	if newArchive {
 		write, err := documentWrite("postgres-archive", archive.ID, archive, 0)
 		if err != nil {
 			return Postgres{}, err
@@ -536,32 +543,20 @@ func mergePostgresInput(previous, input PostgresInput) PostgresInput {
 	if input.Backup.RecoveryWindowDays != 0 {
 		previous.Backup.RecoveryWindowDays = input.Backup.RecoveryWindowDays
 	}
-	if input.Snapshots != "" {
-		previous.Snapshots = input.Snapshots
+	if input.Backup.Enabled != nil {
+		previous.Backup.Enabled = input.Backup.Enabled
 	}
-	if input.SnapshotClass != "" {
-		previous.SnapshotClass = input.SnapshotClass
+	if input.Backup.RestoreCheck.Schedule != "" {
+		previous.Backup.RestoreCheck.Schedule = input.Backup.RestoreCheck.Schedule
 	}
-	if input.SnapshotSchedule != "" {
-		previous.SnapshotSchedule = input.SnapshotSchedule
+	if input.Backup.RestoreCheck.TimeoutSeconds != 0 {
+		previous.Backup.RestoreCheck.TimeoutSeconds = input.Backup.RestoreCheck.TimeoutSeconds
 	}
-	if input.SnapshotRetentionHours != 0 {
-		previous.SnapshotRetentionHours = input.SnapshotRetentionHours
+	if input.Backup.RestoreCheck.Resources.Requests != nil {
+		previous.Backup.RestoreCheck.Resources.Requests = input.Backup.RestoreCheck.Resources.Requests
 	}
-	if input.RestoreCheck.Enabled != nil {
-		previous.RestoreCheck.Enabled = input.RestoreCheck.Enabled
-	}
-	if input.RestoreCheck.Schedule != "" {
-		previous.RestoreCheck.Schedule = input.RestoreCheck.Schedule
-	}
-	if input.RestoreCheck.TimeoutSeconds != 0 {
-		previous.RestoreCheck.TimeoutSeconds = input.RestoreCheck.TimeoutSeconds
-	}
-	if input.RestoreCheck.Resources.Requests != nil {
-		previous.RestoreCheck.Resources.Requests = input.RestoreCheck.Resources.Requests
-	}
-	if input.RestoreCheck.Resources.Limits != nil {
-		previous.RestoreCheck.Resources.Limits = input.RestoreCheck.Resources.Limits
+	if input.Backup.RestoreCheck.Resources.Limits != nil {
+		previous.Backup.RestoreCheck.Resources.Limits = input.Backup.RestoreCheck.Resources.Limits
 	}
 	return previous
 }

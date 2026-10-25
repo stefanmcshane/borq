@@ -22,10 +22,11 @@ func (manager Manager) runPostgresCheck(operation Operation, task postgresTask) 
 	sourceInput := input
 	input.Name, input.Owner = task.CheckName, task.CheckID
 	input.Instances = 1
+	input.BackupEnabled = false
 	input.Check.Enabled = false
 	input.SnapshotClass = ""
 	input.Isolated = true
-	if resources := stored.Postgres.Specification.RestoreCheck.Resources; len(resources.Requests) > 0 || len(resources.Limits) > 0 {
+	if resources := stored.Postgres.Specification.Backup.RestoreCheck.Resources; len(resources.Requests) > 0 || len(resources.Limits) > 0 {
 		input.Requests, input.Limits = resources.Requests, resources.Limits
 	}
 	snapshotInput := input
@@ -47,8 +48,8 @@ func (manager Manager) runPostgresCheck(operation Operation, task postgresTask) 
 		if verificationErr == nil {
 			verificationErr = manager.verifyPostgresSql(ctx, client, input)
 		}
-		task.SnapshotStatus = stored.Postgres.Protection.Snapshots
-		if verificationErr == nil && stored.Postgres.Protection.Snapshots == "supported" {
+		task.SnapshotStatus = "unsupported"
+		if verificationErr == nil && stored.SnapshotClass != "" {
 			task.SnapshotStatus = "failed"
 			verificationErr = client.RequestSnapshot(ctx, sourceInput, operation.ID)
 			snapshotName := ""
@@ -187,7 +188,14 @@ func (manager Manager) finishPostgresCheck(operation Operation, task postgresTas
 	if task.VerificationError != "" {
 		status, message = "failed", task.VerificationError+"; temporary resources removed"
 	}
-	stored.Postgres.RestoreCheck = PostgresRestoreCheck{Status: status, Operation: operation.ID, Message: message, SnapshotStatus: task.SnapshotStatus, Cleanup: task.Cleanup, StartedAt: operation.StartedAt, CompletedAt: now, DurationSeconds: now.Sub(operation.StartedAt).Seconds()}
+	stored.Postgres.RestoreCheck = PostgresRestoreCheck{Status: status, Operation: operation.ID, Message: message, Cleanup: task.Cleanup, StartedAt: operation.StartedAt, CompletedAt: now, DurationSeconds: now.Sub(operation.StartedAt).Seconds()}
+	if task.SourceArchive == stored.ArchiveID {
+		stored.LastTestOutcome, stored.LastTestOutcomeArchive = status, stored.ArchiveID
+	}
+	if status == "succeeded" && task.SourceArchive == stored.ArchiveID {
+		stored.LastTestArchive, stored.LastTestAt = stored.ArchiveID, now
+	}
+	stored.InitialCheck = ""
 	operation.Status = status
 	operation.Message = message
 	operation.UpdatedAt = now

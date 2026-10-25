@@ -125,7 +125,7 @@ func TestErrorResponses(t *testing.T) {
 	check.NoErr(err)
 	check.NoErr(database.Commit(ctx, []sqlite.Write{
 		{Collection: "space", Key: "team/dev", Value: json.RawMessage(`{"space":{"name":"dev"}}`)},
-		{Collection: "postgres", Key: "team/dev/database", Value: json.RawMessage(`{"postgres":{"name":"database","state":"ready"}}`)},
+		{Collection: "postgres", Key: "team/dev/database", Value: json.RawMessage(`{"policyVersion":1,"organization":"team","space":"dev","postgres":{"name":"database","state":"ready"}}`)},
 	}))
 	check.NoErr(database.Close())
 	manager, err := apps.NewManager(ctx, apps.NewInput{DatabasePath: databasePath})

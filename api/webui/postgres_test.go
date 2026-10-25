@@ -45,7 +45,7 @@ func TestManagedPostgresBrowser(t *testing.T) {
 				case strings.HasSuffix(request.URL.Path, "/postgres"):
 					output = []appapi.Postgres{{Name: "database"}}
 				case strings.HasSuffix(request.URL.Path, "/postgres/database"):
-					output = appapi.Postgres{Name: "database", EnvironmentGroup: "postgres-database-immutable-id", State: "ready", Operation: "change", Protection: appapi.PostgresProtection{Backups: "ready", Wal: "ready", Snapshots: "unsupported"}, RestoreCheck: appapi.PostgresRestoreCheck{Status: "succeeded"}}
+					output = appapi.Postgres{Name: "database", EnvironmentGroup: "postgres-database-immutable-id", State: "ready", Operation: "change", Protection: appapi.PostgresProtection{Status: "ready"}, RestoreCheck: appapi.PostgresRestoreCheck{Status: "succeeded"}}
 				case strings.HasSuffix(request.URL.Path, "/postgres-operations/change"):
 					output = appapi.Operation{ID: "change", SpaceID: "dev", Status: "running", Message: "Updating database"}
 				case strings.HasSuffix(request.URL.Path, "/backups"):
@@ -138,7 +138,7 @@ func TestManagedPostgresBrowser(t *testing.T) {
 				assert.Equal(hidden.Get("tab"), test.tab)
 			}
 			if test.tab == "overview" {
-				assert.True(strings.Contains(body, "unsupported"))
+				assert.True(strings.Contains(body, "Backup protection"))
 				assert.True(strings.Contains(body, "borq am postgres env"))
 				assert.True(strings.Contains(body, "Environment group selector"))
 				assert.Equal(groups, []string{"postgres-database-immutable-id"})
@@ -267,6 +267,8 @@ func TestManagedBrowserMutationForwardsTypedIntent(t *testing.T) {
 					var input appapi.PostgresInput
 					assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
 					assert.True(input.Instances == nil && input.Storage == nil)
+					assert.True(input.Backup != nil && input.Backup.Enabled != nil && !*input.Backup.Enabled)
+					assert.True(input.Backup.RestoreCheck != nil && input.Backup.RestoreCheck.Schedule != nil && *input.Backup.RestoreCheck.Schedule == "0 4 * * 2")
 					if test.apply {
 						assert.True(input.Database != nil && input.Username != nil)
 						assert.Equal(*input.Database, "AppDB")
@@ -278,7 +280,7 @@ func TestManagedBrowserMutationForwardsTypedIntent(t *testing.T) {
 				writer.WriteHeader(http.StatusAccepted)
 				_ = json.NewEncoder(writer).Encode(appapi.Postgres{Name: test.forwarded, Operation: "change"})
 			})}
-			form := url.Values{"action": {test.action}, "organization": {"team"}, "space": {"dev"}, "name": {test.destination}, "backup": {"approved"}, "tab": {"backups"}, "subtab": {"logs"}}
+			form := url.Values{"backupSettings": {"true"}, "backups": {"false"}, "restoreTestSchedule": {"0 4 * * 2"}, "action": {test.action}, "organization": {"team"}, "space": {"dev"}, "name": {test.destination}, "backup": {"approved"}, "tab": {"backups"}, "subtab": {"logs"}}
 			if test.apply {
 				form.Set("apply", "true")
 				form.Set("configuration", "database: AppDB\nusername: SQLUser\n")

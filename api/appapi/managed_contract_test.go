@@ -20,7 +20,11 @@ func TestManagementDocumentSchema(t *testing.T) {
 		schema, body string
 		valid        bool
 	}{
-		{"ManagementConfiguration", `{"components":{"cloudnative-pg":{"repo":"https://cloudnative-pg.github.io/charts","chart":"cloudnative-pg","version":"0.29.1","values":{"replicaCount":1}}},"s3":{"region":"us-east-1","bucket":"shared","pathStyle":true,"accessKey":"private-key","secretKey":"private-secret"},"organizations":[{"name":"team","managedAddons":true,"clusters":[{"name":"local","kubeconfig":"private-kubeconfig"}],"spaces":[{"name":"dev","cluster":"local","apps":[{"name":"api","replicas":0}],"customAddons":[{"name":"cache","repository":"https://charts.example.com","chart":"redis","version":"1.2.3"}],"managedAddons":{"postgres":[{"name":"database","restoreCheck":{"enabled":false}}]}}]}]}`, true},
+		{"ManagementConfiguration", `{"components":{"cloudnative-pg":{"repo":"https://cloudnative-pg.github.io/charts","chart":"cloudnative-pg","version":"0.29.1","values":{"replicaCount":1}}},"s3":{"region":"us-east-1","bucket":"shared","pathStyle":true,"accessKey":"private-key","secretKey":"private-secret"},"organizations":[{"name":"team","managedAddons":true,"clusters":[{"name":"local","kubeconfig":"private-kubeconfig"}],"spaces":[{"name":"dev","cluster":"local","apps":[{"name":"api","replicas":0}],"customAddons":[{"name":"cache","repository":"https://charts.example.com","chart":"redis","version":"1.2.3"}],"managedAddons":{"postgres":[{"name":"database","backup":{"enabled":false}}]}}]}]}`, true},
+		{"PostgresInput", `{"backup":{"enabled":true,"schedule":"0 0 * * *","restoreCheck":{"schedule":"0 3 * * 0"}}}`, true},
+		{"PostgresInput", `{"snapshots":"disabled"}`, false},
+		{"PostgresInput", `{"restoreCheck":{"enabled":false}}`, false},
+		{"PostgresInput", `{"backup":{"restoreCheck":{"enabled":false}}}`, false},
 		{"SpaceConfiguration", `{"apps":[],"customAddons":[],"managedAddons":{"postgres":[{"name":"database","storage":"2Gi"}]}}`, true},
 		{"ManagementConfiguration", `{"version":1}`, false},
 		{"ManagementConfiguration", `{"profile":"development"}`, false},
@@ -55,7 +59,7 @@ func TestManagedRoutesRejectInvalidRequestsBeforeManager(t *testing.T) {
 		{http.MethodPut, base + "test-1", `{"password":"private-password"}`, 400, "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."},
 		{http.MethodPut, base + "database", `{"instances":17}`, 400, "PostgreSQL instances must be an integer between 1 and 16."},
 		{http.MethodPut, base + "database", `{"private-password":"private-password"}`, 400, "PostgreSQL settings must use supported configuration fields. Passwords are generated automatically."},
-		{http.MethodPost, base + "database/restore", `{"backupId":"approved","specification":{"restoreCheck":{"enabled":"private-password"}}}`, 400, "PostgreSQL restoreCheck enabled must be a boolean."},
+		{http.MethodPost, base + "database/restore", `{"backupId":"approved","specification":{"backup":{"enabled":"private-password"}}}`, 400, "PostgreSQL backup enabled must be a boolean."},
 		{http.MethodPost, base + "database/restore", `{"backupId":"approved","recoveryTarget":"private-password"}`, 400, "PostgreSQL recoveryTarget must be an RFC3339 date-time string."},
 		{http.MethodPut, base + "database?apply=invalid", `{}`, 400, "invalid request path"},
 		{http.MethodPut, base + "Test1", `{}`, 400, "PostgreSQL names must contain 1 to 47 lowercase letters, digits or hyphens, and start and end with a letter or digit."},

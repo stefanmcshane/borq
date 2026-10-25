@@ -75,7 +75,7 @@ func (manager Manager) RestorePostgres(ctx context.Context, organization, space,
 		return Postgres{}, postgresValidationError{message: fmt.Sprintf("physical restore must retain PostgreSQL major version %d", backup.MajorVersion)}
 	}
 	if !input.RecoveryTarget.IsZero() && (input.RecoveryTarget.Before(backup.CompletedAt) || input.RecoveryTarget.After(backup.RecoveryEnd)) {
-		return Postgres{}, postgresValidationError{message: "recovery target is outside the verified available WAL range"}
+		return Postgres{}, postgresValidationError{message: "recovery target is outside the verified available recovery window"}
 	}
 	task := postgresTask{SourceArchive: archive.ID, BackupID: backup.ID, Fingerprint: backup.Fingerprint, RecoveryTarget: input.RecoveryTarget}
 	return manager.acceptPostgres(ctx, organization, space, name, specification, "restore", task)
@@ -180,7 +180,7 @@ func (manager Manager) RestoreCheckPostgres(ctx context.Context, organization, s
 	}
 	selected := PostgresBackup{}
 	for _, backup := range backups {
-		if backup.Eligible && backup.SourceID == stored.ID {
+		if backup.Eligible && backup.ArchiveID == stored.ArchiveID {
 			selected = backup
 			break
 		}
@@ -209,11 +209,14 @@ func (manager Manager) RestoreCheckPostgres(ctx context.Context, organization, s
 	if err != nil {
 		return Operation{}, err
 	}
+	if !postgresBackupsEnabled(stored.Postgres.Specification) || stored.ArchiveID != archive.ID || stored.Postgres.State == "removed" || stored.Postgres.State == "deleting" {
+		return Operation{}, fmt.Errorf("%w: backup policy or archive changed before restore check acceptance", ErrConflict)
+	}
 	if stored.ActiveOperation != "" || stored.ActiveCheck != "" {
 		return Operation{}, fmt.Errorf("%w: PostgreSQL operation or restore check already active", ErrConflict)
 	}
 	now := time.Now().UTC()
-	task := postgresTask{Key: addonKey(organization, space, name), Action: "check", Deadline: now.Add(time.Duration(stored.Postgres.Specification.RestoreCheck.TimeoutSeconds) * time.Second), SourceArchive: archive.ID, BackupID: backup.ID, Fingerprint: backup.Fingerprint, CheckID: checkID, CheckName: "pg-check-" + checkID[:20], CheckArchive: checkArchive, CheckJobUID: input.JobUID, Cleanup: "pending"}
+	task := postgresTask{Key: addonKey(organization, space, name), Action: "check", Deadline: now.Add(time.Duration(stored.Postgres.Specification.Backup.RestoreCheck.TimeoutSeconds) * time.Second), SourceArchive: archive.ID, BackupID: backup.ID, Fingerprint: backup.Fingerprint, CheckID: checkID, CheckName: "pg-check-" + checkID[:20], CheckArchive: checkArchive, CheckJobUID: input.JobUID, Cleanup: "pending"}
 	operation := Operation{ID: id, SpaceID: clusterInput.SpaceID, Status: "pending", Phase: "postgres-check", Message: "isolated PostgreSQL recovery verification accepted", StartedAt: now, UpdatedAt: now}
 	stored.ActiveCheck = id
 	stored.Postgres.RestoreCheck = PostgresRestoreCheck{Status: "pending", Operation: id, Cleanup: "pending", StartedAt: now}

@@ -41,7 +41,9 @@ func TestToolDiscovery(t *testing.T) {
 		arguments string
 		valid     bool
 	}{
-		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{}}`, true},
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{"backup":{"enabled":false,"restoreCheck":{"schedule":"0 3 * * 0"}}}}`, true},
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{"backup":{"restoreCheck":{"enabled":false}}}}`, false},
+		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{"snapshots":"disabled"}}`, false},
 		{"PutPostgres", `{"path":{"organization":"team","space":"dev","postgres":"database"},"body":{"password":"secret"}}`, false},
 		{"ApplyManagementConfiguration", `{"body":{"components":{"cloudnative-pg":{"version":"0.29.1"}},"organizations":[{"name":"team","managedAddons":true,"spaces":[{"name":"dev","managedAddons":{"postgres":[{"name":"database"}]}}]}]}}`, true},
 		{"RestorePostgres", `{"path":{"organization":"team","space":"dev","postgres":"restored"},"body":{"backupId":"approved"}}`, true},

@@ -37,7 +37,7 @@ test-managed-addons: ## Verify managed addon configuration, storage, runtime, an
 test-managed-postgres-e2e: ## Create, seed, back up, restore, compare, and remove real managed Postgres addons.
 	@mkdir -p tmp
 	$(GO_TEST_ENV) go build -o tmp/borq-managed-postgres-e2e ./cmd/borq
-	BORQ_MANAGEMENT_KUBECONFIG="$(BORQ_MANAGEMENT_KUBECONFIG)" BORQ_MANAGED_ADDON_TEST_BINARY="$(CURDIR)/tmp/borq-managed-postgres-e2e" BORQ_MANAGED_ADDON_TEST_SERVER_URL="$(BORQ_INTEGRATION_SERVER_URL)" $(GO_TEST_ENV) go test -tags=integration ./api/appserver -run TestManagedPostgresIntegrationRecovery -v -count=1 -timeout=35m $(ARGS)
+	BORQ_MANAGEMENT_KUBECONFIG="$(BORQ_MANAGEMENT_KUBECONFIG)" BORQ_MANAGED_ADDON_TEST_BINARY="$(CURDIR)/tmp/borq-managed-postgres-e2e" BORQ_MANAGED_ADDON_TEST_SERVER_URL="$(BORQ_INTEGRATION_SERVER_URL)" $(GO_TEST_ENV) go test -tags=integration ./api/appserver -run TestManagedPostgresIntegration -v -count=1 -timeout=35m $(ARGS)
 
 test-apps-e2e: ## Deploy apps on local k3d, test conversions and CLI exit codes using temporary servers and SQLite state.
 	@mkdir -p tmp

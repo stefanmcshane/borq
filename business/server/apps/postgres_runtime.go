@@ -43,15 +43,14 @@ func (manager Manager) postgresClient(ctx context.Context, stored postgresRecord
 	if err != nil {
 		return postgres.Client{}, postgres.Input{}, err
 	}
-	input := postgres.Input{Namespace: stored.Postgres.Namespace, Name: stored.Postgres.ClusterName, Owner: stored.ID, Organization: stored.Organization, SpaceID: target.ID, Instances: specification.Instances, StorageSize: specification.Storage, StorageClass: specification.StorageClass, Image: specification.Image, Database: specification.Database, Username: specification.Username, Requests: specification.Resources.Requests, Limits: specification.Resources.Limits, RetentionDays: specification.Backup.RecoveryWindowDays, BackupSchedule: "0 " + specification.Backup.Schedule, SnapshotSchedule: "0 " + specification.SnapshotSchedule}
+	input := postgres.Input{Namespace: stored.Postgres.Namespace, Name: stored.Postgres.ClusterName, Owner: stored.ID, Organization: stored.Organization, SpaceID: target.ID, Instances: specification.Instances, StorageSize: specification.Storage, StorageClass: specification.StorageClass, Image: specification.Image, Database: specification.Database, Username: specification.Username, Requests: specification.Resources.Requests, Limits: specification.Resources.Limits, RetentionDays: specification.Backup.RecoveryWindowDays, BackupSchedule: "0 " + specification.Backup.Schedule, BackupEnabled: postgresBackupsEnabled(specification), SnapshotSchedule: "0 0 * * * *"}
 	input.Credentials = postgres.CredentialSource{Mount: "database-" + cluster.ID, Role: "pg-" + stored.ID, Namespace: stored.Credentials.Namespace, Host: specification.Credentials.Host}
 	if stored.Postgres.EnvironmentGroup != "" {
 		input.EnvironmentExport = postgres.EnvironmentExport{Name: stored.Postgres.EnvironmentGroup, VaultPath: environmentGroupPath(target.ID, stored.Postgres.EnvironmentGroup)}
 	}
-	if stored.Postgres.Protection.Snapshots == "supported" {
-		input.SnapshotClass = specification.SnapshotClass
-	}
-	input.Check = postgres.Check{Enabled: specification.RestoreCheck.Enabled == nil || *specification.RestoreCheck.Enabled, Schedule: specification.RestoreCheck.Schedule, TimeoutSeconds: specification.RestoreCheck.TimeoutSeconds}
+	input.SnapshotClass = stored.SnapshotClass
+	input.Check = postgres.Check{Enabled: input.BackupEnabled, Schedule: specification.Backup.RestoreCheck.Schedule, TimeoutSeconds: specification.Backup.RestoreCheck.TimeoutSeconds}
+	input.Storage.ServerName = "archive-" + stored.ArchiveID
 	if manager.runtime.platformSettings.ApiUrl != "" {
 		input.Check.ApiURL = strings.TrimRight(manager.runtime.platformSettings.ApiUrl, "/") + "/api/v1/organizations/" + url.PathEscape(stored.Organization) + "/spaces/" + url.PathEscape(stored.Space) + "/managed-addons/postgres/" + url.PathEscape(stored.Postgres.Name) + "/restore-check"
 	}
@@ -94,6 +93,9 @@ func (manager Manager) postgresClient(ctx context.Context, stored postgresRecord
 }
 
 func (manager Manager) resumePostgresOperations(ctx context.Context) error {
+	if err := manager.migratePostgresPolicy(ctx); err != nil {
+		return err
+	}
 	records, err := manager.database.List(ctx, "postgres-operation")
 	if err != nil {
 		return err
@@ -191,6 +193,15 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 		}
 	}
 	if task.Action == "backup" {
+		for {
+			observed, err = client.Observe(ctx, input)
+			if err == nil && observed.Ready && observed.PolicyReady {
+				break
+			}
+			if err := manager.waitForPoll(ctx); err != nil {
+				return observed, err
+			}
+		}
 		if err := client.RequestBackup(ctx, input, operation.ID); err != nil {
 			return observed, err
 		}
@@ -236,7 +247,7 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 
 	for {
 		observed, err = client.Observe(ctx, input)
-		if err == nil && observed.Ready {
+		if err == nil && observed.Ready && observed.PolicyReady {
 			input, err = manager.reconcilePostgresCredentials(ctx, stored, client, input)
 			if err != nil {
 				var dependency postgresCredentialError
@@ -261,13 +272,16 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 				if consumerErr != nil {
 					return observed, consumerErr
 				}
-				if consumers && observed.Wal == "ready" && observed.Backups == "ready" {
+				if consumers {
+					if err := client.ActivateBackupSchedules(ctx, input); err != nil {
+						return observed, err
+					}
 					return observed, nil
 				}
 			}
 		}
 		operation.Status = "waiting"
-		operation.Message = "waiting for SQL, backup protection, OpenBao credentials, and application credential refresh"
+		operation.Message = "waiting for SQL, accepted backup policy, OpenBao credentials, and application credential refresh"
 		operation.UpdatedAt = time.Now().UTC()
 		if err := manager.savePostgresOperation(ctx, operation); err != nil {
 			return observed, err
@@ -276,14 +290,6 @@ func (manager Manager) executePostgres(ctx context.Context, stored postgresRecor
 			return observed, err
 		}
 	}
-}
-
-func postgresProtection(previous PostgresProtection, observed postgres.Observation) PostgresProtection {
-	previous.Backups = observed.Backups
-	previous.Wal = observed.Wal
-	previous.LastBackupAt = observed.LastBackupAt
-	previous.Message = observed.Message
-	return previous
 }
 
 func (manager Manager) savePostgresOperation(ctx context.Context, operation Operation) error {
@@ -315,10 +321,13 @@ func (manager Manager) finishPostgres(operation Operation, task postgresTask, ob
 		return err
 	}
 	stored.ActiveOperation = ""
+	if workErr == nil && (task.Action == "apply" || task.Action == "create" || task.Action == "restore") {
+		stored.NeedsPolicyApply = false
+	}
 	operation.Status = "succeeded"
 	stored.Postgres.State = "ready"
-	stored.Postgres.Message = "PostgreSQL accepts SQL; full backup and WAL protection ready"
-	stored.Postgres.Protection = postgresProtection(stored.Postgres.Protection, observed)
+	stored.Postgres.Message = "PostgreSQL accepts SQL; backup protection is reported separately"
+	stored.Postgres.Protection = postgresProtection(stored, observed, time.Now().UTC())
 	stored.Postgres.Protection.RecoveryWindowDays = stored.Postgres.Specification.Backup.RecoveryWindowDays
 	if task.Action == "delete" {
 		stored.Postgres.State = "removed"
@@ -327,9 +336,15 @@ func (manager Manager) finishPostgres(operation Operation, task postgresTask, ob
 	if workErr != nil {
 		operation.Status = "failed"
 		stored.Postgres.State = "failed"
+		if observed.Ready {
+			stored.Postgres.State = "ready"
+		}
 		stored.Postgres.Message = safePostgresError(workErr)
 	}
 	now := time.Now().UTC()
+	if workErr == nil && task.Action != "delete" && stored.LastTestArchive != stored.ArchiveID && postgresBackupsEnabled(stored.Postgres.Specification) {
+		stored.InitialCheck = operation.ID
+	}
 	stored.Postgres.UpdatedAt = now
 	operation.Message = stored.Postgres.Message
 	operation.UpdatedAt = now
@@ -378,12 +393,28 @@ func (manager Manager) postgresMaintenance() {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(manager.runtime.context, 30*time.Second)
+			if stored.NeedsPolicyApply && stored.ActiveCheck == "" {
+				_, _ = manager.PutPostgres(ctx, stored.Organization, stored.Space, stored.Postgres.Name, PostgresInput{}, true)
+				cancel()
+				continue
+			}
+
 			if err := manager.maintainPostgresEnvironment(ctx, record.Key, stored.ID); err != nil {
 				slog.ErrorContext(ctx, "postgres_environment_reconciliation_failed", "postgres_id", stored.ID, "organization", stored.Organization, "space", stored.Space, "database", stored.Postgres.Name, "reason", safePostgresEnvironmentError(err))
 			}
 			client, input, err := manager.postgresClient(ctx, stored, false)
-			if err == nil {
-				_ = client.PruneSnapshots(ctx, input, time.Duration(stored.Postgres.Specification.SnapshotRetentionHours)*time.Hour)
+			if err == nil && input.BackupEnabled && stored.ActiveCheck == "" {
+				_ = client.PruneSnapshots(ctx, input, 24*time.Hour)
+				if stored.InitialCheck != "" {
+					observed, err := client.Observe(ctx, input)
+					if err == nil && observed.Ready && observed.PolicyReady {
+						if observed.LastBackupAt.IsZero() {
+							_ = client.RequestBackup(ctx, input, stored.ArchiveID)
+						} else if observed.Backups == "ready" && observed.Wal == "ready" {
+							_ = client.RequestCheck(ctx, input, stored.InitialCheck)
+						}
+					}
+				}
 			}
 			cancel()
 		}
@@ -474,12 +505,24 @@ func (manager Manager) reconcilePostgresRuntime(ctx context.Context, stored post
 	if err != nil {
 		return postgres.Client{}, postgres.Input{}, err
 	}
+	previousSnapshotClass := current.SnapshotClass
+	current.SnapshotClass = ""
+	if postgresBackupsEnabled(current.Postgres.Specification) {
+		client, clusterInput, err := manager.postgresClient(ctx, current, false)
+		if err != nil {
+			return postgres.Client{}, postgres.Input{}, err
+		}
+		current.SnapshotClass, err = client.SnapshotClass(ctx, clusterInput.StorageClass, "")
+		if err != nil {
+			return postgres.Client{}, postgres.Input{}, err
+		}
+	}
 	previousName := current.Postgres.EnvironmentGroup
 	current, writes, err := manager.claimPostgresEnvironment(ctx, current, target)
 	if err != nil {
 		return postgres.Client{}, postgres.Input{}, err
 	}
-	if previousName != current.Postgres.EnvironmentGroup {
+	if previousName != current.Postgres.EnvironmentGroup || previousSnapshotClass != current.SnapshotClass {
 		write, err := documentWrite("postgres", task.Key, current, record.Revision)
 		if err != nil {
 			return postgres.Client{}, postgres.Input{}, err

@@ -72,66 +72,11 @@ type postgresFingerprint struct {
 // ESO, CNPG, S3 and SQL boundaries. Logical row bytes survive physical recovery.
 func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	assert := is.New(t)
-	config := postgresAcceptanceConfig{
-		binary:              os.Getenv("BORQ_MANAGED_ADDON_TEST_BINARY"),
-		server:              os.Getenv("BORQ_MANAGED_ADDON_TEST_SERVER_URL"),
-		kubeconfig:          os.Getenv("BORQ_MANAGEMENT_KUBECONFIG"),
-		organization:        os.Getenv("BORQ_MANAGED_ADDON_TEST_ORGANIZATION"),
-		cluster:             os.Getenv("BORQ_MANAGED_ADDON_TEST_CLUSTER"),
-		managementNamespace: os.Getenv("BORQ_MANAGED_ADDON_TEST_MANAGEMENT_NAMESPACE"),
-	}
-	if config.binary == "" || config.server == "" || config.kubeconfig == "" {
-		t.Fatal("BORQ_MANAGED_ADDON_TEST_BINARY, BORQ_MANAGED_ADDON_TEST_SERVER_URL and BORQ_MANAGEMENT_KUBECONFIG are required")
-	}
-	if config.organization == "" {
-		config.organization = "dev"
-	}
-	if config.cluster == "" {
-		config.cluster = "management"
-	}
-	if config.managementNamespace == "" {
-		config.managementNamespace = "borq"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	client, err := appapi.NewClientWithResponses(config.server, appapi.WithHTTPClient(&http.Client{Timeout: 2 * time.Minute}))
-	assert.NoErr(err)
-	restConfig, err := clientcmd.BuildConfigFromFlags("", config.kubeconfig)
-	assert.NoErr(err)
-	kube, err := kubernetes.NewForConfig(restConfig)
-	assert.NoErr(err)
-	run := postgresAcceptance{config: config, organization: config.organization, space: fmt.Sprintf("recovery-%x", time.Now().UnixNano())}
-	// The isolated namespace is also removed if provisioning fails before an addon
-	// becomes deletable. No pre-existing namespace or archive is touched.
-	t.Cleanup(func() { run.cleanup(t, client, kube) })
-	clusters, err := client.ListClustersWithResponse(ctx, run.organization)
-	assert.NoErr(err)
-	assertApplicationResponse(t, clusters.StatusCode(), clusters.Body, http.StatusOK)
-	if clusters.JSON200 == nil || !slices.ContainsFunc(*clusters.JSON200, func(cluster appapi.Cluster) bool { return cluster.Name == config.cluster }) {
-		t.Fatalf("organization %s has no registered cluster %s", run.organization, config.cluster)
-	}
-	for _, cluster := range *clusters.JSON200 {
-		if cluster.Name == config.cluster && cluster.ID != nil {
-			run.clusterID = *cluster.ID
-		}
-	}
-	if run.clusterID == "" {
-		t.Fatal("registered cluster has no credential engine identity")
-	}
-	grant, err := client.SetOrganizationManagedAddonsWithResponse(ctx, run.organization, appapi.OrganizationManagedAddonsInput{Enabled: true})
-	assert.NoErr(err)
-	assertApplicationResponse(t, grant.StatusCode(), grant.Body, http.StatusOK)
-	space, err := client.PutSpaceWithResponse(ctx, run.organization, run.space, appapi.SpaceInput{Cluster: config.cluster})
-	assert.NoErr(err)
-	assertApplicationResponse(t, space.StatusCode(), space.Body, http.StatusOK)
-	if space.JSON200 == nil {
-		t.Fatal("space response missing namespace")
-	}
-	run.namespace = space.JSON200.Namespace
+	ctx, run, client, kube := newPostgresAcceptance(t)
 
 	t.Log("apply public database.yaml and retrieve source credentials through CLI")
 	run.cli(t, ctx, "apply", "--file", filepath.Join("testdata", "database.yaml"), "--timeout", "12m")
-	source := run.database(t, ctx, "source")
+	source := run.waitBackupProtection(t, ctx, "source")
 	run.namespace = source.Namespace
 	assert.True(source.ClusterName != "")
 	if source.Specification.Instances == nil || source.Specification.Storage == nil {
@@ -166,7 +111,7 @@ func TestManagedPostgresIntegrationRecovery(t *testing.T) {
 	selected := run.newBackup(t, ctx, previous, source.ID)
 	t.Logf("restore catalogue backup %s into a new cluster", selected.ID)
 	run.cli(t, ctx, "backup", "restore", "restored", "--backup", selected.ID, "--timeout", "12m")
-	restored := run.database(t, ctx, "restored")
+	restored := run.waitBackupProtection(t, ctx, "restored")
 	assert.True(restored.ID != source.ID)
 	assert.True(restored.ClusterName != source.ClusterName)
 	restoredPod := run.clientPod(t, ctx, kube, "restored", restored.Specification)
@@ -226,6 +171,8 @@ SELECT count(*) FROM recovery.accounts WHERE name='post-restore';`)
 		run.waitOperation(t, ctx, client, deleted.JSON202.Operation)
 		run.credentialsRemoved(t, ctx, kube, database)
 	}
+	restConfig, err := clientcmd.BuildConfigFromFlags("", run.config.kubeconfig)
+	assert.NoErr(err)
 	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	assert.NoErr(err)
 	producers, err := dynamicClient.Resource(schema.GroupVersionResource{Group: "external-secrets.io", Version: "v1alpha1", Resource: "pushsecrets"}).Namespace(run.config.managementNamespace).List(ctx, metav1.ListOptions{LabelSelector: "borq.run/postgres-id in (" + source.ID + "," + restored.ID + ")"})
@@ -613,11 +560,10 @@ func (run postgresAcceptance) restoreCheck(t *testing.T, ctx context.Context, ku
 	}
 	observed := run.database(t, ctx, "source")
 	assert.Equal(observed.RestoreCheck.Status, "succeeded")
-	if observed.RestoreCheck.Cleanup == nil || observed.RestoreCheck.SnapshotStatus == nil || observed.RestoreCheck.DurationSeconds == nil {
-		t.Fatal("restore-check result missing cleanup, snapshot capability or duration")
+	if observed.RestoreCheck.Cleanup == nil || observed.RestoreCheck.DurationSeconds == nil {
+		t.Fatal("restore-check result missing cleanup or duration")
 	}
 	assert.Equal(*observed.RestoreCheck.Cleanup, "succeeded")
-	assert.Equal(*observed.RestoreCheck.SnapshotStatus, "unsupported")
 	assert.True(*observed.RestoreCheck.DurationSeconds > 0)
 	afterClusters, afterVolumes := run.recoveryInventory(t, ctx, kube, resources)
 	assert.Equal(afterClusters, beforeClusters)
@@ -771,4 +717,289 @@ func (run postgresAcceptance) cleanup(t *testing.T, client *appapi.ClientWithRes
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// newPostgresAcceptance shares real API/Kubernetes setup without modifying an existing database.
+func newPostgresAcceptance(t *testing.T) (context.Context, postgresAcceptance, *appapi.ClientWithResponses, *kubernetes.Clientset) {
+	t.Helper()
+	assert := is.New(t)
+	config := postgresAcceptanceConfig{
+		binary:              os.Getenv("BORQ_MANAGED_ADDON_TEST_BINARY"),
+		server:              os.Getenv("BORQ_MANAGED_ADDON_TEST_SERVER_URL"),
+		kubeconfig:          os.Getenv("BORQ_MANAGEMENT_KUBECONFIG"),
+		organization:        os.Getenv("BORQ_MANAGED_ADDON_TEST_ORGANIZATION"),
+		cluster:             os.Getenv("BORQ_MANAGED_ADDON_TEST_CLUSTER"),
+		managementNamespace: os.Getenv("BORQ_MANAGED_ADDON_TEST_MANAGEMENT_NAMESPACE"),
+	}
+	if config.binary == "" || config.server == "" || config.kubeconfig == "" {
+		t.Fatal("BORQ_MANAGED_ADDON_TEST_BINARY, BORQ_MANAGED_ADDON_TEST_SERVER_URL and BORQ_MANAGEMENT_KUBECONFIG are required")
+	}
+	if config.organization == "" {
+		config.organization = "dev"
+	}
+	if config.cluster == "" {
+		config.cluster = "management"
+	}
+	if config.managementNamespace == "" {
+		config.managementNamespace = "borq"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	t.Cleanup(cancel)
+	client, err := appapi.NewClientWithResponses(config.server, appapi.WithHTTPClient(&http.Client{Timeout: 2 * time.Minute}))
+	assert.NoErr(err)
+	restConfig, err := clientcmd.BuildConfigFromFlags("", config.kubeconfig)
+	assert.NoErr(err)
+	kube, err := kubernetes.NewForConfig(restConfig)
+	assert.NoErr(err)
+	run := postgresAcceptance{config: config, organization: config.organization, space: fmt.Sprintf("recovery-%x", time.Now().UnixNano())}
+	// The isolated namespace is also removed if provisioning fails before an addon
+	// becomes deletable. No pre-existing namespace or archive is touched.
+	t.Cleanup(func() { run.cleanup(t, client, kube) })
+	clusters, err := client.ListClustersWithResponse(ctx, run.organization)
+	assert.NoErr(err)
+	assertApplicationResponse(t, clusters.StatusCode(), clusters.Body, http.StatusOK)
+	if clusters.JSON200 == nil || !slices.ContainsFunc(*clusters.JSON200, func(cluster appapi.Cluster) bool { return cluster.Name == config.cluster }) {
+		t.Fatalf("organization %s has no registered cluster %s", run.organization, config.cluster)
+	}
+	for _, cluster := range *clusters.JSON200 {
+		if cluster.Name == config.cluster && cluster.ID != nil {
+			run.clusterID = *cluster.ID
+		}
+	}
+	if run.clusterID == "" {
+		t.Fatal("registered cluster has no credential engine identity")
+	}
+	grant, err := client.SetOrganizationManagedAddonsWithResponse(ctx, run.organization, appapi.OrganizationManagedAddonsInput{Enabled: true})
+	assert.NoErr(err)
+	assertApplicationResponse(t, grant.StatusCode(), grant.Body, http.StatusOK)
+	space, err := client.PutSpaceWithResponse(ctx, run.organization, run.space, appapi.SpaceInput{Cluster: config.cluster})
+	assert.NoErr(err)
+	assertApplicationResponse(t, space.StatusCode(), space.Body, http.StatusOK)
+	if space.JSON200 == nil {
+		t.Fatal("space response missing namespace")
+	}
+	run.namespace = space.JSON200.Namespace
+
+	return ctx, run, client, kube
+}
+
+// TestManagedPostgresIntegrationBackupPolicy proves backup suspension, fresh archive generations,
+// mandatory authenticated restore tests, and historical recovery through real controllers.
+func TestManagedPostgresIntegrationBackupPolicy(t *testing.T) {
+	assert := is.New(t)
+	ctx, run, client, kube := newPostgresAcceptance(t)
+	run.cli(t, ctx, "create", "source", "--backups=false", "--timeout", "12m")
+	source := run.database(t, ctx, "source")
+	assert.Equal(source.State, "ready")
+	assert.Equal(source.Protection.Status, "disabled")
+	sourcePod := run.clientPod(t, ctx, kube, "source", source.Specification)
+	run.sql(t, ctx, sourcePod, "CREATE TABLE backup_policy_probe(value text); INSERT INTO backup_policy_probe VALUES ('before pause');")
+	run.backupRuntimePolicy(t, ctx, kube, source, false, "")
+	apply := true
+	setEnabled := func(enabled bool) appapi.Postgres {
+		response, err := client.PutPostgresWithResponse(ctx, run.organization, run.space, "source", &appapi.PutPostgresParams{Apply: &apply}, appapi.PostgresInput{Backup: &appapi.PostgresBackupPolicy{Enabled: &enabled}})
+		assert.NoErr(err)
+		assertApplicationResponse(t, response.StatusCode(), response.Body, http.StatusAccepted)
+		if response.JSON202 == nil {
+			t.Fatal("policy change has no accepted database")
+		}
+		accepted := *response.JSON202
+		if enabled {
+			assert.True(accepted.Protection.Status != "ready")
+		}
+		run.waitOperation(t, ctx, client, accepted.Operation)
+		return run.database(t, ctx, "source")
+	}
+	t.Log("enable backups and await the automatically created, authenticated initial restore test")
+	source = setEnabled(true)
+	source = run.waitBackupProtection(t, ctx, "source")
+	first := run.newBackup(t, ctx, nil, source.ID)
+	run.backupRuntimePolicy(t, ctx, kube, source, true, first.ArchiveID)
+	t.Log("disable backups, preserve historical recovery, and write through the inactive interval")
+	source = setEnabled(false)
+	assert.Equal(source.State, "ready")
+	assert.Equal(source.Protection.Status, "disabled")
+	run.backupRuntimePolicy(t, ctx, kube, source, false, "")
+	beforeResume := run.catalogue(t, ctx)
+	assert.True(slices.ContainsFunc(beforeResume, func(backup appapi.PostgresBackup) bool { return backup.ID == first.ID && backup.Eligible }))
+	gapWrite := time.Now().UTC()
+	run.sql(t, ctx, sourcePod, "INSERT INTO backup_policy_probe VALUES ('during pause');")
+	t.Log("resume into a fresh archive and require fresh restore-test evidence")
+	source = setEnabled(true)
+	source = run.waitBackupProtection(t, ctx, "source")
+	resumed := run.newBackup(t, ctx, beforeResume, source.ID)
+	assert.True(resumed.ArchiveID != first.ArchiveID)
+	assert.True(resumed.RecoveryStart.After(gapWrite))
+	run.backupRuntimePolicy(t, ctx, kube, source, true, resumed.ArchiveID)
+	for _, backup := range run.catalogue(t, ctx) {
+		if backup.ArchiveID == first.ArchiveID {
+			assert.True(backup.RecoveryEnd.Before(gapWrite))
+		}
+	}
+	t.Log("restore the historical generation into a destination with backups disabled")
+	disabled := false
+	response, err := client.RestorePostgresWithResponse(ctx, run.organization, run.space, "restored", appapi.PostgresRestoreInput{BackupID: first.ID, Specification: &appapi.PostgresInput{Backup: &appapi.PostgresBackupPolicy{Enabled: &disabled}}})
+	assert.NoErr(err)
+	assertApplicationResponse(t, response.StatusCode(), response.Body, http.StatusAccepted)
+	if response.JSON202 == nil {
+		t.Fatal("historical restore has no accepted database")
+	}
+	run.waitOperation(t, ctx, client, response.JSON202.Operation)
+	restored := run.database(t, ctx, "restored")
+	assert.Equal(restored.Protection.Status, "disabled")
+	restoredPod := run.clientPod(t, ctx, kube, "restored", restored.Specification)
+	assert.Equal(run.sql(t, ctx, restoredPod, "SELECT string_agg(value, ',' ORDER BY value) FROM backup_policy_probe;"), "before pause\n")
+	// The resumed generation must contain writes made while backups were disabled.
+	restoredDelete, err := client.DeletePostgresWithResponse(ctx, run.organization, run.space, "restored")
+	assert.NoErr(err)
+	if restoredDelete.JSON202 == nil {
+		t.Fatal("restore cleanup missing operation")
+	}
+	run.waitOperation(t, ctx, client, restoredDelete.JSON202.Operation)
+	response, err = client.RestorePostgresWithResponse(ctx, run.organization, run.space, "restored", appapi.PostgresRestoreInput{BackupID: resumed.ID, Specification: &appapi.PostgresInput{Backup: &appapi.PostgresBackupPolicy{Enabled: &disabled}}})
+	assert.NoErr(err)
+	assertApplicationResponse(t, response.StatusCode(), response.Body, http.StatusAccepted)
+	if response.JSON202 == nil {
+		t.Fatal("resumed restore missing operation")
+	}
+	run.waitOperation(t, ctx, client, response.JSON202.Operation)
+	restored = run.database(t, ctx, "restored")
+	// Existing client Pods obtain credentials only at creation, so replace the first restore's client.
+	assert.NoErr(kube.CoreV1().Pods(run.namespace).Delete(ctx, restoredPod, metav1.DeleteOptions{}))
+	for {
+		_, err := kube.CoreV1().Pods(run.namespace).Get(ctx, restoredPod, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("old restore client did not terminate")
+		case <-time.After(time.Second):
+		}
+	}
+	restoredPod = run.clientPod(t, ctx, kube, "restored", restored.Specification)
+	assert.Equal(run.sql(t, ctx, restoredPod, "SELECT count(*) FROM backup_policy_probe;"), "2\n")
+	t.Log("historical and resumed archive data verified; cleaning up databases")
+}
+
+func (run postgresAcceptance) waitBackupProtection(t *testing.T, ctx context.Context, name string) appapi.Postgres {
+	t.Helper()
+	for {
+		observed := run.database(t, ctx, name)
+		if observed.Protection.Status == "ready" {
+			if observed.RestoreCheck.Status != "succeeded" || observed.RestoreCheck.Cleanup == nil || *observed.RestoreCheck.Cleanup != "succeeded" || observed.Protection.LastTestAt == nil {
+				t.Fatal("backup protection claimed ready without successful current-generation verification and cleanup")
+			}
+			return observed
+		}
+		if observed.RestoreCheck.Status == "failed" {
+			t.Fatalf("initial restore test failed: %v", observed.RestoreCheck.Message)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("backup protection remained %s: %s", observed.Protection.Status, observed.Protection.Message)
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (run postgresAcceptance) backupRuntimePolicy(t *testing.T, ctx context.Context, kube *kubernetes.Clientset, database appapi.Postgres, enabled bool, archive string) {
+	t.Helper()
+	assert := is.New(t)
+	config, err := clientcmd.BuildConfigFromFlags("", run.config.kubeconfig)
+	assert.NoErr(err)
+	resources, err := dynamic.NewForConfig(config)
+	assert.NoErr(err)
+	cluster, err := resources.Resource(schema.GroupVersionResource{Group: "postgresql.cnpg.io", Version: "v1", Resource: "clusters"}).Namespace(run.namespace).Get(ctx, database.ClusterName, metav1.GetOptions{})
+	assert.NoErr(err)
+	plugins, _, err := unstructured.NestedSlice(cluster.Object, "spec", "plugins")
+	assert.NoErr(err)
+	archiving := false
+	for _, plugin := range plugins {
+		value, _ := plugin.(map[string]any)
+		if value["isWALArchiver"] == true {
+			archiving = true
+		}
+	}
+	assert.Equal(archiving, enabled)
+	primary, _, err := unstructured.NestedString(cluster.Object, "status", "currentPrimary")
+	assert.NoErr(err)
+	pod, err := kube.CoreV1().Pods(run.namespace).Get(ctx, primary, metav1.GetOptions{})
+	assert.NoErr(err)
+	expectedMarker := "disabled"
+	if enabled {
+		expectedMarker = "archive-" + archive
+	}
+	observedMarker := ""
+	for _, container := range pod.Spec.Containers {
+		if container.Name != "postgres" {
+			continue
+		}
+		for _, variable := range container.Env {
+			if variable.Name == "BORQ_BACKUP_ARCHIVE" {
+				observedMarker = variable.Value
+			}
+		}
+	}
+	assert.Equal(observedMarker, expectedMarker)
+
+	schedules, err := resources.Resource(schema.GroupVersionResource{Group: "postgresql.cnpg.io", Version: "v1", Resource: "scheduledbackups"}).Namespace(run.namespace).List(ctx, metav1.ListOptions{})
+	assert.NoErr(err)
+	currentSchedule := ""
+	for _, schedule := range schedules.Items {
+		name, _, _ := unstructured.NestedString(schedule.Object, "spec", "cluster", "name")
+		if name != database.ClusterName {
+			continue
+		}
+		suspended, _, _ := unstructured.NestedBool(schedule.Object, "spec", "suspend")
+		if !enabled {
+			assert.True(suspended)
+			continue
+		}
+		method, _, _ := unstructured.NestedString(schedule.Object, "spec", "method")
+		if method == "plugin" && !suspended {
+			assert.True(strings.HasSuffix(schedule.GetName(), archive[len(archive)-12:]))
+			currentSchedule = schedule.GetName()
+		}
+	}
+	cron, err := kube.BatchV1().CronJobs(run.namespace).Get(ctx, database.ClusterName+"-check", metav1.GetOptions{})
+	if !enabled && apierrors.IsNotFound(err) {
+		return
+	}
+	assert.NoErr(err)
+	assert.Equal(cron.Spec.Schedule, "0 3 * * 0")
+	assert.Equal(cron.Spec.Suspend != nil && *cron.Spec.Suspend, !enabled)
+	if !enabled {
+		return
+	}
+	assert.True(currentSchedule != "")
+	backups, err := resources.Resource(schema.GroupVersionResource{Group: "postgresql.cnpg.io", Version: "v1", Resource: "backups"}).Namespace(run.namespace).List(ctx, metav1.ListOptions{})
+	assert.NoErr(err)
+	matched := false
+	for _, backup := range backups.Items {
+		phase, _, _ := unstructured.NestedString(backup.Object, "status", "phase")
+		if phase == "completed" && backup.GetLabels()["borq.run/postgres-archive"] == "archive-"+archive {
+			matched = true
+		}
+		for _, owner := range backup.GetOwnerReferences() {
+			if (owner.Kind == "ScheduledBackup" && owner.Name == currentSchedule) && phase == "completed" {
+				matched = true
+			}
+		}
+	}
+	assert.True(matched)
+	jobs, err := kube.BatchV1().Jobs(run.namespace).List(ctx, metav1.ListOptions{})
+	assert.NoErr(err)
+	initial := false
+	for _, job := range jobs.Items {
+		for _, owner := range job.OwnerReferences {
+			if owner.Kind == "CronJob" && owner.UID == cron.UID && strings.HasSuffix(job.Name, database.Operation[:12]) {
+				initial = true
+			}
+		}
+	}
+	assert.True(initial)
 }

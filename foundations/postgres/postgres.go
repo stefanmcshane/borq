@@ -96,6 +96,8 @@ type Input struct {
 	Requests, Limits map[string]string
 	// Storage identifies the destination for full backups and WAL.
 	Storage Storage
+	// BackupEnabled derives outgoing backup and verification activity from the accepted policy.
+	BackupEnabled bool
 	// BackupSchedule uses six cron fields; RetentionDays is the recovery window.
 	BackupSchedule string
 	RetentionDays  int
@@ -183,7 +185,7 @@ func Manifests(input Input) []map[string]any {
 	if input.StorageClass != "" {
 		storage["storageClass"] = input.StorageClass
 	}
-	spec := map[string]any{"instances": int64(input.Instances), "imageName": input.Image, "storage": storage, "enableSuperuserAccess": false, "postgresql": map[string]any{"parameters": map[string]any{"archive_timeout": "60s"}}, "plugins": []any{walPlugin}, "inheritedMetadata": map[string]any{"labels": map[string]any{"borq.run/postgres-id": input.Owner, "borq.run/organization": input.Organization, "borq.run/space-id": input.SpaceID, "borq.run/addon-name": input.Name, "borq.run/logs": "true", "borq.run/metrics": "true"}}, "bootstrap": map[string]any{"initdb": map[string]any{"database": input.Database, "owner": input.Username, "secret": map[string]any{"name": input.Name + "-app"}}}}
+	spec := map[string]any{"env": []any{map[string]any{"name": "BORQ_BACKUP_ARCHIVE", "value": backupPolicyMarker(input)}}, "instances": int64(input.Instances), "imageName": input.Image, "storage": storage, "enableSuperuserAccess": false, "postgresql": map[string]any{"parameters": map[string]any{"archive_timeout": "60s"}}, "plugins": []any{walPlugin}, "inheritedMetadata": map[string]any{"labels": map[string]any{"borq.run/postgres-id": input.Owner, "borq.run/organization": input.Organization, "borq.run/space-id": input.SpaceID, "borq.run/addon-name": input.Name, "borq.run/logs": "true", "borq.run/metrics": "true"}}, "bootstrap": map[string]any{"initdb": map[string]any{"database": input.Database, "owner": input.Username, "secret": map[string]any{"name": input.Name + "-app"}}}}
 	if input.Credentials.Host != "" {
 		spec["certificates"] = map[string]any{"serverAltDNSNames": []any{input.Credentials.Host}}
 	}
@@ -197,7 +199,10 @@ func Manifests(input Input) []map[string]any {
 	config := object("v1", "ConfigMap", input.Name+"-aws", input.Namespace, input.Owner, nil)
 	config["data"] = map[string]any{"config": "[default]\ns3 =\n    addressing_style = " + style + "\n"}
 	spec["projectedVolumeTemplate"] = map[string]any{"sources": []any{map[string]any{"configMap": map[string]any{"name": input.Name + "-aws", "items": []any{map[string]any{"key": "config", "path": "aws-config"}}}}}}
-	manifests := []map[string]any{config, objectStore(input, store, input.Storage)}
+	manifests := []map[string]any{config}
+	if input.BackupEnabled && !input.Isolated {
+		manifests = append(manifests, objectStore(input, store, input.Storage))
+	}
 	if input.Recovery != nil {
 		sourceStore := input.Name + "-source"
 		manifests = append(manifests, objectStore(input, sourceStore, input.Recovery.Storage))
@@ -215,28 +220,29 @@ func Manifests(input Input) []map[string]any {
 			recovery["recoveryTarget"] = map[string]any{"targetImmediate": true}
 		}
 	}
-	if input.Isolated {
-		delete(spec, "plugins")
+	if input.Isolated || !input.BackupEnabled {
+		spec["plugins"] = []any{}
+		spec["backup"] = map[string]any{}
 	}
-	if input.SnapshotClass != "" {
+	if input.BackupEnabled && !input.Isolated && input.SnapshotClass != "" {
 		spec["backup"] = map[string]any{"volumeSnapshot": map[string]any{"className": input.SnapshotClass, "snapshotOwnerReference": "backup", "online": true, "onlineConfiguration": map[string]any{"waitForArchive": true, "immediateCheckpoint": true}}}
 	}
 	manifests = append(manifests, object("postgresql.cnpg.io/v1", "Cluster", input.Name, input.Namespace, input.Owner, spec))
-	backup := map[string]any{"schedule": input.BackupSchedule, "immediate": true, "backupOwnerReference": "self", "cluster": map[string]any{"name": input.Name}, "method": "plugin", "pluginConfiguration": map[string]any{"name": "barman-cloud.cloudnative-pg.io"}}
-	if !input.Isolated {
-		manifests = append(manifests, object("postgresql.cnpg.io/v1", "ScheduledBackup", input.Name+"-daily", input.Namespace, input.Owner, backup))
+	backup := map[string]any{"schedule": input.BackupSchedule, "suspend": true, "immediate": false, "backupOwnerReference": "self", "cluster": map[string]any{"name": input.Name}, "method": "plugin", "pluginConfiguration": map[string]any{"name": "barman-cloud.cloudnative-pg.io"}}
+	if input.BackupEnabled && !input.Isolated {
+		manifests = append(manifests, object("postgresql.cnpg.io/v1", "ScheduledBackup", backupScheduleName(input), input.Namespace, input.Owner, backup))
 	}
-	if input.SnapshotClass != "" {
-		manifests = append(manifests, snapshotSchedule(input, false))
+	if input.BackupEnabled && !input.Isolated && input.SnapshotClass != "" {
+		manifests = append(manifests, snapshotSchedule(input, true))
 	}
-	if input.Check.Enabled && input.Check.ApiURL != "" {
+	if input.BackupEnabled && !input.Isolated && input.Check.Enabled && input.Check.ApiURL != "" {
 		manifests = append(manifests, checkManifests(input)...)
 	}
 	return manifests
 }
 
 func snapshotSchedule(input Input, suspended bool) map[string]any {
-	return object("postgresql.cnpg.io/v1", "ScheduledBackup", input.Name+"-snapshots", input.Namespace, input.Owner, map[string]any{"schedule": input.SnapshotSchedule, "suspend": suspended, "immediate": true, "backupOwnerReference": "self", "cluster": map[string]any{"name": input.Name}, "method": "volumeSnapshot"})
+	return object("postgresql.cnpg.io/v1", "ScheduledBackup", input.Name+"-snapshots", input.Namespace, input.Owner, map[string]any{"schedule": input.SnapshotSchedule, "suspend": suspended, "immediate": false, "backupOwnerReference": "self", "cluster": map[string]any{"name": input.Name}, "method": "volumeSnapshot"})
 }
 
 func checkManifests(input Input) []map[string]any {
@@ -255,7 +261,7 @@ while :; do
   sleep 5
 done`}, "env": []any{map[string]any{"name": "BORQ_CHECK_URL", "value": input.Check.ApiURL}, map[string]any{"name": "JOB_UID", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.labels['batch.kubernetes.io/controller-uid']"}}}}, "volumeMounts": []any{map[string]any{"name": "token", "mountPath": "/var/run/borq", "readOnly": true}}, "resources": map[string]any{"requests": map[string]any{"cpu": "10m", "memory": "16Mi"}, "limits": map[string]any{"cpu": "100m", "memory": "64Mi"}}, "securityContext": map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string]any{"drop": []any{"ALL"}}}}
 	pod := map[string]any{"serviceAccountName": name, "automountServiceAccountToken": false, "restartPolicy": "Never", "containers": []any{container}, "volumes": []any{map[string]any{"name": "token", "projected": map[string]any{"sources": []any{map[string]any{"serviceAccountToken": map[string]any{"path": "token", "audience": "borq-postgres-check", "expirationSeconds": int64(3600)}}}}}}}
-	cron := object("batch/v1", "CronJob", name, input.Namespace, input.Owner, map[string]any{"schedule": input.Check.Schedule, "timeZone": "Etc/UTC", "concurrencyPolicy": "Forbid", "successfulJobsHistoryLimit": int64(1), "failedJobsHistoryLimit": int64(2), "jobTemplate": map[string]any{"spec": map[string]any{"backoffLimit": int64(1), "activeDeadlineSeconds": int64(input.Check.TimeoutSeconds + 660), "ttlSecondsAfterFinished": int64(86400), "template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"borq.run/postgres-id": input.Owner}}, "spec": pod}}}})
+	cron := object("batch/v1", "CronJob", name, input.Namespace, input.Owner, map[string]any{"schedule": input.Check.Schedule, "suspend": true, "timeZone": "Etc/UTC", "concurrencyPolicy": "Forbid", "successfulJobsHistoryLimit": int64(1), "failedJobsHistoryLimit": int64(2), "jobTemplate": map[string]any{"spec": map[string]any{"backoffLimit": int64(1), "activeDeadlineSeconds": int64(input.Check.TimeoutSeconds + 660), "ttlSecondsAfterFinished": int64(86400), "template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"borq.run/postgres-id": input.Owner}}, "spec": pod}}}})
 	return []map[string]any{sa, cron}
 }
 
@@ -273,7 +279,13 @@ func (client Client) apply(ctx context.Context, manifest map[string]any, owner s
 	if err != nil {
 		return err
 	}
-	_, err = handle.Patch(ctx, item.GetName(), types.ApplyPatchType, encoded, metav1.PatchOptions{FieldManager: "borq-postgres"})
+	options := metav1.PatchOptions{FieldManager: "borq-postgres"}
+	if item.GetKind() == "ScheduledBackup" || item.GetKind() == "CronJob" {
+		// Kubernetes tracks imperative suspension separately from apply, even for the same manager.
+		force := true
+		options.Force = &force
+	}
+	_, err = handle.Patch(ctx, item.GetName(), types.ApplyPatchType, encoded, options)
 	return err
 }
 
@@ -312,6 +324,33 @@ func (client Client) Reconcile(ctx context.Context, input Input) error {
 	} else if err != nil {
 		return err
 	}
+	changingArchive, err := client.archiveSwitchRequired(ctx, input)
+	if err != nil {
+		return err
+	}
+	suspended := input
+	if changingArchive {
+		suspended.BackupEnabled = false
+	}
+	if err := client.suspendBackupSchedules(ctx, suspended); err != nil {
+		return err
+	}
+	if !input.Isolated && (!input.BackupEnabled || changingArchive) {
+		for {
+			settled, err := client.backupWorkSettled(ctx, input)
+			if err != nil {
+				return err
+			}
+			if settled {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+		}
+	}
 	if err := client.RefreshStorage(ctx, input); err != nil {
 		return err
 	}
@@ -328,26 +367,7 @@ func (client Client) Reconcile(ctx context.Context, input Input) error {
 			return fmt.Errorf("reconcile %s: %w", manifest["kind"], err)
 		}
 	}
-	if !input.Check.Enabled {
-		if err := client.deleteOne(ctx, "CronJob", input.Namespace, input.Name+"-check", input.Owner); err != nil {
-			return err
-		}
-	}
-	if input.SnapshotClass == "" {
-		handle := client.dynamic.Resource(resource("ScheduledBackup")).Namespace(input.Namespace)
-		schedule, err := handle.Get(ctx, input.Name+"-snapshots", metav1.GetOptions{})
-		if err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		if err == nil {
-			if schedule.GetLabels()["borq.run/postgres-id"] != input.Owner {
-				return errors.New("managed PostgreSQL snapshot schedule has conflicting ownership")
-			}
-			if err := client.apply(ctx, snapshotSchedule(input, true), input.Owner); err != nil {
-				return err
-			}
-		}
-	}
+
 	return nil
 }
 
@@ -411,17 +431,21 @@ func (client Client) SnapshotClass(ctx context.Context, storageClass, snapshotCl
 type Observation struct {
 	// Ready is true only after controller readiness and a real SQL query succeed.
 	Ready bool
+	// PolicyReady means the accepted outgoing backup policy has reached the current primary.
+	PolicyReady bool
 	// Wal and Backups report controller conditions and completed Backup resources.
 	Wal, Backups string
 	// Message summarizes observed health.
 	Message string
+	// CheckUnavailable records missing mandatory restore-test routing.
+	CheckUnavailable bool
 	// LastBackupAt records the latest complete backup resource timestamp.
 	LastBackupAt time.Time
 }
 
 // Observe reads actual controller state and executes SQL against the current primary.
 func (client Client) Observe(ctx context.Context, input Input) (Observation, error) {
-	result := Observation{Wal: "pending", Backups: "pending"}
+	result := Observation{Wal: "pending", Backups: "pending", CheckUnavailable: input.BackupEnabled && !input.Isolated && (!input.Check.Enabled || input.Check.ApiURL == "")}
 	cluster, err := client.dynamic.Resource(resource("Cluster")).Namespace(input.Namespace).Get(ctx, input.Name, metav1.GetOptions{})
 	if err != nil {
 		return result, err
@@ -444,23 +468,19 @@ func (client Client) Observe(ctx context.Context, input Input) (Observation, err
 	if err != nil {
 		return result, err
 	}
-	for _, backup := range backups.Items {
-		name, _, _ := unstructured.NestedString(backup.Object, "spec", "cluster", "name")
-		phase, _, _ := unstructured.NestedString(backup.Object, "status", "phase")
-		method, _, _ := unstructured.NestedString(backup.Object, "spec", "method")
-		if name != input.Name || method != "plugin" || phase != "completed" {
-			continue
+	result.Backups, result.LastBackupAt = backupHealth(input, backups.Items, time.Now().UTC())
+	primary, _, _ := unstructured.NestedString(cluster.Object, "status", "currentPrimary")
+	if primary != "" {
+		pod, err := client.kube.CoreV1().Pods(input.Namespace).Get(ctx, primary, metav1.GetOptions{})
+		if err != nil {
+			return result, err
 		}
-		ended, _, _ := unstructured.NestedString(backup.Object, "status", "stoppedAt")
-		completed, _ := time.Parse(time.RFC3339Nano, ended)
-		if completed.After(result.LastBackupAt) {
-			result.LastBackupAt = completed
-		}
-		result.Backups = "ready"
+		result.PolicyReady = primaryPolicyReady(*cluster, *pod, input)
 	}
-	if result.Backups == "ready" && input.RetentionDays > 0 && time.Since(result.LastBackupAt) > time.Duration(input.RetentionDays)*24*time.Hour {
-		result.Backups = "failed"
+	if !result.PolicyReady {
+		result.Wal = "pending"
 	}
+
 	if !ready {
 		result.Message = "waiting for PostgreSQL controller readiness"
 		return result, nil
@@ -477,6 +497,7 @@ func (client Client) Observe(ctx context.Context, input Input) (Observation, err
 // RequestBackup creates one idempotent full backup request with an operation-derived identity.
 func (client Client) RequestBackup(ctx context.Context, input Input, operation string) error {
 	manifest := object("postgresql.cnpg.io/v1", "Backup", input.Name+"-b-"+operation[:12], input.Namespace, input.Owner, map[string]any{"cluster": map[string]any{"name": input.Name}, "method": "plugin", "pluginConfiguration": map[string]any{"name": "barman-cloud.cloudnative-pg.io"}})
+	manifest["metadata"].(map[string]any)["labels"].(map[string]any)["borq.run/postgres-archive"] = input.Storage.ServerName
 	return client.apply(ctx, manifest, input.Owner)
 }
 
@@ -485,6 +506,9 @@ func (client Client) BackupComplete(ctx context.Context, input Input, operation 
 	backup, err := client.dynamic.Resource(resource("Backup")).Namespace(input.Namespace).Get(ctx, input.Name+"-b-"+operation[:12], metav1.GetOptions{})
 	if err != nil {
 		return false, err
+	}
+	if !backupInArchive(*backup, input) {
+		return false, errors.New("backup belongs to a different archive")
 	}
 	phase, _, _ := unstructured.NestedString(backup.Object, "status", "phase")
 	if phase == "failed" {

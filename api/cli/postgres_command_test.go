@@ -28,6 +28,8 @@ func TestManagedPostgresCommands(t *testing.T) {
 				var input appapi.PostgresInput
 				assert.NoErr(json.NewDecoder(request.Body).Decode(&input))
 				assert.True(input.Storage != nil && *input.Storage == "2Gi")
+				assert.True(input.Backup != nil && input.Backup.Enabled != nil && !*input.Backup.Enabled)
+				assert.True(input.Backup.RestoreCheck != nil && input.Backup.RestoreCheck.Schedule != nil && *input.Backup.RestoreCheck.Schedule == "0 4 * * 2")
 				assert.Equal(request.URL.Query().Get("apply"), "false")
 			}
 			writer.WriteHeader(http.StatusAccepted)
@@ -56,7 +58,7 @@ func TestManagedPostgresCommands(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	flags := []string{"--api-url", server.URL, "--organization", "team", "--space", "dev"}
-	arguments := append([]string{"am", "postgres", "create", "database", "--storage", "2Gi"}, flags...)
+	arguments := append([]string{"am", "postgres", "create", "database", "--storage", "2Gi", "--backups=false", "--restore-test-schedule", "0 4 * * 2"}, flags...)
 	output, _, err := runApplicationCommand(t, arguments...)
 	assert.NoErr(err)
 	assert.True(strings.Contains(output, "succeeded"))

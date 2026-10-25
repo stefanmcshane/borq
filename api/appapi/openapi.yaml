@@ -105,29 +105,7 @@ components:
           description: "Resources sets Kubernetes resource requests and limits."
         backup:
           $ref: "#/components/schemas/PostgresBackupPolicy"
-          description: "Backup configures mandatory full backups and WAL retention."
-        snapshotSchedule:
-          x-borq-validation-message: "PostgreSQL snapshotSchedule must be a five-field UTC cron string."
-          type: "string"
-          description: "Five-field UTC cron schedule; omitted selects hourly."
-        snapshotRetentionHours:
-          x-borq-validation-message: "PostgreSQL snapshotRetentionHours must be an integer between 1 and 8760."
-          type: "integer"
-          description: "SnapshotRetentionHours bounds CSI backup retention; omission selects 24."
-        snapshots:
-          x-borq-validation-message: "PostgreSQL snapshots must be preferred, required, or disabled."
-          type: "string"
-          description: "Snapshots selects preferred, required, or disabled CSI protection."
-          enum:
-            - "preferred"
-            - "required"
-            - "disabled"
-        snapshotClass:
-          x-borq-validation-message: "PostgreSQL snapshotClass must be a string."
-          type: "string"
-          description: "SnapshotClass selects an optional CSI snapshot class."
-        restoreCheck:
-          $ref: "#/components/schemas/PostgresRestoreCheckInput"
+          description: "Backup configures backups and mandatory recovery verification."
     PostgresCredentialPolicy:
       type: "object"
       additionalProperties: false
@@ -148,6 +126,12 @@ components:
       type: "object"
       additionalProperties: false
       properties:
+        enabled:
+          x-borq-validation-message: "PostgreSQL backup enabled must be a boolean."
+          type: "boolean"
+          description: "Enable backups and mandatory restore tests; omitted on creation selects true."
+        restoreCheck:
+          $ref: "#/components/schemas/PostgresRestoreCheckInput"
         schedule:
           x-borq-validation-message: "PostgreSQL backup schedule must be a five-field UTC cron string."
           type: "string"
@@ -180,10 +164,6 @@ components:
       type: "object"
       additionalProperties: false
       properties:
-        enabled:
-          x-borq-validation-message: "PostgreSQL restoreCheck enabled must be a boolean."
-          type: "boolean"
-          description: "Enabled distinguishes omitted weekly verification from explicit disablement."
         schedule:
           x-borq-validation-message: "PostgreSQL restoreCheck schedule must be a five-field UTC cron string."
           type: "string"
@@ -232,7 +212,7 @@ components:
           description: "Operation identifies the latest accepted operation."
         protection:
           $ref: "#/components/schemas/PostgresProtection"
-          description: "Protection reports independently observed backup and snapshot health."
+          description: "Protection reports observed backup and restore-test health."
         restoreCheck:
           $ref: "#/components/schemas/PostgresRestoreCheck"
           description: "RestoreCheck reports the latest isolated verification outcome."
@@ -257,29 +237,25 @@ components:
       type: "object"
       additionalProperties: false
       properties:
-        backups:
+        status:
           type: "string"
-          description: "Backups is ready, pending, failed, or unavailable."
-        wal:
-          type: "string"
-          description: "Wal is ready, pending, failed, or unavailable."
-        snapshots:
-          type: "string"
-          description: "Snapshots is supported, unsupported, disabled, pending, or failed."
+          description: "Protection is disabled, pending, unverified, ready, or degraded."
         message:
           type: "string"
           description: "Message explains protection degradation separately from database readiness."
         lastBackupAt:
           type: "string"
           format: "date-time"
-          description: "LastBackupAt is the last observed completed full backup."
+          description: "LastBackupAt is the last observed completed backup."
+        lastTestAt:
+          type: "string"
+          format: "date-time"
+          description: "Last successful restore test of the current archive."
         recoveryWindowDays:
           type: "integer"
           description: "RecoveryWindowDays is the minimum configured recovery retention window."
       required:
-        - "backups"
-        - "wal"
-        - "snapshots"
+        - "status"
         - "message"
         - "recoveryWindowDays"
     PostgresRestoreCheck:
@@ -295,9 +271,6 @@ components:
         message:
           type: "string"
           description: "Message describes the SQL verification result without credentials."
-        snapshotStatus:
-          type: "string"
-          description: "SnapshotStatus reports succeeded, failed, unsupported, or disabled CSI recovery verification."
         cleanup:
           type: "string"
           description: "Cleanup reports pending, succeeded, or failed resource cleanup."
@@ -350,7 +323,7 @@ components:
         recoveryEnd:
           type: "string"
           format: "date-time"
-          description: "RecoveryEnd is the latest conservatively established WAL recovery target."
+          description: "RecoveryEnd is the latest conservatively established recovery target."
         eligible:
           type: "boolean"
           description: "Eligible means the metadata is complete and compatible."
@@ -383,7 +356,7 @@ components:
           x-borq-validation-message: "PostgreSQL recoveryTarget must be an RFC3339 date-time string."
           type: "string"
           format: "date-time"
-          description: "RecoveryTarget optionally selects a point in time within the available WAL range."
+          description: "RecoveryTarget optionally selects a point in time within the available recovery window."
         specification:
           $ref: "#/components/schemas/PostgresInput"
           description: "Specification sets destination sizing and verification policy."
@@ -698,29 +671,7 @@ components:
           $ref: "#/components/schemas/PostgresCredentialPolicy"
         backup:
           $ref: "#/components/schemas/PostgresBackupPolicy"
-          description: "Backup configures mandatory full backups and WAL retention."
-        snapshotSchedule:
-          x-borq-validation-message: "PostgreSQL snapshotSchedule must be a five-field UTC cron string."
-          type: "string"
-          description: "Five-field UTC cron schedule; omitted selects hourly."
-        snapshotRetentionHours:
-          x-borq-validation-message: "PostgreSQL snapshotRetentionHours must be an integer between 1 and 8760."
-          type: "integer"
-          description: "SnapshotRetentionHours bounds CSI backup retention; omission selects 24."
-        snapshots:
-          x-borq-validation-message: "PostgreSQL snapshots must be preferred, required, or disabled."
-          type: "string"
-          description: "Snapshots selects preferred, required, or disabled CSI protection."
-          enum:
-            - "preferred"
-            - "required"
-            - "disabled"
-        snapshotClass:
-          x-borq-validation-message: "PostgreSQL snapshotClass must be a string."
-          type: "string"
-          description: "SnapshotClass selects an optional CSI snapshot class."
-        restoreCheck:
-          $ref: "#/components/schemas/PostgresRestoreCheckInput"
+          description: "Backup configures backups and mandatory recovery verification."
       required:
         - "name"
     ComponentOverride:
@@ -4623,7 +4574,7 @@ paths:
     put:
       operationId: "PutPostgres"
       summary: "Create or apply managed PostgreSQL"
-      description: "Name-only creation uses automatic full backups, continuous WAL and weekly recovery verification. Credentials are returned only by GetPostgresEnv. Poll GetPostgresOperation for completion."
+      description: "Name-only creation enables automatic backups with mandatory restore tests, weekly by default. Credentials are returned only by GetPostgresEnv. Poll GetPostgresOperation for completion."
       parameters:
         -
           $ref: "#/components/parameters/OrganizationPath"
@@ -4832,7 +4783,7 @@ paths:
     post:
       operationId: "BackupPostgres"
       summary: "Backup PostgreSQL"
-      description: "Automation capability. Full backups also run immediately and daily without an explicit request."
+      description: "Automation capability. When enabled, backups start automatically and follow the configured schedule."
       parameters:
         -
           $ref: "#/components/parameters/OrganizationPath"

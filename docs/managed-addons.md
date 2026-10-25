@@ -1,7 +1,7 @@
 # Manage PostgreSQL addons
 
-Managed PostgreSQL gives each database its own PostgreSQL cluster in Kubernetes, automatic S3
-backups, continuous WAL archiving, and scheduled recovery checks. Use an existing
+Managed PostgreSQL gives each database its own PostgreSQL cluster in Kubernetes, automatic
+backups and mandatory scheduled restore tests. Use an existing
 Borq organization and space bound to a registered deployment cluster.
 
 ## Configure shared storage and organization access
@@ -228,14 +228,16 @@ copy. A user-requested restore enrolls the new database independently.
 
 ## Inspect protection and restore a backup
 
-Borq starts an initial full S3 backup, then schedules full backups daily at midnight
-UTC. Continuous WAL archiving provides a 30-day recovery window by default. The
-catalogue reports the recovery bounds currently available for each backup.
+Backups are enabled by default with a 30-day recovery window. Borq makes an
+initial backup and tests a restored copy after the database becomes available.
+The default backup cadence is daily at midnight UTC. Backup protection reports
+`unverified` until a restore test succeeds, and `degraded` when protection fails
+or a required restore test becomes overdue. Database availability is separate.
 
-CSI snapshots run hourly with 24-hour retention when the cluster supports them.
-The default `snapshots: preferred` reports `unsupported` when CSI snapshots are
-unavailable. Use `required` to fail provisioning without snapshot support, or
-`disabled` to turn off CSI protection. S3 backups and WAL remain mandatory.
+Use `backup.enabled: false` or `--backups=false` to stop backup activity and
+restore tests. Existing backups remain available in the catalogue. Organization
+S3 assignment is still required. Enabling backups again starts a fresh recovery
+window and a new restore test. Recovery bounds never span the disabled interval.
 
 List real backup metadata and select an entry with `eligible: true`:
 
@@ -252,7 +254,10 @@ with `borq am postgres env database-restored --organization example --space defa
 
 Weekly recovery checks run by default on Sunday at 03:00 UTC. Each check restores an
 isolated copy, verifies SQL access, and cleans up the copy. Checks do not overlap.
-Database details show the result, duration, snapshot-check result, and cleanup state.
+Tests are mandatory whenever backups are enabled. Database details show the
+result, duration, and cleanup state. Catalogue eligibility indicates compatible
+backup metadata and available recovery bounds; it does not mean each entry has
+been individually restore tested.
 
 Delete a live database and its volumes explicitly:
 
@@ -270,13 +275,20 @@ Add optional fields to an entry in `managedAddons.postgres` for `instances`,
 `storage`, `storageClass`, `image`, `database`, and `username`. Resource sizing is
 optional. Set CPU and memory under `resources.requests` and `resources.limits`.
 
-Use `backup.schedule` and `backup.recoveryWindowDays` to change S3 protection.
-Use `snapshotSchedule`, `snapshotRetentionHours`, and `snapshotClass` to change CSI
-protection. Schedules use five cron fields in UTC.
+Use `backup.schedule` and `backup.recoveryWindowDays` to change backup cadence and
+retention. Configure mandatory restore tests with `backup.restoreCheck.schedule`,
+`backup.restoreCheck.timeoutSeconds`, and optional `backup.restoreCheck.resources`.
+Schedules use five cron fields in UTC. Restore tests default to Sunday at 03:00
+UTC with a 1,800-second timeout. The CLI also accepts `--restore-test-schedule`.
 
-Set `restoreCheck.enabled: false` to disable scheduled recovery checks. Otherwise,
-adjust `restoreCheck.schedule`, `restoreCheck.timeoutSeconds`, and the optional
-`restoreCheck.resources` requests and limits. The default timeout is 1,800 seconds.
+```yaml
+backup:
+  enabled: true
+  schedule: "0 0 * * *"
+  recoveryWindowDays: 30
+  restoreCheck:
+    schedule: "0 3 * * 0"
+```
 
 In the web UI, configure shared S3 and organization access in **Settings**. Select a
 space and open **Managed PostgreSQL**. Creation requires only a name. **Advanced

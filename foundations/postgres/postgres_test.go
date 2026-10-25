@@ -12,7 +12,7 @@ import (
 // TestManifests isolates recovery reads from destination archives and protects the upstream plugin wire contract.
 func TestManifests(t *testing.T) {
 	check := is.New(t)
-	input := Input{Namespace: "space", Name: "pg-destination", Owner: "destination-id", Image: "ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie", Instances: 1, StorageSize: "1Gi", Database: "app", Username: "app", RetentionDays: 30, BackupSchedule: "0 0 0 * * *", SnapshotSchedule: "0 0 * * * *", SnapshotClass: "csi-snapshots", Storage: Storage{Bucket: "backups", Prefix: "destination-prefix", ServerName: "destination-server", PathStyle: true}, Recovery: &Recovery{Storage: Storage{Bucket: "backups", Prefix: "source-prefix", ServerName: "original-server"}, BackupID: "20261024T000000"}, Check: Check{Enabled: true, Schedule: "0 3 * * 0", ApiURL: "https://borq.test/api/v1/resource/restore-check", TimeoutSeconds: 1800}}
+	input := Input{BackupEnabled: true, Namespace: "space", Name: "pg-destination", Owner: "destination-id", Image: "ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie", Instances: 1, StorageSize: "1Gi", Database: "app", Username: "app", RetentionDays: 30, BackupSchedule: "0 0 0 * * *", SnapshotSchedule: "0 0 * * * *", SnapshotClass: "csi-snapshots", Storage: Storage{Bucket: "backups", Prefix: "destination-prefix", ServerName: "destination-server", PathStyle: true}, Recovery: &Recovery{Storage: Storage{Bucket: "backups", Prefix: "source-prefix", ServerName: "original-server"}, BackupID: "20261024T000000"}, Check: Check{Enabled: true, Schedule: "0 3 * * 0", ApiURL: "https://borq.test/api/v1/resource/restore-check", TimeoutSeconds: 1800}}
 	manifests := Manifests(input)
 	objects := map[string]map[string]any{}
 	for _, manifest := range manifests {
@@ -34,6 +34,10 @@ func TestManifests(t *testing.T) {
 	check.NoErr(err)
 	check.True(!exists)
 	cluster := objects["pg-destination"]
+	environment, _, err := unstructured.NestedSlice(cluster, "spec", "env")
+	check.NoErr(err)
+	check.Equal(environment, []any{map[string]any{"name": "BORQ_BACKUP_ARCHIVE", "value": "destination-server"}})
+
 	value, _, err = unstructured.NestedString(cluster, "spec", "bootstrap", "recovery", "recoveryTarget", "backupID")
 	check.NoErr(err)
 	check.Equal(value, "20261024T000000")
@@ -44,13 +48,20 @@ func TestManifests(t *testing.T) {
 	check.NoErr(err)
 	sourcePlugin := external[0].(map[string]any)["plugin"].(map[string]any)
 	check.Equal(sourcePlugin["parameters"].(map[string]any)["serverName"], "original-server")
-	schedule := objects["pg-destination-daily"]
+	schedule := objects[backupScheduleName(input)]
 	value, _, err = unstructured.NestedString(schedule, "spec", "method")
 	check.NoErr(err)
 	check.Equal(value, "plugin")
 	value, _, err = unstructured.NestedString(schedule, "spec", "pluginConfiguration", "name")
 	check.NoErr(err)
 	check.Equal(value, "barman-cloud.cloudnative-pg.io")
+	suspended, _, err := unstructured.NestedBool(schedule, "spec", "suspend")
+	check.NoErr(err)
+	check.True(suspended)
+	immediate, _, err = unstructured.NestedBool(schedule, "spec", "immediate")
+	check.NoErr(err)
+	check.True(!immediate)
+
 	value, _, err = unstructured.NestedString(objects["pg-destination-aws"], "data", "config")
 	check.NoErr(err)
 	check.True(strings.Contains(value, "addressing_style = path"))
@@ -58,19 +69,39 @@ func TestManifests(t *testing.T) {
 	value, _, err = unstructured.NestedString(cron, "spec", "concurrencyPolicy")
 	check.NoErr(err)
 	check.Equal(value, "Forbid")
+	suspended, _, err = unstructured.NestedBool(cron, "spec", "suspend")
+	check.NoErr(err)
+	check.True(suspended)
+
 	deadline, _, err := unstructured.NestedInt64(cron, "spec", "jobTemplate", "spec", "activeDeadlineSeconds")
 	check.NoErr(err)
 	check.Equal(deadline, int64(2460))
-	input.Isolated = true
-	input.Check.Enabled = false
-	input.SnapshotClass = ""
-	for _, manifest := range Manifests(input) {
-		check.True(manifest["kind"] != "ScheduledBackup")
-		if manifest["kind"] == "Cluster" {
-			_, exists, _ := unstructured.NestedSlice(manifest, "spec", "plugins")
-			check.True(!exists)
+	for _, isolated := range []bool{false, true} {
+		input.Isolated = isolated
+		input.BackupEnabled = false
+		input.Check.Enabled = false
+		input.SnapshotClass = ""
+		sawSource := false
+		for _, manifest := range Manifests(input) {
+			check.True(manifest["kind"] != "ScheduledBackup" && manifest["kind"] != "CronJob")
+			metadata := manifest["metadata"].(map[string]any)
+			check.True(metadata["name"] != "pg-destination-store")
+			if metadata["name"] == "pg-destination-source" {
+				sawSource = true
+			}
+			if manifest["kind"] == "Cluster" {
+				plugins, _, _ := unstructured.NestedSlice(manifest, "spec", "plugins")
+				check.Equal(len(plugins), 0)
+				backup, exists, err := unstructured.NestedMap(manifest, "spec", "backup")
+				check.NoErr(err)
+				check.True(exists && backup != nil && len(backup) == 0)
+				source, _, _ := unstructured.NestedSlice(manifest, "spec", "externalClusters")
+				check.Equal(len(source), 1)
+			}
 		}
+		check.True(sawSource)
 	}
+
 }
 
 // TestBackupMetadata rejects incomplete physical archives and treats backup timestamps as database metadata.

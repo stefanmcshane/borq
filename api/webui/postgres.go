@@ -27,6 +27,11 @@ type postgresPageData struct {
 	Path string
 	// Operation reports durable accepted changes.
 	Operation appapi.Operation
+	// BackupsEnabled and RestoreTestSchedule populate the editable backup controls.
+	BackupsEnabled      bool
+	RestoreTestSchedule string
+	// Configuration omits the backup fields owned by the form controls.
+	Configuration appapi.PostgresInput
 }
 
 func (web handler) loadPostgresPage(request *http.Request, selection url.Values, page pageData) (pageData, error) {
@@ -69,6 +74,27 @@ func (web handler) loadPostgresPage(request *http.Request, selection url.Values,
 	page.Postgres.Database, err = requestApi[appapi.Postgres](request.Context(), web.api, http.MethodGet, base+"/"+url.PathEscape(name), nil)
 	if err != nil {
 		return page, err
+	}
+	page.Postgres.BackupsEnabled = true
+	page.Postgres.RestoreTestSchedule = "0 3 * * 0"
+	if policy := page.Postgres.Database.Specification.Backup; policy != nil {
+		if policy.Enabled != nil {
+			page.Postgres.BackupsEnabled = *policy.Enabled
+		}
+		if policy.RestoreCheck != nil && policy.RestoreCheck.Schedule != nil {
+			page.Postgres.RestoreTestSchedule = *policy.RestoreCheck.Schedule
+		}
+	}
+	page.Postgres.Configuration = page.Postgres.Database.Specification
+	if policy := page.Postgres.Configuration.Backup; policy != nil {
+		editable := *policy
+		editable.Enabled = nil
+		if editable.RestoreCheck != nil {
+			restore := *editable.RestoreCheck
+			restore.Schedule = nil
+			editable.RestoreCheck = &restore
+		}
+		page.Postgres.Configuration.Backup = &editable
 	}
 	page.Title = name
 	page.Postgres.Range = selection.Get("range")
@@ -180,6 +206,18 @@ func (web handler) executePostgresAction(request *http.Request, result actionRes
 			if err := json.Unmarshal(data, &input); err != nil {
 				return result, apiProblem{status: http.StatusBadRequest, message: "Unable to read PostgreSQL configuration."}
 			}
+		}
+		if form.Get("backupSettings") == "true" {
+			enabled := form.Get("backups") == "true"
+			if input.Backup == nil {
+				input.Backup = &appapi.PostgresBackupPolicy{}
+			}
+			input.Backup.Enabled = &enabled
+			schedule := form.Get("restoreTestSchedule")
+			if input.Backup.RestoreCheck == nil {
+				input.Backup.RestoreCheck = &appapi.PostgresRestoreCheckInput{}
+			}
+			input.Backup.RestoreCheck.Schedule = &schedule
 		}
 		if storage := form.Get("storage"); storage != "" {
 			input.Storage = &storage

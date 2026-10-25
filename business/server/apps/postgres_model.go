@@ -2,7 +2,7 @@ package apps
 
 import "time"
 
-// PostgresInput configures an isolated, automatically protected PostgreSQL cluster.
+// PostgresInput configures an isolated, managed PostgreSQL cluster.
 type PostgresInput struct {
 	// Instances is the number of PostgreSQL instances; omission selects one.
 	Instances int `json:"instances,omitempty"`
@@ -20,18 +20,8 @@ type PostgresInput struct {
 	Credentials PostgresCredentialPolicy `json:"credentials,omitempty"`
 	// Resources sets Kubernetes resource requests and limits.
 	Resources PostgresResources `json:"resources,omitempty"`
-	// Backup configures mandatory full backups and WAL retention.
+	// Backup configures backups and mandatory recovery verification.
 	Backup PostgresBackupPolicy `json:"backup,omitempty"`
-	// SnapshotSchedule uses five cron fields and defaults to hourly.
-	SnapshotSchedule string `json:"snapshotSchedule,omitempty"`
-	// SnapshotRetentionHours bounds CSI backup retention; omission selects 24.
-	SnapshotRetentionHours int `json:"snapshotRetentionHours,omitempty"`
-	// Snapshots selects preferred, required, or disabled CSI protection.
-	Snapshots string `json:"snapshots,omitempty"`
-	// SnapshotClass selects an optional CSI snapshot class.
-	SnapshotClass string `json:"snapshotClass,omitempty"`
-	// RestoreCheck configures automatic isolated recovery verification.
-	RestoreCheck PostgresRestoreCheckInput `json:"restoreCheck,omitempty"`
 }
 
 // PostgresCredentialPolicy controls automatically rotated database passwords.
@@ -44,8 +34,13 @@ type PostgresCredentialPolicy struct {
 	Port int `json:"port,omitempty"`
 }
 
-// PostgresBackupPolicy configures mandatory object storage protection.
+// PostgresBackupPolicy configures backup retention and recovery verification.
 type PostgresBackupPolicy struct {
+	// Enabled uses a pointer to distinguish omitted partial updates from explicit disablement.
+	// Omission on creation enables backups.
+	Enabled *bool `json:"enabled,omitempty"`
+	// RestoreCheck configures mandatory tests while backups are enabled.
+	RestoreCheck PostgresRestoreCheckInput `json:"restoreCheck,omitempty"`
 	// Schedule is a five-field UTC cron expression; omission selects daily at midnight.
 	Schedule string `json:"schedule,omitempty"`
 	// RecoveryWindowDays retains a recovery window; omission selects 30 days.
@@ -62,8 +57,6 @@ type PostgresResources struct {
 
 // PostgresRestoreCheckInput schedules recovery verification without exposing credentials.
 type PostgresRestoreCheckInput struct {
-	// Enabled distinguishes omitted weekly verification from explicit disablement.
-	Enabled *bool `json:"enabled,omitempty"`
 	// Schedule is a five-field UTC cron expression; omission selects Sunday at 03:00.
 	Schedule string `json:"schedule,omitempty"`
 	// TimeoutSeconds bounds the complete verification and cleanup workflow.
@@ -92,7 +85,7 @@ type Postgres struct {
 	Message string `json:"message"`
 	// Operation identifies the latest accepted operation.
 	Operation string `json:"operation"`
-	// Protection reports independently observed backup and snapshot health.
+	// Protection reports observed backup and recovery-test health.
 	Protection PostgresProtection `json:"protection"`
 	// RestoreCheck reports the latest isolated verification outcome.
 	RestoreCheck PostgresRestoreCheck `json:"restoreCheck"`
@@ -100,19 +93,17 @@ type Postgres struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// PostgresProtection distinguishes full backups, WAL archiving, and CSI capability.
+// PostgresProtection reports recoverability independently of database availability.
 type PostgresProtection struct {
-	// Backups is ready, pending, failed, or unavailable.
-	Backups string `json:"backups"`
-	// Wal is ready, pending, failed, or unavailable.
-	Wal string `json:"wal"`
-	// Snapshots is supported, unsupported, disabled, pending, or failed.
-	Snapshots string `json:"snapshots"`
-	// Message explains protection degradation separately from database readiness.
+	// Status is disabled, pending, unverified, ready, or degraded.
+	Status string `json:"status"`
+	// Message explains protection separately from database readiness.
 	Message string `json:"message"`
-	// LastBackupAt is the last observed completed full backup.
+	// LastBackupAt is the latest observed backup in the current archive.
 	LastBackupAt time.Time `json:"lastBackupAt,omitempty"`
-	// RecoveryWindowDays is the minimum configured recovery retention window.
+	// LastTestAt is the last successful restore test of the current archive.
+	LastTestAt time.Time `json:"lastTestAt,omitempty"`
+	// RecoveryWindowDays is the configured recovery retention window.
 	RecoveryWindowDays int `json:"recoveryWindowDays"`
 }
 
@@ -124,8 +115,6 @@ type PostgresRestoreCheck struct {
 	Operation string `json:"operation,omitempty"`
 	// Message describes the SQL verification result without credentials.
 	Message string `json:"message,omitempty"`
-	// SnapshotStatus reports succeeded, failed, unsupported, or disabled CSI recovery verification.
-	SnapshotStatus string `json:"snapshotStatus,omitempty"`
 	// Cleanup reports pending, succeeded, or failed resource cleanup.
 	Cleanup string `json:"cleanup,omitempty"`
 	// StartedAt is the original attempt start.
@@ -156,7 +145,7 @@ type PostgresBackup struct {
 	SizeBytes int64 `json:"sizeBytes"`
 	// RecoveryStart is the earliest safe target for this base backup.
 	RecoveryStart time.Time `json:"recoveryStart"`
-	// RecoveryEnd is the latest conservatively established WAL recovery target.
+	// RecoveryEnd is the latest conservatively established recovery target.
 	RecoveryEnd time.Time `json:"recoveryEnd"`
 	// Eligible means the metadata is complete and compatible.
 	Eligible bool `json:"eligible"`
@@ -168,7 +157,7 @@ type PostgresBackup struct {
 type PostgresRestoreInput struct {
 	// BackupID selects an opaque entry returned by ListPostgresBackups.
 	BackupID string `json:"backupId"`
-	// RecoveryTarget optionally selects a point in time within the available WAL range.
+	// RecoveryTarget optionally selects a point in time within the available recovery window.
 	RecoveryTarget time.Time `json:"recoveryTarget,omitempty"`
 	// Specification sets destination sizing and verification policy.
 	Specification PostgresInput `json:"specification,omitempty"`
