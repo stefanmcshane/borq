@@ -41,7 +41,7 @@ func newApplicationServerCommand(configuration Config) *cobra.Command {
 	command.Flags().StringVar(&input.PlatformSettings.TelemetryURL, "management-telemetry-url", input.PlatformSettings.TelemetryURL, "Authenticated Borq telemetry gateway URL reachable from targets.")
 	command.Flags().StringVar(&input.PlatformSettings.LokiURL, "management-loki-url", input.PlatformSettings.LokiURL, "Optional authenticated Loki push URL override.")
 	command.Flags().StringVar(&input.PlatformSettings.PrometheusURL, "management-prometheus-url", input.PlatformSettings.PrometheusURL, "Optional authenticated Prometheus remote-write URL override.")
-	command.Flags().StringVar(&input.PlatformSettings.S3Endpoint, "management-s3-endpoint", input.PlatformSettings.S3Endpoint, "Development S3 endpoint reachable from deployment targets.")
+	command.Flags().StringVar(&input.PlatformSettings.S3Endpoint, "management-s3-endpoint", input.PlatformSettings.S3Endpoint, "Built-in S3 endpoint reachable from deployment targets.")
 	command.Flags().StringVar(&input.PlatformSettings.StorageClass, "infrastructure-storage-class", input.PlatformSettings.StorageClass, "Storage class used by management components.")
 	for _, name := range []string{"management-s3-endpoint", "infrastructure-profile", "management-openbao-url", "management-telemetry-url", "management-loki-url", "management-prometheus-url"} {
 		_ = command.Flags().MarkHidden(name)

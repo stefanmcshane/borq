@@ -52,6 +52,8 @@ type Object struct {
 	Size int64
 	// LastModified is the service's recorded write time.
 	LastModified time.Time
+	// ETag identifies the captured object for conditional reads.
+	ETag string
 }
 
 // Client owns the SDK transport, which requires shared pointer ownership.
@@ -137,7 +139,7 @@ func (client Client) List(ctx context.Context, prefix string) ([]Object, error) 
 			return nil, errors.New("S3 listing exceeds 100000 objects; use ListPage to stream the archive")
 		}
 		for _, entry := range page.Contents {
-			objects = append(objects, Object{Key: strings.TrimPrefix(aws.ToString(entry.Key), rootPrefix(client.config.Prefix)), Size: aws.ToInt64(entry.Size), LastModified: aws.ToTime(entry.LastModified)})
+			objects = append(objects, Object{Key: strings.TrimPrefix(aws.ToString(entry.Key), rootPrefix(client.config.Prefix)), Size: aws.ToInt64(entry.Size), LastModified: aws.ToTime(entry.LastModified), ETag: aws.ToString(entry.ETag)})
 		}
 	}
 	return objects, nil
@@ -257,7 +259,7 @@ func (client Client) ListPage(ctx context.Context, prefix, continuation string, 
 	}
 	result := ObjectPage{Objects: []Object{}, Continuation: aws.ToString(page.NextContinuationToken)}
 	for _, entry := range page.Contents {
-		result.Objects = append(result.Objects, Object{Key: strings.TrimPrefix(aws.ToString(entry.Key), rootPrefix(client.config.Prefix)), Size: aws.ToInt64(entry.Size), LastModified: aws.ToTime(entry.LastModified)})
+		result.Objects = append(result.Objects, Object{Key: strings.TrimPrefix(aws.ToString(entry.Key), rootPrefix(client.config.Prefix)), Size: aws.ToInt64(entry.Size), LastModified: aws.ToTime(entry.LastModified), ETag: aws.ToString(entry.ETag)})
 	}
 	return result, nil
 }

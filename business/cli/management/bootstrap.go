@@ -83,7 +83,7 @@ type Request struct {
 	LokiUrl string
 	// PrometheusUrl optionally selects a full authenticated metrics ingestion endpoint.
 	PrometheusUrl string
-	// S3Endpoint overrides the development object store address reachable from target clusters.
+	// S3Endpoint overrides the management object store address reachable from target clusters.
 	S3Endpoint string
 	// StorageClass selects persistent storage; borq-local uses k3s local-path.
 	StorageClass string

@@ -205,13 +205,16 @@ func waitManagementResult(t *testing.T, manager Manager, id, status string) {
 
 // The fixture models only Kubernetes vault access and the S3/OpenBao HTTP contracts, never controller success.
 type managementStorageFixture struct {
-	mutex      sync.Mutex
-	s3         *httptest.Server
-	kubeconfig string
-	denied     bool
-	listGate   chan struct{}
-	gateAt     int
-	listCount  int
+	mutex        sync.Mutex
+	s3           *httptest.Server
+	kubeconfig   string
+	denied       bool
+	listGate     chan struct{}
+	gateAt       int
+	listCount    int
+	vaultGate    chan struct{}
+	vaultStarted chan struct{}
+	vaultDenied  bool
 }
 
 func newManagementStorageFixture(t *testing.T) *managementStorageFixture {
@@ -261,6 +264,20 @@ func newManagementStorageFixture(t *testing.T) *managementStorageFixture {
 	documents := map[string]map[string]string{}
 	vault := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		fixture.mutex.Lock()
+		gate, started := fixture.vaultGate, fixture.vaultStarted
+		fixture.mutex.Unlock()
+		if gate != nil && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/secret/data/borq/management/offsite/") {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			select {
+			case <-gate:
+			case <-request.Context().Done():
+				return
+			}
+		}
+		fixture.mutex.Lock()
 		defer fixture.mutex.Unlock()
 		writer.Header().Set("Content-Type", "application/json")
 		if discovery, exists := managerDiscovery(request.URL.Path); exists {
@@ -273,6 +290,10 @@ func newManagementStorageFixture(t *testing.T) *managementStorageFixture {
 		}
 		if strings.HasSuffix(request.URL.Path, "/sys/seal-status") {
 			_, _ = writer.Write([]byte(`{"initialized":true,"sealed":false}`))
+			return
+		}
+		if fixture.vaultDenied {
+			writer.WriteHeader(http.StatusForbidden)
 			return
 		}
 		marker := "/proxy/v1/secret/data/"

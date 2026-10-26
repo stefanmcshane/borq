@@ -523,11 +523,74 @@ components:
         s3:
           $ref: "#/components/schemas/ManagementS3Input"
           description: "S3 is optional so omitted storage remains unchanged. A pointer preserves omission."
+        offsite:
+          $ref: "#/components/schemas/ManagementOffsiteInput"
         organizations:
           type: "array"
           items:
             $ref: "#/components/schemas/ManagementOrganization"
           description: "Organizations updates the named organization hierarchy."
+    ManagementOffsiteInput:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        repository:
+          type: string
+        region:
+          type: string
+        interval:
+          type: string
+        keepLast:
+          type: integer
+        credentialsRef:
+          type: string
+        password:
+          type: string
+          writeOnly: true
+        accessKey:
+          type: string
+          writeOnly: true
+        secretKey:
+          type: string
+          writeOnly: true
+        sessionToken:
+          type: string
+          writeOnly: true
+        status:
+          $ref: '#/components/schemas/ManagementOffsiteStatus'
+          readOnly: true
+      required: [enabled]
+    ManagementOffsiteStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+        lastAttempt:
+          type: string
+          format: date-time
+        lastSuccess:
+          type: string
+          format: date-time
+        nextAttempt:
+          type: string
+          format: date-time
+        snapshotId:
+          type: string
+        source:
+          type: string
+        repository:
+          type: string
+        credentialsRef:
+          type: string
+        policyRevision:
+          type: integer
+          format: int64
+        error:
+          type: string
+      required: [state]
     ManagementOrganization:
       type: "object"
       additionalProperties: false

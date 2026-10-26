@@ -165,6 +165,7 @@ type managerRuntime struct {
 	addonSlots               chan struct{}
 	postgresSlots            chan struct{}
 	storageMutex             sync.Mutex
+	offsiteMutex             sync.Mutex
 	observability            observability.Client
 	context                  context.Context
 	cancel                   context.CancelFunc
@@ -326,6 +327,7 @@ func (manager Manager) resumeOperationWorkers(ctx context.Context) error {
 	if err := manager.resumePostgresOperations(ctx); err != nil {
 		return err
 	}
+	manager.startOffsiteWorker()
 	manager.runtime.operationsResumed = true
 	return nil
 }

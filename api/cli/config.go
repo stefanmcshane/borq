@@ -38,7 +38,7 @@ type Config struct {
 	ManagementLokiURL string `env:"BORQ_MANAGEMENT_LOKI_URL"`
 	// ManagementPrometheusURL overrides the authenticated remote-write endpoint.
 	ManagementPrometheusURL string `env:"BORQ_MANAGEMENT_PROMETHEUS_URL"`
-	// ManagementS3Endpoint overrides the development S3 endpoint reachable from targets.
+	// ManagementS3Endpoint overrides the built-in S3 endpoint reachable from targets.
 	ManagementS3Endpoint string `env:"BORQ_MANAGEMENT_S3_ENDPOINT"`
 	// InfrastructureStorageClass selects the local persistent storage class.
 	InfrastructureStorageClass string `env:"BORQ_INFRASTRUCTURE_STORAGE_CLASS"`

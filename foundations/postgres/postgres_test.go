@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/foundations/objectstore"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -137,4 +138,24 @@ func TestWalContinuity(t *testing.T) {
 	delete(inventory, "source/wals/0000000100000001/000000010000000100000000.gz")
 	check.True(!walRangePresent(inventory, "source", "0000000100000000000000FF", "000000010000000100000000", 16777216))
 	check.True(!walRangePresent(inventory, "source", "0000000100000000000000FF", "000000020000000100000000", 16777216))
+}
+
+// TestCapturedCatalogueTiedCompletions orders same-time backups by identity so exported manifests remain stable.
+func TestCapturedCatalogueTiedCompletions(t *testing.T) {
+	check := is.New(t)
+	body := []byte("status=DONE\nversion=180006\nsize=1048576\nbegin_wal=000000010000000000000001\nend_wal=000000010000000000000001\nsystemid=12345\nxlog_segment_size=16777216\nend_time=2026-10-24 12:00:00+00:00\ntablespaces=None\n")
+	objects := []objectstore.Object{{Key: "server/wals/0000000100000000/000000010000000000000001.gz", Size: 10}}
+	metadata := map[string][]byte{}
+	for _, id := range []string{"20261023T120000", "20261024T120000"} {
+		key := "server/base/" + id + "/backup.info"
+		metadata[key] = body
+		objects = append(objects, objectstore.Object{Key: key, Size: int64(len(body))}, objectstore.Object{Key: "server/base/" + id + "/data.tar.gz", Size: 10})
+	}
+	for range 32 {
+		backups, err := EvaluateCatalogue(objects, metadata, "server")
+		check.NoErr(err)
+		check.Equal(len(backups), 2)
+		check.Equal(backups[0].ID, "20261023T120000")
+		check.Equal(backups[1].ID, "20261024T120000")
+	}
 }

@@ -13,7 +13,7 @@ import (
 
 // Settings describes the topology shared by bootstrap and cluster registration.
 type Settings struct {
-	// S3Endpoint advertises the same development RustFS service to all deployment targets.
+	// S3Endpoint advertises management RustFS to deployment targets.
 	S3Endpoint string `json:"s3Endpoint,omitempty"`
 	// Components holds validated chart coordinate and values overrides.
 	Components map[string]ComponentOverride `json:"components,omitempty"`

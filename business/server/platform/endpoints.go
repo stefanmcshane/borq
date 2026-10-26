@@ -11,7 +11,7 @@ import (
 const (
 	// OpenBaoNodePort exposes Borq's management vault to deployment targets.
 	OpenBaoNodePort = 30200
-	// RustfsNodePort exposes the existing development S3 service to deployment targets.
+	// RustfsNodePort exposes the built-in S3 service to deployment targets.
 	RustfsNodePort = 30900
 	// TelemetryNodePort exposes authenticated management ingestion to target Alloy.
 	TelemetryNodePort = 31834

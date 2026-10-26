@@ -23,6 +23,18 @@ func (manager Manager) GetManagementConfiguration(ctx context.Context) (Manageme
 	} else if !errors.Is(err, ErrNotFound) {
 		return ManagementConfiguration{}, err
 	}
+	offsite, _, offsiteErr := loadDocument[offsitePolicy](ctx, manager.database, "management-offsite", "shared")
+	if offsiteErr == nil {
+		input := offsite.input()
+		status, statusErr := manager.GetManagementOffsiteStatus(ctx)
+		if statusErr != nil {
+			return ManagementConfiguration{}, statusErr
+		}
+		input.Status = &status
+		configuration.Offsite = &input
+	} else if !errors.Is(offsiteErr, ErrNotFound) {
+		return ManagementConfiguration{}, offsiteErr
+	}
 	organizations, err := manager.ListOrganizations(ctx)
 	if err != nil {
 		return ManagementConfiguration{}, err

@@ -992,7 +992,7 @@ component state is also recorded in Kubernetes ConfigMaps and the Borq database.
 | --- | --- | --- | --- |
 | Management | OpenBao | 0.30.3 | Central KV v2 secrets and cluster credentials |
 | Management | External Secrets Operator | 2.5.0 | Materialize supporting component secrets |
-| Management, dev only | RustFS | 1.0.1 | Local S3-compatible development storage |
+| Management, built-in storage | RustFS | 1.0.1 | Persistent S3-compatible PostgreSQL archive storage |
 | Management | Prometheus | 29.36.2 | Metrics storage and remote-write receiver |
 | Management | Loki | 7.2.0 | Log storage |
 | Target | cert-manager | 1.21.1 | Certificate controller; issuers configured separately |
@@ -1008,9 +1008,14 @@ The snapshot controller uses the Piraeus chart recommended in
 a compatible CSI storage driver and a matching `VolumeSnapshotClass`. Borq does
 not create driver-specific snapshot classes. The k3s `local-path` provisioner
 does not support CSI snapshots.
-ExternalDNS is deferred until the DNS story is defined. RustFS is development-only:
-dev Loki stores its objects in a Borq-created RustFS bucket using credentials supplied
-through OpenBao and ESO. Production Loki currently uses filesystem storage.
+ExternalDNS is deferred until the DNS story is defined. Persistent standalone RustFS is
+the default managed PostgreSQL archive store in every profile. Production requests
+100Gi by default. Explicit external S3 settings remain authoritative and avoid an unused
+production RustFS installation. Dev Loki uses RustFS, while production Loki keeps its
+existing filesystem selection unless external S3 is explicitly configured. RustFS uses
+a Recreate deployment strategy so a single data volume has one writer during upgrades.
+See [external S3 offsite backups](docs/offsite-backups.md) for periodic encrypted Restic
+exports and independent object recovery. SQLite and OpenBao require separate native backups.
 
 The baseline uses single replicas, small local volumes, and no HA. Borq's SQLite
 volume is 1Gi. The `borq-local` StorageClass uses k3s's local-path provisioner, waits
@@ -1128,7 +1133,7 @@ left for their owner to finish or recover.
 
 | Scope | Install dependencies | Upgrade order |
 | --- | --- | --- |
-| Management | OpenBao, ESO and Prometheus can start together. RustFS (dev) waits for OpenBao and ESO; development Loki waits for RustFS and its bucket. Production Loki is independent. | ESO → OpenBao → RustFS (dev) → Loki → Prometheus |
+| Management | OpenBao, ESO and Prometheus can start together. RustFS waits for OpenBao and ESO; development Loki waits for RustFS and its bucket. Production Loki is independent. | ESO → OpenBao → RustFS → Loki → Prometheus |
 | Target | cert-manager, ESO, Traefik, and the snapshot controller can start together. Alloy waits for ESO and its telemetry Secret. | cert-manager → ESO → Alloy → Traefik → snapshot controller |
 
 ```sh

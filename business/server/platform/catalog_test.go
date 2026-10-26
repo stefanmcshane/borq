@@ -16,7 +16,7 @@ import (
 )
 
 // TestCatalogDependencyOrder verifies stable display and upgrade order, required
-// install dependencies, and that production never installs development RustFS.
+// install dependencies, and production includes persistent RustFS without moving Loki storage.
 func TestCatalogDependencyOrder(t *testing.T) {
 	is := is.New(t)
 	dev, err := normalizeSettings(Settings{})
@@ -27,7 +27,10 @@ func TestCatalogDependencyOrder(t *testing.T) {
 	is.Equal(componentNames(managementCatalog(dev, true)), "external-secrets,openbao,rustfs,loki,prometheus")
 	prod, err := normalizeSettings(Settings{Profile: "prod"})
 	is.NoErr(err)
-	is.Equal(componentNames(managementCatalog(prod, false)), "openbao,external-secrets,prometheus,loki")
+	is.Equal(componentNames(managementCatalog(prod, false)), "openbao,external-secrets,rustfs,prometheus,loki")
+	external := prod
+	external.S3 = S3Settings{Bucket: "explicit-external"}
+	is.Equal(componentNames(managementCatalog(external, false)), "openbao,external-secrets,prometheus,loki")
 	is.Equal(componentNames(targetCatalog(false)), "cert-manager,external-secrets,traefik,alloy,snapshot-controller")
 	is.Equal(componentNames(targetCatalog(true)), "cert-manager,external-secrets,alloy,traefik,snapshot-controller")
 	for _, catalog := range [][]component{managementCatalog(dev, false), managementCatalog(dev, true), managementCatalog(prod, false), managementCatalog(prod, true), targetCatalog(false), targetCatalog(true)} {
@@ -47,7 +50,11 @@ func TestCatalogDependencyOrder(t *testing.T) {
 	is.Equal(dependencies["rustfs"], []string{"openbao", "external-secrets"})
 	is.Equal(dependencies["loki"], []string{"rustfs"})
 	for _, definition := range managementCatalog(prod, false) {
-		is.Equal(len(definition.DependsOn), 0)
+		if definition.Name == "rustfs" {
+			is.Equal(definition.DependsOn, []string{"openbao", "external-secrets"})
+		} else {
+			is.Equal(len(definition.DependsOn), 0)
+		}
 	}
 	is.Equal(targetCatalog(false)[3].DependsOn, []string{"external-secrets"})
 }

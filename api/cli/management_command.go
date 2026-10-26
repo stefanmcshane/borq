@@ -19,7 +19,7 @@ func newManagementCommand(ctx context.Context, log logger.Logger, cfg Config) *c
 	}
 
 	command.AddCommand(newManagementBootstrapCommand(ctx, log, cfg))
-	command.AddCommand(newManagementApplyCommand(), newManagementExportCommand())
+	command.AddCommand(newManagementApplyCommand(), newManagementExportCommand(), newManagementBackupsCommand())
 	command.AddCommand(newManagementServerCommand(log, cfg))
 
 	return command
@@ -101,13 +101,13 @@ func newManagementBootstrapCommand(ctx context.Context, log logger.Logger, cfg C
 	command.Flags().StringVar(&request.BorqImage, "borq-image", "", "Alias for --server-image.")
 	command.Flags().Lookup("borq-image").DefValue = defaultImage
 
-	command.Flags().BoolVar(&development, "development", false, "Use ephemeral OpenBao and development object storage; inferred for local Docker clusters.")
+	command.Flags().BoolVar(&development, "development", false, "Use ephemeral OpenBao and lightweight component defaults; inferred for local Docker clusters.")
 	command.Flags().Int32Var(&request.OpenbaoHostPort, "openbao-host-port", request.OpenbaoHostPort, "Already-published development vault port used for endpoint defaults.")
 	command.Flags().StringVar(&request.OpenbaoUrl, "management-openbao-url", request.OpenbaoUrl, "Advanced override for the management OpenBao URL reachable from deployment targets.")
 	command.Flags().StringVar(&request.TelemetryUrl, "management-telemetry-url", request.TelemetryUrl, "Advanced override for the Borq telemetry URL reachable from deployment targets.")
 	command.Flags().StringVar(&request.LokiUrl, "management-loki-url", request.LokiUrl, "Advanced override for the full authenticated Loki push endpoint.")
 	command.Flags().StringVar(&request.PrometheusUrl, "management-prometheus-url", request.PrometheusUrl, "Advanced override for the full authenticated Prometheus remote-write endpoint.")
-	command.Flags().StringVar(&request.S3Endpoint, "management-s3-endpoint", request.S3Endpoint, "Development S3 endpoint reachable from deployment targets.")
+	command.Flags().StringVar(&request.S3Endpoint, "management-s3-endpoint", request.S3Endpoint, "Built-in S3 endpoint reachable from deployment targets.")
 	command.Flags().StringVar(&request.StorageClass, "storage-class", request.StorageClass, "Persistent volume class; borq-local uses the k3s local-path provisioner.")
 	for _, name := range []string{"management-s3-endpoint", "probe-url", "management-openbao-url", "management-telemetry-url", "management-loki-url", "management-prometheus-url"} {
 		_ = command.Flags().MarkHidden(name)

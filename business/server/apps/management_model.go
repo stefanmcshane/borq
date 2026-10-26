@@ -1,6 +1,9 @@
 package apps
 
-import "github.com/stefanmcshane/borq/business/server/platform"
+import (
+	"github.com/stefanmcshane/borq/business/server/platform"
+	"time"
+)
 
 // ManagementS3Input accepts either transient inline credentials or a vault reference.
 type ManagementS3Input struct {
@@ -46,6 +49,8 @@ type ManagementConfiguration struct {
 	Components map[string]platform.ComponentOverride `json:"components,omitempty"`
 	// S3 is optional so omitted storage remains unchanged. A pointer preserves omission.
 	S3 *ManagementS3Input `json:"s3,omitempty"`
+	// Offsite preserves omission and stages credentials before a durable operation is queued.
+	Offsite *ManagementOffsiteInput `json:"offsite,omitempty"`
 	// Organizations updates the named organization hierarchy.
 	Organizations []ManagementOrganization `json:"organizations,omitempty"`
 }
@@ -99,4 +104,53 @@ type NamedPostgres struct {
 	// Name identifies this PostgreSQL addon within its space.
 	Name string `json:"name"`
 	PostgresInput
+}
+
+// ManagementOffsiteInput controls periodic encrypted PostgreSQL archive exports.
+// Credentials must originate in a private recovery configuration retained outside Borq.
+type ManagementOffsiteInput struct {
+	// Enabled enables the manager-owned worker; omission of the block preserves its policy.
+	Enabled bool `json:"enabled"`
+	// Repository is an external s3:https://endpoint/bucket/prefix Restic location.
+	Repository string `json:"repository,omitempty"`
+	// Region is the external provider's signing region.
+	Region string `json:"region,omitempty"`
+	// Interval is a Go duration of at least one minute, for example 6h.
+	Interval string `json:"interval,omitempty"`
+	// KeepLast retains this many successful snapshots for this source.
+	KeepLast int `json:"keepLast,omitempty"`
+	// CredentialsRef identifies an immutable vault entry without key material.
+	CredentialsRef string `json:"credentialsRef,omitempty"`
+	// Password is accepted only for staging into the vault and must have independent custody.
+	Password string `json:"password,omitempty"`
+	// AccessKey and SecretKey are transient external provider credentials.
+	AccessKey string `json:"accessKey,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"`
+	// SessionToken optionally supplies temporary provider credentials.
+	SessionToken string `json:"sessionToken,omitempty"`
+	// Status is safe read-only execution state; applying it has no effect.
+	Status *ManagementOffsiteStatus `json:"status,omitempty"`
+}
+
+// ManagementOffsiteStatus preserves the last successful checkpoint across failed attempts and restarts.
+type ManagementOffsiteStatus struct {
+	// State is never, running, succeeded, failed, or retention-failed.
+	State string `json:"state"`
+	// LastAttempt records when the worker durably accepted the latest attempt.
+	LastAttempt time.Time `json:"lastAttempt,omitempty"`
+	// LastSuccess records the last successfully committed snapshot.
+	LastSuccess time.Time `json:"lastSuccess,omitempty"`
+	// NextAttempt allows due work to resume after restart without postponing its schedule.
+	NextAttempt time.Time `json:"nextAttempt,omitempty"`
+	// SnapshotID is the last successfully committed Restic snapshot.
+	SnapshotID string `json:"snapshotId,omitempty"`
+	// Source identifies the original source independently of SQLite and OpenBao.
+	Source string `json:"source,omitempty"`
+	// Repository and CredentialsRef bind the last success to its original repository access.
+	Repository     string `json:"repository,omitempty"`
+	CredentialsRef string `json:"credentialsRef,omitempty"`
+	// PolicyRevision identifies the policy whose attempt owns NextAttempt.
+	PolicyRevision int64 `json:"policyRevision,omitempty"`
+	// Error contains a fixed safe failure message, never provider or exporter output.
+	Error string `json:"error,omitempty"`
 }

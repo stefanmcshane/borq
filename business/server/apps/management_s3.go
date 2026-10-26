@@ -17,14 +17,11 @@ import (
 	"github.com/stefanmcshane/borq/foundations/sqlite"
 )
 
-// GetManagementS3 returns safe storage settings, prefilling the existing dev RustFS connection.
+// GetManagementS3 returns safe storage settings, defaulting every profile to persistent built-in RustFS.
 func (manager Manager) GetManagementS3(ctx context.Context) (ManagementS3, error) {
 	stored, _, err := loadDocument[ManagementS3](ctx, manager.database, "management-s3", "shared")
 	if !errors.Is(err, ErrNotFound) {
 		return stored, err
-	}
-	if manager.runtime.platformSettings.Profile != "" && manager.runtime.platformSettings.Profile != "dev" {
-		return ManagementS3{}, err
 	}
 	namespace := manager.runtime.platformSettings.Namespace
 	if namespace == "" {
@@ -34,7 +31,7 @@ func (manager Manager) GetManagementS3(ctx context.Context) (ManagementS3, error
 	if endpoint == "" && manager.runtime.platformSettings.ApiUrl != "" {
 		advertised, parseErr := url.Parse(manager.runtime.platformSettings.ApiUrl)
 		if parseErr != nil || advertised.Hostname() == "" {
-			return ManagementS3{}, fmt.Errorf("%w: management API URL cannot advertise development S3", ErrInvalid)
+			return ManagementS3{}, fmt.Errorf("%w: management API URL cannot advertise built-in S3", ErrInvalid)
 		}
 		endpoint = (&url.URL{Scheme: "http", Host: net.JoinHostPort(advertised.Hostname(), strconv.Itoa(platform.RustfsNodePort))}).String()
 	}
@@ -253,13 +250,21 @@ func (manager Manager) validateProductionStorage(storage ManagementS3) error {
 	}
 	host := strings.ToLower(endpoint.Hostname())
 	address := net.ParseIP(host)
-	if storage.CredentialsRef == "borq/platform/rustfs" || host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local") || (address != nil && address.IsLoopback()) {
-		return fmt.Errorf("%w: production managed addons require external S3 storage", ErrInvalid)
+	if (storage.CredentialsRef == "borq/platform/rustfs" && host == "") || host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local") || (address != nil && address.IsLoopback()) {
+		return fmt.Errorf("%w: production managed addons require an S3 endpoint reachable from deployment clusters", ErrInvalid)
 	}
 	return nil
 }
 
 func (manager Manager) managementStorageDependency(ctx context.Context) (bool, error) {
+	settings, err := manager.GetPlatformSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	if settings.Profile != "" && settings.Profile != "dev" && settings.S3.Bucket == "" {
+		return false, nil
+	}
+
 	components, _, err := loadDocument[componentRecord](ctx, manager.database, "components", "management")
 	if errors.Is(err, ErrNotFound) {
 		return false, nil

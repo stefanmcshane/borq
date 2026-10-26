@@ -7,6 +7,8 @@ replicaCount: 1
 mode:
   standalone:
     enabled: true
+    strategy:
+      type: Recreate
   distributed:
     enabled: false
 secret:
@@ -15,7 +17,7 @@ ingress:
   enabled: false
 storageclass:
   name: {{ .StorageClass | quote }}
-  dataStorageSize: 1Gi
+  dataStorageSize: {{ if eq .Profile "production" }}100Gi{{ else }}1Gi{{ end }}
   logStorageSize: 128Mi
 config:
   rustfs:

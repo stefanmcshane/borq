@@ -54,9 +54,14 @@ func TestComponentCatalog(t *testing.T) {
 	assert.Equal(postgres.Components[1].Name, "plugin-barman-cloud")
 	production, err := GetComponentCatalog(ComponentCatalogInput{Scope: ComponentScopeManagement, Settings: Settings{Profile: "production"}})
 	assert.NoErr(err)
-	for _, component := range production.Components {
-		assert.True(component.Name != "rustfs")
-	}
+	assert.Equal(len(production.Components), 5)
+	assert.Equal(production.Components[2].Name, "rustfs")
+	storage := production.Components[2].Values["storageclass"].(map[string]any)
+	assert.Equal(storage["dataStorageSize"], "100Gi")
+	mode := production.Components[2].Values["mode"].(map[string]any)["standalone"].(map[string]any)
+	assert.Equal(mode["strategy"].(map[string]any)["type"], "Recreate")
+	loki := production.Components[4].Values["loki"].(map[string]any)
+	assert.Equal(loki["storage"].(map[string]any)["type"], "filesystem")
 	for _, test := range []struct {
 		input ComponentCatalogInput
 		guard string

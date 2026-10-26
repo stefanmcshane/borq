@@ -4,6 +4,7 @@
 BORQ_INTEGRATION_SERVER_URL ?= http://localhost:7833
 BORQ_MANAGEMENT_KUBECONFIG ?= $(CURDIR)/tmp/management/kubeconfig
 DEV_KUBECONFIG_PATH ?= $(CURDIR)/tmp/dev/kubeconfig
+MANAGEMENT_KUBECONFIG_PATH ?= $(CURDIR)/tmp/management/kubeconfig
 K3D ?= $(if $(wildcard $(CURDIR)/tmp/tools/k3d),$(CURDIR)/tmp/tools/k3d,$(if $(shell command -v k3d 2>/dev/null),k3d,$(CURDIR)/tmp/tools/k3d))
 export K3D
 
@@ -112,3 +113,20 @@ test-integration-bootstrap: ## Prepare isolated dev Kubernetes, then bootstrap B
 fmt: ## Format and vet Go code.
 	$(GO_TEST_ENV) go fmt ./...
 	$(GO_TEST_ENV) go vet ./...
+
+.PHONY: test-offsite
+test-offsite: ## Verify streaming archive safety and independent recovery configuration.
+	$(GO_TEST_ENV) go test ./business/offsite ./foundations/objectstore -count=1 $(ARGS)
+
+.PHONY: test-rustfs-offsite
+test-rustfs-offsite: ## Prove real RustFS pod-restart persistence and offline Restic export/rehydration in an isolated namespace.
+	@mkdir -p tmp/offsite-tools
+	$(GO_TEST_ENV) go build -o tmp/borq-offsite ./cmd/borq
+	@set -eu; borq_restic_container=$$(docker create restic/restic:0.18.0@sha256:4cf4a61ef9786f4de53e9de8c8f5c040f33830eb0a10bf3d614410ee2fcb6120); \
+	trap 'docker rm "$$borq_restic_container" >/dev/null' EXIT; \
+	docker cp "$$borq_restic_container:/usr/bin/restic" tmp/offsite-tools/restic
+	PATH="$(CURDIR)/tmp/offsite-tools:$$PATH" BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_OFFSITE_TEST_BINARY="$(CURDIR)/tmp/borq-offsite" BORQ_OFFSITE_SEEDED_POSTGRES="$(OFFSITE_POSTGRES)" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestRustfsOffsiteIntegration -v -count=1 -timeout=25m $(ARGS)
+
+.PHONY: test-rustfs-offsite-postgres
+test-rustfs-offsite-postgres: ## Recover real seeded CNPG data from offline rehydrated objects using existing management controllers.
+	$(MAKE) test-rustfs-offsite DEV_KUBECONFIG_PATH="$(MANAGEMENT_KUBECONFIG_PATH)" OFFSITE_POSTGRES=true

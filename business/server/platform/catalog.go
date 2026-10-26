@@ -85,10 +85,12 @@ func managementCatalog(settings Settings, upgrade bool) []component {
 		{Name: "prometheus", Description: "Stores platform and application metrics.", Chart: "prometheus", Repository: "https://prometheus-community.github.io/helm-charts", Version: "29.36.2", Values: "prometheus.yaml", InstallOrder: 40, UpgradeOrder: 50},
 		{Name: "loki", Description: "Stores platform and application logs.", Chart: "loki", Repository: "https://grafana.github.io/helm-charts", Version: "7.2.0", Values: "loki.yaml", InstallOrder: 50, UpgradeOrder: 40},
 	}
+	// This is the official published archive, served by the upstream GitHub
+	// repository as well as charts.rustfs.com, which rejects some networks.
+	if settings.Profile == "dev" || settings.S3.Bucket == "" {
+		components = append(components, component{Name: "rustfs", Description: "Stores persistent managed PostgreSQL archives.", Chart: "https://raw.githubusercontent.com/rustfs/helm/main/rustfs-1.0.1.tgz", Version: "1.0.1", Values: "rustfs.yaml", InstallOrder: 30, UpgradeOrder: 30, DependsOn: []string{"openbao", "external-secrets"}})
+	}
 	if settings.Profile == "dev" {
-		// This is the official published archive, served by the upstream GitHub
-		// repository as well as charts.rustfs.com, which rejects some networks.
-		components = append(components, component{Name: "rustfs", Description: "Provides shared object storage for development.", Chart: "https://raw.githubusercontent.com/rustfs/helm/main/rustfs-1.0.1.tgz", Version: "1.0.1", Values: "rustfs.yaml", InstallOrder: 30, UpgradeOrder: 30, DependsOn: []string{"openbao", "external-secrets"}})
 		for index := range components {
 			if components[index].Name == "loki" {
 				components[index].DependsOn = []string{"rustfs"}

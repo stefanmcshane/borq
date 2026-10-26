@@ -26,6 +26,8 @@ type BackupMetadata struct {
 	// MajorVersion and SizeBytes describe the physical backup.
 	MajorVersion int
 	SizeBytes    int64
+	// Completed records DONE metadata independently of archive completeness.
+	Completed bool
 	// Eligible requires DONE metadata, data archive objects and every required WAL segment.
 	Eligible bool
 	// Reason explains incomplete or unsupported physical backup state.
@@ -49,23 +51,61 @@ func Catalogue(ctx context.Context, config objectstore.Config, server string) ([
 	if len(objects) > 200000 {
 		return nil, errors.New("PostgreSQL archive inventory exceeds supported catalogue bound")
 	}
-	inventory := map[string]int64{}
-	metadata := []objectstore.Object{}
-	for _, item := range objects {
-		inventory[item.Key] = item.Size
-		if path.Base(item.Key) == "backup.info" && strings.HasPrefix(item.Key, server+"/base/") && len(strings.Split(item.Key, "/")) == 4 {
-			metadata = append(metadata, item)
+	metadataObjects := []objectstore.Object{}
+	metadataSize := int64(0)
+	for _, object := range objects {
+		if path.Base(object.Key) != "backup.info" || !strings.HasPrefix(object.Key, server+"/base/") || strings.Count(strings.TrimPrefix(object.Key, server+"/base/"), "/") != 1 {
+			continue
+		}
+		if object.Size < 0 || object.Size > 1<<20 {
+			return nil, errors.New("PostgreSQL backup.info exceeds supported 1 MiB size")
+		}
+		metadataSize += object.Size
+		metadataObjects = append(metadataObjects, object)
+		if len(metadataObjects) > 10000 {
+			return nil, errors.New("PostgreSQL backup catalogue exceeds supported bound")
+		}
+		if metadataSize > 32<<20 {
+			return nil, errors.New("PostgreSQL backup metadata exceeds supported 32 MiB aggregate size")
 		}
 	}
-	if len(metadata) > 10000 {
-		return nil, errors.New("PostgreSQL backup catalogue exceeds supported bound")
-	}
-	result := make([]BackupMetadata, 0, len(metadata))
-	for _, object := range metadata {
+	metadata := map[string][]byte{}
+	for _, object := range metadataObjects {
 		body, err := client.Read(ctx, object.Key)
 		if err != nil {
 			return nil, err
 		}
+		if int64(len(body)) != object.Size || len(body) > 1<<20 {
+			return nil, errors.New("PostgreSQL backup.info body does not match captured size")
+		}
+		metadata[object.Key] = body
+	}
+	return EvaluateCatalogue(objects, metadata, server)
+}
+
+// EvaluateCatalogue evaluates captured archive objects and backup.info bodies without live reads.
+// The recovery boundary is the latest complete backup connected by consistency WAL.
+func EvaluateCatalogue(objects []objectstore.Object, metadata map[string][]byte, server string) ([]BackupMetadata, error) {
+	if len(objects) > 200000 || len(metadata) > 10000 {
+		return nil, errors.New("PostgreSQL captured catalogue exceeds supported bound")
+	}
+	metadataSize := 0
+	for _, body := range metadata {
+		if len(body) > 1<<20 {
+			return nil, errors.New("PostgreSQL backup.info exceeds supported 1 MiB size")
+		}
+		metadataSize += len(body)
+		if metadataSize > 32<<20 {
+			return nil, errors.New("PostgreSQL backup metadata exceeds supported 32 MiB aggregate size")
+		}
+	}
+	inventory := map[string]int64{}
+	for _, object := range objects {
+		inventory[object.Key] = object.Size
+	}
+	result := make([]BackupMetadata, 0, len(metadata))
+	for key, body := range metadata {
+		object := objectstore.Object{Key: key}
 		backup, err := ParseBackupMetadata(body)
 		if err != nil {
 			return nil, fmt.Errorf("invalid PostgreSQL archive metadata: %w", err)
@@ -110,7 +150,12 @@ func Catalogue(ctx context.Context, config objectstore.Config, server string) ([
 		backup.Fingerprint = hex.EncodeToString(digest.Sum(nil))
 		result = append(result, backup)
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].CompletedAt.Before(result[j].CompletedAt) })
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CompletedAt.Equal(result[j].CompletedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CompletedAt.Before(result[j].CompletedAt)
+	})
 	for index := range result {
 		current := &result[index]
 		current.RecoveryEnd = current.CompletedAt
@@ -156,7 +201,7 @@ func ParseBackupMetadata(body []byte) (BackupMetadata, error) {
 	if err := scanner.Err(); err != nil {
 		return BackupMetadata{}, errors.New("unreadable backup.info")
 	}
-	result := BackupMetadata{Eligible: values["status"] == "DONE", Reason: "backup is not complete", beginWal: values["begin_wal"], endWal: values["end_wal"], systemID: values["systemid"]}
+	result := BackupMetadata{Completed: values["status"] == "DONE", Eligible: values["status"] == "DONE", Reason: "backup is not complete", beginWal: values["begin_wal"], endWal: values["end_wal"], systemID: values["systemid"]}
 	if !result.Eligible {
 		return result, nil
 	}

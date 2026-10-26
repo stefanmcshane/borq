@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -93,4 +94,27 @@ func TestClusterCreationCommandsAreUnavailable(t *testing.T) {
 	for _, flag := range []string{"runtime", "host", "ssh-key", "kubeconfig-output", "network", "port"} {
 		assert.True(bootstrap.Flags().Lookup(flag) == nil)
 	}
+}
+
+// TestManagementApplyPrivateRecoveryConfiguration binds setup credentials to independently retained recovery material.
+func TestManagementApplyPrivateRecoveryConfiguration(t *testing.T) {
+	assert := is.New(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		assert.NoErr(err)
+		assert.True(strings.Contains(string(body), `"password":"retained-password"`))
+		assert.True(strings.Contains(string(body), `"repository":"s3:https://offsite.example/backups/borq"`))
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusAccepted)
+		_, _ = writer.Write([]byte(`{"id":"accepted","status":"succeeded"}`))
+	}))
+	defer server.Close()
+	policy := filepath.Join(t.TempDir(), "management.yaml")
+	assert.NoErr(os.WriteFile(policy, []byte("offsite:\n  enabled: true\n  interval: 6h\n  keepLast: 14\n"), 0600))
+	recovery := filepath.Join(t.TempDir(), "recovery.json")
+	assert.NoErr(os.WriteFile(recovery, []byte(`{"offsite":{"repository":"s3:https://offsite.example/backups/borq","region":"region-one","password":"retained-password","accessKey":"access","secretKey":"secret"}}`), 0600))
+	output, _, err := runConfiguredApplicationCommand("management", "apply", "--server", server.URL, "-f", policy, "--recovery-config", recovery, "--wait=false")
+	assert.NoErr(err)
+	assert.True(!strings.Contains(output, "retained-password"))
 }

@@ -187,12 +187,29 @@ func (manager Manager) stageManagementConfiguration(ctx context.Context, configu
 	if err := json.Unmarshal(data, &safe); err != nil {
 		return ManagementConfiguration{}, err
 	}
+	prospectiveStorage := ManagementS3{}
 	if safe.S3 != nil {
 		storage, err := manager.prepareManagementS3(ctx, *safe.S3)
 		if err != nil {
 			return ManagementConfiguration{}, err
 		}
+		prospectiveStorage = storage
 		safe.S3 = &ManagementS3Input{Endpoint: storage.Endpoint, Region: storage.Region, Bucket: storage.Bucket, Prefix: storage.Prefix, PathStyle: storage.PathStyle, CredentialsRef: storage.CredentialsRef}
+	}
+	if safe.Offsite != nil {
+		if prospectiveStorage.Bucket == "" {
+			storage, err := manager.GetManagementS3(ctx)
+			if err != nil {
+				return ManagementConfiguration{}, err
+			}
+			prospectiveStorage = storage
+		}
+		policy, err := manager.prepareOffsite(ctx, *safe.Offsite, prospectiveStorage)
+		if err != nil {
+			return ManagementConfiguration{}, err
+		}
+		input := policy.input()
+		safe.Offsite = &input
 	}
 	for organizationIndex := range safe.Organizations {
 		organization := &safe.Organizations[organizationIndex]
@@ -235,6 +252,9 @@ func managementActions(configuration ManagementConfiguration) []managementAction
 	actions := []managementAction{}
 	if configuration.S3 != nil {
 		actions = append(actions, managementAction{kind: "s3"})
+	}
+	if configuration.Offsite != nil {
+		actions = append(actions, managementAction{kind: "offsite"})
 	}
 	if len(configuration.Components) > 0 {
 		actions = append(actions, managementAction{kind: "components"})
@@ -373,6 +393,8 @@ func (manager Manager) saveManagementProgress(ctx context.Context, operation Ope
 func (manager Manager) executeManagementAction(ctx context.Context, configuration ManagementConfiguration, action managementAction) (string, string, error) {
 	organization, space := action.organization.Name, action.space.Name
 	switch action.kind {
+	case "offsite":
+		return "", "", manager.activateOffsite(ctx, *configuration.Offsite)
 	case "s3":
 		input := configuration.S3
 		_, err := manager.PutManagementS3(ctx, *input)

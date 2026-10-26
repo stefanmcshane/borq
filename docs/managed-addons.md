@@ -6,10 +6,17 @@ Borq organization and space bound to a registered deployment cluster.
 
 ## Configure shared storage and organization access
 
-Borq uses one S3 connection for management storage and managed addons. In
-development, Borq prefills the existing RustFS connection. In production, configure
-an external S3-compatible endpoint and an existing bucket. Set `managedAddons: true`
+Borq defaults shared archive storage to persistent standalone RustFS in every profile.
+Production requests 100Gi by default, configurable through the RustFS component values.
+An explicitly configured external S3 connection remains authoritative. Advertise an S3
+endpoint reachable from every deployment cluster before granting access. Production
+rejects loopback and management-cluster service DNS endpoints. Set `managedAddons: true`
 on each organization that may use the shared connection.
+
+Production Loki retains its existing filesystem selection unless external S3 is explicitly
+configured. Introducing RustFS does not move logs or historical archives. See
+[external S3 offsite backups](offsite-backups.md) for encrypted incremental export and
+independent recovery.
 
 Start from a safe export of the current configuration:
 
