@@ -166,6 +166,7 @@ type managerRuntime struct {
 	postgresSlots            chan struct{}
 	storageMutex             sync.Mutex
 	offsiteMutex             sync.Mutex
+	backupMutex              sync.Mutex
 	observability            observability.Client
 	context                  context.Context
 	cancel                   context.CancelFunc
@@ -191,6 +192,11 @@ type managerRuntime struct {
 
 // NewManager opens persistent state and resumes unfinished, idempotent apply operations.
 func NewManager(ctx context.Context, input NewInput) (Manager, error) {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(input.DatabasePath), "RECOVERY_REQUIRED")); err == nil {
+		return Manager{}, errors.New("restored management state requires offline review and storage/vault rebinding before explicit local resume")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Manager{}, errors.New("inspect management recovery barrier")
+	}
 	if input.ManagementEnabled && !input.InfrastructureEnabled {
 		return Manager{}, errors.New("management setup requires infrastructure management to be enabled")
 	}
@@ -328,6 +334,7 @@ func (manager Manager) resumeOperationWorkers(ctx context.Context) error {
 		return err
 	}
 	manager.startOffsiteWorker()
+	manager.startManagementBackupWorker()
 	manager.runtime.operationsResumed = true
 	return nil
 }

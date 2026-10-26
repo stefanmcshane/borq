@@ -9,7 +9,7 @@ import (
 )
 
 func newManagementBackupsCommand() *cobra.Command {
-	command := &cobra.Command{Use: "backups", Short: "List and recover encrypted PostgreSQL S3 archives using private external configuration.", Args: cobra.NoArgs}
+	command := &cobra.Command{Use: "backups", Short: "List and recover encrypted management and PostgreSQL backups using private external configuration.", Args: cobra.NoArgs}
 	recoveryFile := ""
 	list := &cobra.Command{Use: "list", Short: "List completed snapshots without the original management cluster.", Args: cobra.NoArgs, RunE: func(command *cobra.Command, arguments []string) error {
 		var config offsite.RecoveryConfig
@@ -49,6 +49,6 @@ func newManagementBackupsCommand() *cobra.Command {
 	}}
 	exporter.Flags().StringVar(&sourceFile, "source-config", "", "Private ephemeral source configuration.")
 	_ = exporter.MarkFlagRequired("source-config")
-	command.AddCommand(list, restore, exporter)
+	command.AddCommand(list, restore, exporter, newManagementLocalBackupsCommand())
 	return command
 }

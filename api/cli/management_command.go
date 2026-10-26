@@ -101,7 +101,7 @@ func newManagementBootstrapCommand(ctx context.Context, log logger.Logger, cfg C
 	command.Flags().StringVar(&request.BorqImage, "borq-image", "", "Alias for --server-image.")
 	command.Flags().Lookup("borq-image").DefValue = defaultImage
 
-	command.Flags().BoolVar(&development, "development", false, "Use ephemeral OpenBao and lightweight component defaults; inferred for local Docker clusters.")
+	command.Flags().BoolVar(&development, "development", false, "Use persistent single-node Raft and lightweight component defaults; inferred for local Docker clusters.")
 	command.Flags().Int32Var(&request.OpenbaoHostPort, "openbao-host-port", request.OpenbaoHostPort, "Already-published development vault port used for endpoint defaults.")
 	command.Flags().StringVar(&request.OpenbaoUrl, "management-openbao-url", request.OpenbaoUrl, "Advanced override for the management OpenBao URL reachable from deployment targets.")
 	command.Flags().StringVar(&request.TelemetryUrl, "management-telemetry-url", request.TelemetryUrl, "Advanced override for the Borq telemetry URL reachable from deployment targets.")

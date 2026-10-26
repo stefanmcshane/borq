@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/stefanmcshane/borq/business/managementbackup"
 	"github.com/stefanmcshane/borq/foundations/objectstore"
 	"github.com/stefanmcshane/borq/foundations/postgres"
 )
@@ -24,35 +25,57 @@ func Export(ctx context.Context, config objectstore.Config, output io.Writer) er
 		return err
 	}
 	objects := []objectstore.Object{}
-	continuation := ""
-	for {
-		page, err := client.ListPage(ctx, "organizations/", continuation, 1000)
-		if err != nil {
-			return err
-		}
-		for _, object := range page.Objects {
-			if !managedKey(object.Key) {
-				continue
+	for _, scope := range []string{"organizations/", "management/"} {
+		continuation := ""
+		for {
+			page, err := client.ListPage(ctx, scope, continuation, 1000)
+			if err != nil {
+				return err
 			}
-			if object.Size > objectstore.MaxStreamSize {
-				return errors.New("source object exceeds supported 625 GiB streaming limit")
+			for _, object := range page.Objects {
+				if !managedKey(object.Key) && !managementbackup.ManagedKey(object.Key) {
+					continue
+				}
+				if object.Size > objectstore.MaxStreamSize {
+					return errors.New("source object exceeds supported 625 GiB streaming limit")
+				}
+				if object.ETag == "" || object.Size < 0 {
+					return errors.New("source inventory lacks captured object identities")
+				}
+				objects = append(objects, object)
+				if len(objects) > 100000 {
+					return errors.New("offsite inventory exceeds 100000 objects")
+				}
 			}
-			if object.ETag == "" || object.Size < 0 {
-				return errors.New("source inventory lacks captured object identities")
+			if page.Continuation == "" {
+				break
 			}
-			objects = append(objects, object)
-			if len(objects) > 100000 {
-				return errors.New("offsite inventory exceeds 100000 objects")
+			if page.Continuation == continuation {
+				return errors.New("source pagination did not advance")
 			}
+			continuation = page.Continuation
 		}
-		if page.Continuation == "" {
-			break
-		}
-		if page.Continuation == continuation {
-			return errors.New("source pagination did not advance")
-		}
-		continuation = page.Continuation
 	}
+	nativeEntries, err := managementbackup.Inventory(ctx, client, objects)
+	if err != nil {
+		return err
+	}
+	nativeKeys := map[string]bool{}
+	nativeDigests := map[string]string{}
+	native := []managementbackup.Artifact{}
+	for _, entry := range nativeEntries {
+		nativeKeys[entry.Payload.Key] = true
+		nativeKeys[entry.Completion.Key] = true
+		nativeDigests[entry.Payload.Key] = entry.Artifact.SHA256
+		native = append(native, entry.Artifact)
+	}
+	selected := objects[:0]
+	for _, object := range objects {
+		if managedKey(object.Key) || nativeKeys[object.Key] {
+			selected = append(selected, object)
+		}
+	}
+	objects = selected
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 	metadata := map[string][]byte{}
 	metadataBytes := int64(0)
@@ -81,10 +104,10 @@ func Export(ctx context.Context, config objectstore.Config, output io.Writer) er
 	if err != nil {
 		return err
 	}
-	if len(backups) == 0 {
-		return errors.New("no complete managed PostgreSQL backups were captured")
+	if len(backups) == 0 && len(native) == 0 {
+		return errors.New("no complete managed PostgreSQL backups or management snapshots were captured")
 	}
-	manifest := Archive{Version: 1, Source: SourceID(config), Objects: []Object{}, Backups: backups}
+	manifest := Archive{Version: 2, Native: native, Source: SourceID(config), Objects: []Object{}, Backups: backups}
 	writer := tar.NewWriter(output)
 	for _, object := range objects {
 		skip := false
@@ -110,6 +133,9 @@ func Export(ctx context.Context, config objectstore.Config, output io.Writer) er
 		closeErr := body.Close()
 		if copyErr != nil || closeErr != nil || count != object.Size {
 			return errors.New("captured source object could not be completely exported")
+		}
+		if expected := nativeDigests[object.Key]; expected != "" && expected != hex.EncodeToString(digest.Sum(nil)) {
+			return errors.New("completed native snapshot digest does not match captured payload")
 		}
 		manifest.Objects = append(manifest.Objects, Object{Key: object.Key, Size: object.Size, ETag: object.ETag, SHA256: hex.EncodeToString(digest.Sum(nil))})
 	}
@@ -175,6 +201,9 @@ func readMetadata(ctx context.Context, client objectstore.Client, object objects
 func evaluate(objects []objectstore.Object, metadata map[string][]byte) (map[string][]postgres.BackupMetadata, []string, error) {
 	servers := map[string]map[string][]byte{}
 	for key, body := range metadata {
+		if !metadataKey(key) {
+			continue
+		}
 		parts := strings.Split(key, "/")
 		server := strings.Join(parts[:5], "/")
 		if servers[server] == nil {
@@ -228,6 +257,7 @@ func Restore(ctx context.Context, config objectstore.Config, source string, inpu
 	inventory := []objectstore.Object{}
 	metadata := map[string][]byte{}
 	metadataBytes := int64(0)
+	nativeMetadataBytes := int64(0)
 	for {
 		header, err := reader.Next()
 		if err == io.EOF {
@@ -252,7 +282,7 @@ func Restore(ctx context.Context, config objectstore.Config, source string, inpu
 			if decoder.Decode(&struct{}{}) != io.EOF {
 				return Archive{}, errors.New("offsite completion manifest contains trailing data")
 			}
-			if manifest.Version != 1 || manifest.Source != source || len(manifest.Objects) != len(objects) {
+			if manifest.Version != 2 || manifest.Source != source || len(manifest.Objects) != len(objects) {
 				return Archive{}, errors.New("offsite completion manifest does not match this source and inventory")
 			}
 			for index, object := range objects {
@@ -260,6 +290,9 @@ func Restore(ctx context.Context, config objectstore.Config, source string, inpu
 				if object.Key != captured.Key || object.Size != captured.Size || object.SHA256 != captured.SHA256 || captured.ETag == "" {
 					return Archive{}, errors.New("offsite object size, digest or order does not match manifest")
 				}
+			}
+			if err := validateNativeRestore(manifest, objects, metadata); err != nil {
+				return Archive{}, err
 			}
 			backups, _, err := evaluate(inventory, metadata)
 			if err != nil {
@@ -278,19 +311,33 @@ func Restore(ctx context.Context, config objectstore.Config, source string, inpu
 			}
 			return manifest, nil
 		}
-		if !managedKey(header.Name) || (len(objects) > 0 && header.Name <= objects[len(objects)-1].Key) {
+		if (!managedKey(header.Name) && !managementbackup.ManagedKey(header.Name)) || (len(objects) > 0 && header.Name <= objects[len(objects)-1].Key) {
 			return Archive{}, errors.New("offsite archive contains unsafe, duplicate or unsorted object keys")
 		}
 		if len(objects) >= 100000 {
 			return Archive{}, errors.New("offsite inventory exceeds 100000 objects")
 		}
+
+		if managementbackup.ManagedKey(header.Name) && strings.HasSuffix(header.Name, "/payload") && header.Size > managementbackup.MaxPayloadSize {
+			return Archive{}, errors.New("native payload exceeds supported 8 GiB limit")
+		}
 		digest := sha256.New()
 		body := io.TeeReader(reader, digest)
-		if metadataKey(header.Name) {
+		if metadataKey(header.Name) || strings.HasSuffix(header.Name, "/complete.json") {
 			if header.Size > 1<<20 {
 				return Archive{}, errors.New("backup.info exceeds 1 MiB")
 			}
-			metadataBytes += header.Size
+			if managementbackup.ManagedKey(header.Name) {
+				if header.Size > 64<<10 {
+					return Archive{}, errors.New("native snapshot completion marker exceeds 64 KiB")
+				}
+				nativeMetadataBytes += header.Size
+				if nativeMetadataBytes > 32<<20 {
+					return Archive{}, errors.New("native snapshot completion metadata exceeds supported bounds")
+				}
+			} else {
+				metadataBytes += header.Size
+			}
 			if metadataBytes > 32<<20 {
 				return Archive{}, errors.New("captured PostgreSQL metadata exceeds 32 MiB")
 			}
@@ -322,4 +369,50 @@ func (zeroPadding) Write(data []byte) (int, error) {
 
 func archiveHeader(key string, size int64) tar.Header {
 	return tar.Header{Name: key, Mode: 0600, Size: size, Typeflag: tar.TypeReg, Format: tar.FormatGNU}
+}
+
+func validateNativeRestore(manifest Archive, objects []Object, metadata map[string][]byte) error {
+	captured := map[string]Object{}
+	for _, object := range objects {
+		captured[object.Key] = object
+	}
+	native := []managementbackup.Artifact{}
+	for key, body := range metadata {
+		if !managementbackup.ManagedKey(key) {
+			continue
+		}
+		artifact, err := managementbackup.ParseCompletion(key, body)
+		if err != nil {
+			return err
+		}
+		payload, exists := captured[managementbackup.PayloadKey(artifact)]
+		if !exists || payload.Size != artifact.Size || payload.SHA256 != artifact.SHA256 {
+			return errors.New("rehydrated native payload does not match its completion marker")
+		}
+		native = append(native, artifact)
+	}
+	for _, object := range objects {
+		if managementbackup.ManagedKey(object.Key) && strings.HasSuffix(object.Key, "/payload") {
+			complete := strings.TrimSuffix(object.Key, "payload") + "complete.json"
+			if _, exists := metadata[complete]; !exists {
+				return errors.New("native payload has no completion marker")
+			}
+		}
+	}
+	sort.Slice(native, func(i, j int) bool {
+		a, b := native[i], native[j]
+		if a.CapturedAt.Equal(b.CapturedAt) {
+			if a.ID == b.ID {
+				return a.Kind < b.Kind
+			}
+			return a.ID < b.ID
+		}
+		return a.CapturedAt.Before(b.CapturedAt)
+	})
+	expected, _ := json.Marshal(native)
+	claimed, _ := json.Marshal(manifest.Native)
+	if string(expected) != string(claimed) {
+		return errors.New("native completion inventory does not match offsite manifest")
+	}
+	return nil
 }

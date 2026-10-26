@@ -49,6 +49,8 @@ type ManagementConfiguration struct {
 	Components map[string]platform.ComponentOverride `json:"components,omitempty"`
 	// S3 is optional so omitted storage remains unchanged. A pointer preserves omission.
 	S3 *ManagementS3Input `json:"s3,omitempty"`
+	// Backups controls independent local native captures. A pointer preserves omission.
+	Backups *ManagementBackupInput `json:"backups,omitempty"`
 	// Offsite preserves omission and stages credentials before a durable operation is queued.
 	Offsite *ManagementOffsiteInput `json:"offsite,omitempty"`
 	// Organizations updates the named organization hierarchy.

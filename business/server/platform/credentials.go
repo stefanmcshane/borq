@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
@@ -78,6 +79,9 @@ func ManagementVault(ctx context.Context, kubeconfigPath, namespace string) (*op
 			if err := vault.Unseal(ctx, key); err != nil {
 				return nil, errors.New("unseal management vault using stored recovery material")
 			}
+		}
+		if err := vault.WaitForActive(ctx, time.Second, 30*time.Second); err != nil {
+			return nil, err
 		}
 	}
 	return vault, nil

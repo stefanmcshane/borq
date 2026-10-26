@@ -125,8 +125,34 @@ test-rustfs-offsite: ## Prove real RustFS pod-restart persistence and offline Re
 	@set -eu; borq_restic_container=$$(docker create restic/restic:0.18.0@sha256:4cf4a61ef9786f4de53e9de8c8f5c040f33830eb0a10bf3d614410ee2fcb6120); \
 	trap 'docker rm "$$borq_restic_container" >/dev/null' EXIT; \
 	docker cp "$$borq_restic_container:/usr/bin/restic" tmp/offsite-tools/restic
-	PATH="$(CURDIR)/tmp/offsite-tools:$$PATH" BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_OFFSITE_TEST_BINARY="$(CURDIR)/tmp/borq-offsite" BORQ_OFFSITE_SEEDED_POSTGRES="$(OFFSITE_POSTGRES)" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestRustfsOffsiteIntegration -v -count=1 -timeout=25m $(ARGS)
+	PATH="$(CURDIR)/tmp/offsite-tools:$$PATH" BORQ_KUBECONFIG="$(DEV_KUBECONFIG_PATH)" BORQ_OFFSITE_TEST_BINARY="$(CURDIR)/tmp/borq-offsite" BORQ_OFFSITE_SEEDED_POSTGRES="$(OFFSITE_POSTGRES)" BORQ_OFFSITE_NATIVE="$(OFFSITE_NATIVE)" BORQ_OFFSITE_MANAGEMENT_ONLY="$(OFFSITE_MANAGEMENT_ONLY)" $(GO_TEST_ENV) go test -tags=integration ./business/server/platform -run TestRustfsOffsiteIntegration -v -count=1 -timeout=25m $(ARGS)
 
 .PHONY: test-rustfs-offsite-postgres
 test-rustfs-offsite-postgres: ## Recover real seeded CNPG data from offline rehydrated objects using existing management controllers.
 	$(MAKE) test-rustfs-offsite DEV_KUBECONFIG_PATH="$(MANAGEMENT_KUBECONFIG_PATH)" OFFSITE_POSTGRES=true
+
+.PHONY: test-management-backups
+test-management-backups: ## Verify native capture, encrypted artifact recovery and independent local policy state.
+	$(GO_TEST_ENV) go test ./foundations/sqlite ./foundations/openbao ./business/managementbackup ./business/offsite ./business/server/apps ./business/server/platform ./api/cli -count=1 $(ARGS)
+
+.PHONY: test-management-backups-e2e
+test-management-backups-e2e: ## Prove independent native captures, age encryption, management-only offsite export and source-absent SQLite/Raft recovery.
+	$(MAKE) test-rustfs-offsite DEV_KUBECONFIG_PATH="$(DEV_KUBECONFIG_PATH)" OFFSITE_NATIVE=true OFFSITE_MANAGEMENT_ONLY=true
+
+.PHONY: test-management-backups-postgres-e2e
+test-management-backups-postgres-e2e: ## Prove mixed native management and genuine PostgreSQL recovery from one offsite rehydration.
+	$(MAKE) test-rustfs-offsite DEV_KUBECONFIG_PATH="$(MANAGEMENT_KUBECONFIG_PATH)" OFFSITE_NATIVE=true OFFSITE_POSTGRES=true
+
+RELEASE_SMOKE_ARCH ?= $(shell go env GOARCH)
+RELEASE_SMOKE_BUILD_FLAGS ?=
+.PHONY: test-backup-release-image
+test-backup-release-image: ## Build the actual release Dockerfile locally and execute bundled backup/recovery CLIs without publishing.
+	@mkdir -p tmp/backup-release-image/linux/$(RELEASE_SMOKE_ARCH)
+	$(GO_TEST_ENV) CGO_ENABLED=0 GOOS=linux GOARCH=$(RELEASE_SMOKE_ARCH) go build -trimpath -o tmp/backup-release-image/linux/$(RELEASE_SMOKE_ARCH)/borq ./cmd/borq
+	docker build --platform linux/$(RELEASE_SMOKE_ARCH) --file zarf/Dockerfile --tag borq-backup-smoke:local $(RELEASE_SMOKE_BUILD_FLAGS) tmp/backup-release-image
+	docker run --rm --entrypoint /usr/local/bin/restic borq-backup-smoke:local version
+	docker run --rm borq-backup-smoke:local management backups list --help
+	docker run --rm borq-backup-smoke:local management backups restore --help
+	docker run --rm borq-backup-smoke:local management backups local list --help
+	docker run --rm borq-backup-smoke:local management backups local restore --help
+	docker run --rm borq-backup-smoke:local management backups local keygen --identity-file /tmp/recovery.agekey

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stefanmcshane/borq/business/managementbackup"
 	"github.com/stefanmcshane/borq/foundations/objectstore"
 	"github.com/stefanmcshane/borq/foundations/postgres"
 )
@@ -49,6 +50,8 @@ type Archive struct {
 	Source string `json:"source"`
 	// Objects contains every regular object preceding this manifest in sorted order.
 	Objects []Object `json:"objects"`
+	// Native records complete independently encrypted management component artifacts.
+	Native []managementbackup.Artifact `json:"native"`
 	// Backups records only recovery boundaries established by the shared catalogue evaluator.
 	Backups map[string][]postgres.BackupMetadata `json:"backups"`
 }
@@ -59,6 +62,12 @@ type RecoveryConfig struct {
 	Repository Repository `json:"offsite"`
 	// Source identifies the original archive source for snapshot selection.
 	Source string `json:"source"`
+	// Local selects local or offsite-rehydrated S3 for native component recovery.
+	Local StorageConfig `json:"local"`
+	// Identity is an independently retained age private identity, used only for native restore.
+	Identity string `json:"identity"`
+	// OpenBao contains independent native vault recovery material.
+	OpenBao managementbackup.OpenBaoRecovery `json:"openbao"`
 	// Destination is a fresh S3 prefix with independently supplied credentials.
 	Destination StorageConfig `json:"destination"`
 }

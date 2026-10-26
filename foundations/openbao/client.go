@@ -5,6 +5,7 @@ package openbao
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -140,4 +141,26 @@ func (c *Client) WaitForReady(ctx context.Context, pollInterval, timeout time.Du
 	}
 
 	return fmt.Errorf("openbao not reachable within %s", timeout)
+}
+
+// WaitForActive waits for the unsealed local instance to finish Raft leader activation before state-changing requests.
+func (client *Client) WaitForActive(ctx context.Context, pollInterval, timeout time.Duration) error {
+	if pollInterval <= 0 || timeout <= 0 {
+		return errors.New("OpenBao activation wait requires positive durations")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	for {
+		leader, err := client.cli.Sys().LeaderWithContext(ctx)
+		if err == nil && (!leader.HAEnabled || leader.IsSelf) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("OpenBao did not become active before the activation deadline")
+		case <-ticker.C:
+		}
+	}
 }

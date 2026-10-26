@@ -523,6 +523,8 @@ components:
         s3:
           $ref: "#/components/schemas/ManagementS3Input"
           description: "S3 is optional so omitted storage remains unchanged. A pointer preserves omission."
+        backups:
+          $ref: "#/components/schemas/ManagementBackupInput"
         offsite:
           $ref: "#/components/schemas/ManagementOffsiteInput"
         organizations:
@@ -530,6 +532,77 @@ components:
           items:
             $ref: "#/components/schemas/ManagementOrganization"
           description: "Organizations updates the named organization hierarchy."
+    ManagementBackupInput:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        interval:
+          type: string
+        keepLast:
+          type: integer
+        recipient:
+          type: string
+        status:
+          $ref: '#/components/schemas/ManagementBackupStatus'
+          readOnly: true
+      required: [enabled]
+    ManagementBackupStatus:
+      type: object
+      additionalProperties: false
+      properties:
+        lastAttempt:
+          type: string
+          format: date-time
+        nextAttempt:
+          type: string
+          format: date-time
+        components:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ManagementBackupComponent'
+      required: [components]
+    ManagementBackupComponent:
+      type: object
+      additionalProperties: false
+      properties:
+        state:
+          type: string
+        lastAttempt:
+          type: string
+          format: date-time
+        lastSuccess:
+          type: string
+          format: date-time
+        storage:
+          $ref: '#/components/schemas/ManagementS3'
+        artifact:
+          $ref: '#/components/schemas/ManagementNativeArtifact'
+        error:
+          type: string
+      required: [state, artifact, storage]
+    ManagementNativeArtifact:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+        kind:
+          type: string
+        id:
+          type: string
+        capturedAt:
+          type: string
+          format: date-time
+        recipient:
+          type: string
+        size:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+      required: [version, kind, id, capturedAt, recipient, size, sha256]
     ManagementOffsiteInput:
       type: object
       additionalProperties: false

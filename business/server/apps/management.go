@@ -187,6 +187,23 @@ func (manager Manager) stageManagementConfiguration(ctx context.Context, configu
 	if err := json.Unmarshal(data, &safe); err != nil {
 		return ManagementConfiguration{}, err
 	}
+	if safe.Backups != nil {
+		input := *safe.Backups
+		if !input.Enabled && input.Recipient == "" {
+			previous, _, err := loadDocument[ManagementBackupInput](ctx, manager.database, "management-backups", "shared")
+			if err == nil {
+				input = previous
+				input.Enabled = false
+			} else if !errors.Is(err, ErrNotFound) {
+				return ManagementConfiguration{}, err
+			}
+		}
+		policy, err := prepareManagementBackups(input)
+		if err != nil {
+			return ManagementConfiguration{}, err
+		}
+		safe.Backups = &policy
+	}
 	prospectiveStorage := ManagementS3{}
 	if safe.S3 != nil {
 		storage, err := manager.prepareManagementS3(ctx, *safe.S3)
@@ -252,6 +269,9 @@ func managementActions(configuration ManagementConfiguration) []managementAction
 	actions := []managementAction{}
 	if configuration.S3 != nil {
 		actions = append(actions, managementAction{kind: "s3"})
+	}
+	if configuration.Backups != nil {
+		actions = append(actions, managementAction{kind: "backups"})
 	}
 	if configuration.Offsite != nil {
 		actions = append(actions, managementAction{kind: "offsite"})
@@ -393,6 +413,8 @@ func (manager Manager) saveManagementProgress(ctx context.Context, operation Ope
 func (manager Manager) executeManagementAction(ctx context.Context, configuration ManagementConfiguration, action managementAction) (string, string, error) {
 	organization, space := action.organization.Name, action.space.Name
 	switch action.kind {
+	case "backups":
+		return "", "", manager.activateManagementBackups(ctx, *configuration.Backups)
 	case "offsite":
 		return "", "", manager.activateOffsite(ctx, *configuration.Offsite)
 	case "s3":

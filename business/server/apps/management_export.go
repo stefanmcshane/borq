@@ -35,6 +35,17 @@ func (manager Manager) GetManagementConfiguration(ctx context.Context) (Manageme
 	} else if !errors.Is(offsiteErr, ErrNotFound) {
 		return ManagementConfiguration{}, offsiteErr
 	}
+	backups, _, backupErr := loadDocument[ManagementBackupInput](ctx, manager.database, "management-backups", "shared")
+	if backupErr == nil {
+		status, err := manager.managementBackupStatus(ctx)
+		if err != nil {
+			return ManagementConfiguration{}, err
+		}
+		backups.Status = &status
+		configuration.Backups = &backups
+	} else if !errors.Is(backupErr, ErrNotFound) {
+		return ManagementConfiguration{}, backupErr
+	}
 	organizations, err := manager.ListOrganizations(ctx)
 	if err != nil {
 		return ManagementConfiguration{}, err

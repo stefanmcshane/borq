@@ -158,7 +158,7 @@ func reconcileComponent(ctx context.Context, releases helm.ReleaseManager, defin
 		Version: definition.Version, Values: values, Timeout: input.Timeout, Upgrade: upgrade,
 		RecoverPending: recoverPending,
 		PodLabels:      componentPodLabels(),
-		SkipWait:       definition.Name == "openbao" && input.Profile == "production",
+		SkipWait:       definition.Name == "openbao",
 	})
 	if installed.Version != "" {
 		state.Version = installed.Version
@@ -260,6 +260,9 @@ func prepareVault(ctx context.Context, connection kubernetes.Connection, setting
 				return err
 			}
 		}
+	}
+	if err := vault.WaitForActive(ctx, time.Second, settings.Timeout); err != nil {
+		return err
 	}
 	return vault.EnsureKvV2(ctx, "secret")
 }

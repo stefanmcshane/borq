@@ -1,6 +1,6 @@
 //go:build integration
 
-package platform
+package platform_test
 
 import (
 	"bytes"
@@ -20,6 +20,7 @@ import (
 
 	"github.com/matryer/is"
 	"github.com/stefanmcshane/borq/business/offsite"
+	"github.com/stefanmcshane/borq/business/server/platform"
 	"github.com/stefanmcshane/borq/foundations/helm"
 	"github.com/stefanmcshane/borq/foundations/kubernetes"
 	"github.com/stefanmcshane/borq/foundations/logger"
@@ -55,19 +56,20 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_ = client.CoreV1().Namespaces().Delete(cleanup, namespace, metav1.DeleteOptions{})
+		_ = client.RbacV1().ClusterRoleBindings().Delete(cleanup, namespace+"-openbao-server-binding", metav1.DeleteOptions{})
 	})
 	_, err = client.CoreV1().Secrets(namespace).Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "borq-rustfs"}, StringData: map[string]string{"RUSTFS_ACCESS_KEY": "borq-offsite-access", "RUSTFS_SECRET_KEY": "borq-offsite-secret-independent-test"}}, metav1.CreateOptions{})
 	assert.NoErr(err)
-	settings, err := normalizeSettings(Settings{Profile: "production", Namespace: namespace, StorageClass: "local-path", Timeout: 4 * time.Minute})
+	settings := platform.Settings{Profile: "production", Namespace: namespace, StorageClass: "local-path", Timeout: 4 * time.Minute}
+	catalog, err := platform.GetComponentCatalog(platform.ComponentCatalogInput{Settings: settings, Scope: platform.ComponentScopeManagement})
 	assert.NoErr(err)
-	var definition component
-	for _, candidate := range managementCatalog(settings, false) {
+	var definition platform.ComponentConfiguration
+	for _, candidate := range catalog.Components {
 		if candidate.Name == "rustfs" {
 			definition = candidate
 		}
 	}
-	values, err := renderComponentValues(definition, valuesInput{Settings: settings})
-	assert.NoErr(err)
+	values := definition.Values
 	values["service"].(map[string]any)["type"] = "ClusterIP"
 	values["storageclass"].(map[string]any)["dataStorageSize"] = "1Gi"
 	releases, err := helm.NewReleaseManager(helm.NewReleaseManagerInput{Connection: connection, KubeconfigPath: kubeconfig})
@@ -78,8 +80,14 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 
 	_, err = client.CoreV1().Secrets(namespace).Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "borq-rustfs-offsite"}, StringData: map[string]string{"RUSTFS_ACCESS_KEY": "independent-offsite-access", "RUSTFS_SECRET_KEY": "independent-offsite-secret"}}, metav1.CreateOptions{})
 	assert.NoErr(err)
-	externalValues, err := renderComponentValues(definition, valuesInput{Settings: settings})
+	externalCatalog, err := platform.GetComponentCatalog(platform.ComponentCatalogInput{Settings: settings, Scope: platform.ComponentScopeManagement})
 	assert.NoErr(err)
+	var externalValues map[string]any
+	for _, candidate := range externalCatalog.Components {
+		if candidate.Name == "rustfs" {
+			externalValues = candidate.Values
+		}
+	}
 	externalValues["fullnameOverride"] = "rustfs-offsite"
 	externalValues["service"].(map[string]any)["type"] = "ClusterIP"
 	externalValues["storageclass"].(map[string]any)["dataStorageSize"] = "1Gi"
@@ -101,14 +109,14 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 	assert.NoErr(err)
 	externalPort := externalListener.Addr().(*net.TCPAddr).Port
 	assert.NoErr(externalListener.Close())
-	stopExternal := startOffsiteForward(t, ctx, kubeconfig, namespace, "rustfs-offsite-svc", externalPort)
+	stopExternal := startOffsiteForward(t, ctx, kubeconfig, namespace, "rustfs-offsite-svc", externalPort, 9000)
 	defer stopExternal()
 	externalEndpoint := fmt.Sprintf("http://127.0.0.1:%d", externalPort)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	assert.NoErr(err)
 	port := listener.Addr().(*net.TCPAddr).Port
 	assert.NoErr(listener.Close())
-	stopForward := startOffsiteForward(t, ctx, kubeconfig, namespace, "rustfs-svc", port)
+	stopForward := startOffsiteForward(t, ctx, kubeconfig, namespace, "rustfs-svc", port, 9000)
 	source := objectstore.Config{Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Region: "us-east-1", Bucket: "loki", Prefix: "source", PathStyle: true, Credentials: objectstore.Credentials{AccessKey: "borq-offsite-access", SecretKey: "borq-offsite-secret-independent-test"}}
 	storage, err := objectstore.New(source)
 	assert.NoErr(err)
@@ -120,6 +128,12 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 		server + "/wals/0000000100000000/000000010000000000000001.gz": []byte("wal-one"),
 		server + "/wals/0000000100000000/000000010000000000000002.gz": []byte("wal-two"),
 		server + "/wals/00000002.history":                             []byte("timeline-history"),
+	}
+	nativeEnabled := os.Getenv("BORQ_OFFSITE_NATIVE") == "true"
+	managementOnly := os.Getenv("BORQ_OFFSITE_MANAGEMENT_ONLY") == "true"
+	var native nativeAcceptance
+	if managementOnly {
+		data = map[string][]byte{}
 	}
 	seeded := os.Getenv("BORQ_OFFSITE_SEEDED_POSTGRES") == "true"
 	var recoveryDatabase postgres.Input
@@ -143,6 +157,19 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 			assert.NoErr(storage.PutNew(ctx, key, bytes.NewReader(body), int64(len(body))))
 		}
 	}
+	if nativeEnabled {
+		native = seedNativeManagement(t, ctx, connection, releases, client, kubeconfig, namespace, source)
+		data = map[string][]byte{}
+		objects, err := storage.List(ctx, "")
+		assert.NoErr(err)
+		for _, object := range objects {
+			body, err := storage.OpenCaptured(ctx, object)
+			assert.NoErr(err)
+			data[object.Key], err = io.ReadAll(body)
+			assert.NoErr(err)
+			assert.NoErr(body.Close())
+		}
+	}
 	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/name=rustfs,app.kubernetes.io/instance=rustfs"})
 	assert.NoErr(err)
 	assert.Equal(len(pods.Items), 1)
@@ -163,7 +190,7 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 		case <-ticker.C:
 		}
 	}
-	stopForward = startOffsiteForward(t, ctx, kubeconfig, namespace, "rustfs-svc", port)
+	stopForward = startOffsiteForward(t, ctx, kubeconfig, namespace, "rustfs-svc", port, 9000)
 	defer stopForward()
 	t.Log("RustFS replacement pod reopened the same persistent volume on its data node")
 	captured, err := storage.List(ctx, "")
@@ -199,6 +226,9 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 				break
 			}
 		}
+	}
+	if managementOnly {
+		missingWal = "management/sqlite/" + native.sqlite.ID + "/payload"
 	}
 	assert.NoErr(storage.Delete(ctx, missingWal))
 	failed, err := offsite.Run(ctx, run)
@@ -252,6 +282,9 @@ func TestRustfsOffsiteIntegration(t *testing.T) {
 		assert.Equal(actual.Bytes(), expected)
 	}
 	t.Log("offline CLI restored every byte after source deletion and source-service shutdown using only independent repository and destination credentials")
+	if nativeEnabled {
+		recoverNativeManagement(t, ctx, kubeconfig, binary, namespace, connection, releases, client, native, recovery)
+	}
 	if seeded {
 		recoveryDatabase.Recovery.Storage = postgres.Storage{Endpoint: "http://rustfs-offsite-svc." + namespace + ".svc:9000", Region: destination.Region, Bucket: destination.Bucket, Prefix: path.Join(destination.Prefix, path.Dir(server)), ServerName: path.Base(server), PathStyle: true, AccessKey: destination.AccessKey, SecretKey: destination.SecretKey}
 		recoveryDatabase.Storage = recoveryDatabase.Recovery.Storage
@@ -272,9 +305,9 @@ func podReady(pod corev1.Pod) bool {
 	}
 	return false
 }
-func startOffsiteForward(t *testing.T, ctx context.Context, kubeconfig, namespace, service string, port int) func() {
+func startOffsiteForward(t *testing.T, ctx context.Context, kubeconfig, namespace, service string, port, remotePort int) func() {
 	t.Helper()
-	command := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "port-forward", "service/"+service, fmt.Sprintf("%d:9000", port), "--address=127.0.0.1")
+	command := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfig, "-n", namespace, "port-forward", "service/"+service, fmt.Sprintf("%d:%d", port, remotePort), "--address=127.0.0.1")
 	log, err := os.CreateTemp(t.TempDir(), "forward-")
 	if err != nil {
 		t.Fatal(err)

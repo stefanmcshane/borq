@@ -11,17 +11,30 @@ server:
       mountPath: /openbao/postgres-ca
       readOnly: true
   dev:
+    enabled: false
+  standalone:
     enabled: true
-    devRootToken: unused-borq-secret-overrides-this
-  extraSecretEnvironmentVars:
-    - envName: BAO_DEV_ROOT_TOKEN_ID
-      secretName: borq-openbao-admin
-      secretKey: token
+    config: |
+      ui = false
+      disable_mlock = true
+      api_addr = "http://127.0.0.1:8200"
+      cluster_addr = "https://127.0.0.1:8201"
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+      }
+      storage "raft" {
+        path = "/openbao/data/raft"
+        node_id = "openbao-0"
+      }
   service:
     type: NodePort
     nodePort: {{ openBaoNodePort }}
   dataStorage:
-    enabled: false
+    enabled: true
+    size: 1Gi
+    storageClass: {{ .StorageClass | quote }}
   resources:
     requests:
       cpu: 20m

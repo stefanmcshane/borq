@@ -73,7 +73,15 @@ func TestCatalogValuesResolveWithoutSecrets(t *testing.T) {
 			is.True(len(values) > 0)
 			is.True(definition.Version != "")
 			if definition.Name == "openbao" {
-				service := values["server"].(map[string]any)["service"].(map[string]any)
+
+				server := values["server"].(map[string]any)
+				is.Equal(server["dev"].(map[string]any)["enabled"], false)
+				is.Equal(server["dataStorage"].(map[string]any)["enabled"], true)
+				is.Equal(server["dataStorage"].(map[string]any)["storageClass"], "borq-local")
+				standalone := server["standalone"].(map[string]any)
+				is.Equal(standalone["enabled"], true)
+				is.True(strings.Contains(standalone["config"].(string), `storage "raft"`))
+				service := server["service"].(map[string]any)
 				is.Equal(service["type"], "NodePort")
 				is.Equal(service["nodePort"], float64(30200))
 			}

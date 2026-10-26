@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -18,8 +19,12 @@ import (
 	"sync"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/business/managementbackup"
 	"github.com/stefanmcshane/borq/foundations/objectstore"
+	"github.com/stefanmcshane/borq/foundations/sqlite"
+	"time"
 )
 
 // TestArchiveRoundTrip owns deterministic capture, scope isolation and verified S3 rehydration.
@@ -181,6 +186,8 @@ type archiveS3 struct {
 	truncateOnGet bool
 	reportedSizes map[string]int64
 	getCount      int
+	modified      map[string]time.Time
+	failComplete  string
 }
 
 func newArchiveS3(t *testing.T) *archiveS3 {
@@ -205,9 +212,10 @@ func (fixture *archiveS3) serve(writer http.ResponseWriter, request *http.Reques
 	writer.Header().Set("Content-Type", "application/xml")
 	if query.Get("list-type") == "2" {
 		type entry struct {
-			Key  string
-			Size int
-			ETag string
+			Key          string
+			Size         int
+			ETag         string
+			LastModified string
 		}
 		listing := struct {
 			XMLName     xml.Name `xml:"ListBucketResult"`
@@ -226,7 +234,11 @@ func (fixture *archiveS3) serve(writer http.ResponseWriter, request *http.Reques
 			if reported, exists := fixture.reportedSizes[key]; exists {
 				size = int(reported)
 			}
-			listing.Contents = append(listing.Contents, entry{key, size, etag(fixture.objects[key])})
+			modified := time.Now().UTC()
+			if value, exists := fixture.modified[key]; exists {
+				modified = value
+			}
+			listing.Contents = append(listing.Contents, entry{key, size, etag(fixture.objects[key]), modified.Format(time.RFC3339)})
 		}
 		_ = xml.NewEncoder(writer).Encode(listing)
 		return
@@ -251,6 +263,10 @@ func (fixture *archiveS3) serve(writer http.ResponseWriter, request *http.Reques
 			return
 		}
 		if request.Method == http.MethodPost {
+			if fixture.failComplete != "" && strings.HasSuffix(key, fixture.failComplete) {
+				writer.WriteHeader(http.StatusForbidden)
+				return
+			}
 			if _, exists := fixture.objects[key]; exists && request.Header.Get("If-None-Match") == "*" {
 				writer.WriteHeader(412)
 				return
@@ -292,6 +308,9 @@ func (fixture *archiveS3) serve(writer http.ResponseWriter, request *http.Reques
 			body = body[:len(body)/2]
 		}
 		_, _ = writer.Write(body)
+	case http.MethodDelete:
+		delete(fixture.objects, key)
+		writer.WriteHeader(http.StatusNoContent)
 	case http.MethodPut:
 		if _, exists := fixture.objects[key]; exists && request.Header.Get("If-None-Match") == "*" {
 			writer.WriteHeader(412)
@@ -318,21 +337,32 @@ func TestArchiveLargeObjectHeader(t *testing.T) {
 	assert.Equal(decoded.Name, header.Name)
 }
 
-// TestCaptureMetadataBudget rejects aggregate backup.info sizes before downloading or allocating their bodies.
+// TestCaptureMetadataBudget rejects PostgreSQL and native metadata before downloading or allocating their bodies.
 func TestCaptureMetadataBudget(t *testing.T) {
-	assert := is.New(t)
-	fixture := newArchiveS3(t)
-	fixture.reportedSizes = map[string]int64{}
-	for index := range 33 {
-		key := fmt.Sprintf("source/%s/base/202610%02dT120000/backup.info", archiveServer(), index)
-		fixture.objects[key] = []byte("status=STARTED\n")
-		fixture.reportedSizes[key] = 1 << 20
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprintf("native-%t", native), func(t *testing.T) {
+			assert := is.New(t)
+			fixture := newArchiveS3(t)
+			fixture.reportedSizes = map[string]int64{}
+			count, size := 33, int64(1<<20)
+			if native {
+				count, size = 513, 64<<10
+			}
+			for index := range count {
+				key := fmt.Sprintf("source/%s/base/202610%02dT120000/backup.info", archiveServer(), index)
+				if native {
+					key = fmt.Sprintf("source/management/sqlite/%032x/complete.json", index)
+				}
+				fixture.objects[key] = []byte("metadata")
+				fixture.reportedSizes[key] = size
+			}
+			var output bytes.Buffer
+			err := Export(t.Context(), fixture.config("source"), &output)
+			assert.True(err != nil && strings.Contains(err.Error(), "metadata"))
+			assert.Equal(fixture.getCount, 0)
+			assert.Equal(output.Len(), 0)
+		})
 	}
-	var output bytes.Buffer
-	err := Export(t.Context(), fixture.config("source"), &output)
-	assert.True(err != nil && strings.Contains(err.Error(), "metadata exceeds 32 MiB"))
-	assert.Equal(fixture.getCount, 0)
-	assert.Equal(output.Len(), 0)
 }
 
 // TestRecoveryRejectsFailedProducer requires the dump process to succeed even after it emits a valid complete archive.
@@ -376,4 +406,159 @@ func TestStreamingUploadCreatesOnly(t *testing.T) {
 	_, exists := fixture.objects["destination/truncated"]
 	assert.True(!exists)
 	assert.Equal(len(fixture.uploads), 0)
+}
+
+// TestNativeManagementOffsiteRoundTrip protects management-only and mixed captures, excludes partials and performs downstream SQLite recovery without the original.
+func TestNativeManagementOffsiteRoundTrip(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed-%t", mixed), func(t *testing.T) {
+			assert := is.New(t)
+			fixture := newArchiveS3(t)
+			if mixed {
+				seedArchive(fixture)
+			}
+			source := fixture.config("source")
+			client, err := objectstore.New(source)
+			assert.NoErr(err)
+			directory := t.TempDir()
+			database, err := sqlite.New(t.Context(), filepath.Join(directory, "original.sqlite"))
+			assert.NoErr(err)
+			assert.NoErr(database.Commit(t.Context(), []sqlite.Write{{Collection: "organization", Key: "recovered-org", Value: []byte(`{"name":"recovered-org"}`)}}))
+			snapshot := filepath.Join(directory, "snapshot.sqlite")
+			assert.NoErr(database.Snapshot(t.Context(), snapshot))
+			assert.NoErr(database.Close())
+			bundle := filepath.Join(directory, "bundle.tar")
+			assert.NoErr(managementbackup.BundleSQLite(t.Context(), snapshot, []managementbackup.Connection{}, bundle))
+			identity, err := age.GenerateX25519Identity()
+			assert.NoErr(err)
+			id, err := managementbackup.NewID()
+			assert.NoErr(err)
+			artifact, err := managementbackup.Publish(t.Context(), client, managementbackup.Artifact{Version: 1, Kind: "sqlite", ID: id, Recipient: identity.Recipient().String(), CapturedAt: time.Now().UTC()}, bundle)
+			assert.NoErr(err)
+			assert.NoErr(client.Put(t.Context(), "management/sqlite/"+strings.Repeat("c", 32)+"/payload", []byte("partial-private-bytes")))
+			var output bytes.Buffer
+			assert.NoErr(Export(t.Context(), source, &output))
+			destination := fixture.config("rehydrated")
+			manifest, err := Restore(t.Context(), destination, SourceID(source), bytes.NewReader(output.Bytes()))
+			assert.NoErr(err)
+			assert.Equal(len(manifest.Native), 1)
+			assert.Equal(manifest.Native[0], artifact)
+			for _, object := range manifest.Objects {
+				assert.True(!strings.Contains(object.Key, strings.Repeat("c", 32)))
+			}
+			assert.NoErr(os.RemoveAll(directory))
+			destinationClient, err := objectstore.New(destination)
+			assert.NoErr(err)
+			unrelated := artifact
+			unrelated.Kind = "openbao"
+			unrelated.ID = strings.Repeat("d", 32)
+			unrelatedMarker, err := json.Marshal(unrelated)
+			assert.NoErr(err)
+			assert.NoErr(destinationClient.Put(t.Context(), managementbackup.CompletionKey(unrelated), unrelatedMarker))
+			restoredDir := filepath.Join(t.TempDir(), "recovered")
+			assert.NoErr(managementbackup.Restore(t.Context(), managementbackup.RestoreInput{Storage: destination, Kind: "sqlite", ID: id, Identity: identity.String(), DataDir: restoredDir}))
+			recovered, err := sqlite.New(t.Context(), filepath.Join(restoredDir, "borq.sqlite"))
+			assert.NoErr(err)
+			defer recovered.Close()
+			record, err := recovered.Get(t.Context(), "organization", "recovered-org")
+			assert.NoErr(err)
+			assert.True(bytes.Contains(record.Value, []byte("recovered-org")))
+			wrong, err := age.GenerateX25519Identity()
+			assert.NoErr(err)
+			wrongPath := filepath.Join(t.TempDir(), "wrong-openbao")
+			assert.True(managementbackup.Restore(t.Context(), managementbackup.RestoreInput{Storage: destination, Kind: "sqlite", ID: id, Identity: wrong.String(), DataDir: wrongPath}) != nil)
+			_, err = os.Stat(wrongPath)
+			assert.True(os.IsNotExist(err))
+			fixture.mutex.Lock()
+			payloadKey := "rehydrated/" + managementbackup.PayloadKey(artifact)
+			corrupted := append([]byte(nil), fixture.objects[payloadKey]...)
+			corrupted[len(corrupted)-1] ^= 1
+			fixture.objects[payloadKey] = corrupted
+			digest := sha256.Sum256(corrupted)
+			artifact.SHA256 = hex.EncodeToString(digest[:])
+			marker, _ := json.Marshal(artifact)
+			fixture.objects["rehydrated/"+managementbackup.CompletionKey(artifact)] = marker
+			fixture.mutex.Unlock()
+			nativeCalls := 0
+			vault := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				nativeCalls++
+				writer.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer vault.Close()
+			err = managementbackup.Restore(t.Context(), managementbackup.RestoreInput{Storage: destination, Kind: "sqlite", ID: id, Identity: identity.String(), DataDir: wrongPath})
+			assert.True(err != nil && strings.Contains(err.Error(), "authentication"))
+			_, err = os.Stat(wrongPath)
+			assert.True(os.IsNotExist(err))
+			// The same corrupt ciphertext labelled as Raft must be rejected before the recovery endpoint is contacted.
+			artifact.Kind = "openbao"
+			marker, _ = json.Marshal(artifact)
+			assert.NoErr(destinationClient.Put(t.Context(), managementbackup.PayloadKey(artifact), corrupted))
+			assert.NoErr(destinationClient.Put(t.Context(), managementbackup.CompletionKey(artifact), marker))
+			err = managementbackup.Restore(t.Context(), managementbackup.RestoreInput{Storage: destination, Kind: "openbao", ID: id, Identity: identity.String(), OpenBao: managementbackup.OpenBaoRecovery{Address: vault.URL, OriginalToken: "original", UnsealKeys: []string{"retained"}}})
+			assert.True(err != nil && strings.Contains(err.Error(), "authentication"))
+			assert.Equal(nativeCalls, 0)
+
+		})
+	}
+}
+
+// TestNativeRetention preserves the other component and partial uploads while removing old completed payloads and markers.
+func TestNativeRetention(t *testing.T) {
+	assert := is.New(t)
+	fixture := newArchiveS3(t)
+	config := fixture.config("source")
+	client, err := objectstore.New(config)
+	assert.NoErr(err)
+	file := filepath.Join(t.TempDir(), "native")
+	assert.NoErr(os.WriteFile(file, []byte("native payload transport fixture"), 0600))
+	identity, err := age.GenerateX25519Identity()
+	assert.NoErr(err)
+	artifacts := []managementbackup.Artifact{}
+	for index, kind := range []string{"sqlite", "openbao", "openbao", "openbao"} {
+		artifact, err := managementbackup.Publish(t.Context(), client, managementbackup.Artifact{Version: 1, Recipient: identity.Recipient().String(), Kind: kind, ID: fmt.Sprintf("%032x", index), CapturedAt: time.Unix(int64(index+1), 0).UTC()}, file)
+		assert.NoErr(err)
+		artifacts = append(artifacts, artifact)
+	}
+	partial := "management/openbao/" + strings.Repeat("f", 32) + "/payload"
+	assert.NoErr(client.Put(t.Context(), partial, []byte("incomplete")))
+	stale := "management/openbao/" + strings.Repeat("e", 32) + "/payload"
+	assert.NoErr(client.Put(t.Context(), stale, []byte("abandoned")))
+	fixture.mutex.Lock()
+	fixture.modified = map[string]time.Time{"source/" + stale: time.Now().Add(-48 * time.Hour)}
+	fixture.mutex.Unlock()
+	assert.NoErr(managementbackup.Prune(t.Context(), config, "openbao", 1))
+	entries, err := managementbackup.List(t.Context(), config)
+	assert.NoErr(err)
+	assert.Equal(len(entries), 2)
+	assert.Equal(entries[0].Artifact, artifacts[0])
+	assert.Equal(entries[1].Artifact, artifacts[3])
+	fixture.mutex.Lock()
+	defer fixture.mutex.Unlock()
+	for _, artifact := range artifacts[1:3] {
+		_, payload := fixture.objects["source/"+managementbackup.PayloadKey(artifact)]
+		_, marker := fixture.objects["source/"+managementbackup.CompletionKey(artifact)]
+		assert.True(!payload && !marker)
+	}
+	assert.True(len(fixture.objects["source/"+partial]) > 0)
+	_, staleExists := fixture.objects["source/"+stale]
+	assert.True(!staleExists)
+}
+
+func TestNativeFailedPublicationCleanup(t *testing.T) {
+	assert := is.New(t)
+	fixture := newArchiveS3(t)
+	fixture.failComplete = "/complete.json"
+	client, err := objectstore.New(fixture.config("source"))
+	assert.NoErr(err)
+	file := filepath.Join(t.TempDir(), "native")
+	assert.NoErr(os.WriteFile(file, []byte("native payload"), 0600))
+	identity, err := age.GenerateX25519Identity()
+	assert.NoErr(err)
+	_, err = managementbackup.Publish(t.Context(), client, managementbackup.Artifact{Version: 1, Recipient: identity.Recipient().String(), Kind: "sqlite", ID: strings.Repeat("a", 32), CapturedAt: time.Now()}, file)
+	assert.True(err != nil)
+	fixture.mutex.Lock()
+	defer fixture.mutex.Unlock()
+	if len(fixture.objects) != 0 || len(fixture.uploads) != 0 {
+		t.Fatalf("failed native publication retained %d completed objects and %d multipart uploads", len(fixture.objects), len(fixture.uploads))
+	}
 }

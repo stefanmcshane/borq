@@ -1014,8 +1014,8 @@ the default managed PostgreSQL archive store in every profile. Production reques
 production RustFS installation. Dev Loki uses RustFS, while production Loki keeps its
 existing filesystem selection unless external S3 is explicitly configured. RustFS uses
 a Recreate deployment strategy so a single data volume has one writer during upgrades.
-See [external S3 offsite backups](docs/offsite-backups.md) for periodic encrypted Restic
-exports and independent object recovery. SQLite and OpenBao require separate native backups.
+See [management and offsite backups](docs/offsite-backups.md) for scheduled, encrypted
+native SQLite/OpenBao captures, external Restic exports and independent recovery.
 
 The baseline uses single replicas, small local volumes, and no HA. Borq's SQLite
 volume is 1Gi. The `borq-local` StorageClass uses k3s's local-path provisioner, waits
@@ -1037,11 +1037,13 @@ Kubernetes installation, machine access and networking are handled outside Borq.
 Management bootstrap installs the Borq server and its supporting components. Linking
 an existing cluster enrolls it as a deployment target. Create application deployment spaces separately.
 
-Production OpenBao uses standalone persistent storage. The Borq server initializes and
+Both profiles use persistent, single-node OpenBao Raft. The Borq server initializes and
 unseals it, saving its admin token and recovery material in
 `borq/borq-openbao-admin`. This is an initial local-disk baseline, not a production HA
 or independently secured recovery design; protect Kubernetes access and back up both
-vault data and recovery material. Dev OpenBao remains explicitly ephemeral.
+vault data and independently retained recovery material. Native management backups use a
+public age recipient; retain its private identity outside the cluster. SQLite restoration
+pauses queued operations until explicit offline review, storage rebinding and resume.
 
 A standalone server enables its own component setup using `--management-enabled` and
 target installation using `--infrastructure-enabled`, together with
