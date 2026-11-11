@@ -1,0 +1,49 @@
+name: Deploy installer Worker
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'zarf/install-worker/**'
+      - '.github/workflows/deploy-install-worker.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-worker-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: zarf/install-worker/package-lock.json
+      - name: Install dependencies
+        run: npm ci --prefix zarf/install-worker --no-audit --no-fund
+      - name: Test installer
+        run: make test-install-worker
+      - name: Check Worker build
+        run: npm run build --prefix zarf/install-worker
+      - name: Deploy installer Worker
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          changed_inputs=$(git diff --name-only HEAD FETCH_HEAD -- zarf/install-worker .github/workflows/deploy-install-worker.yml)
+          if [[ -n "$changed_inputs" ]]; then
+            echo "Skipping deployment because newer installer changes are on main."
+            exit 0
+          fi
+          npm run deploy --prefix zarf/install-worker
