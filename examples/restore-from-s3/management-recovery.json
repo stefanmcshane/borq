@@ -1,0 +1,33 @@
+{
+  "offsite": {
+    "repository": "s3:https://s3.us-east-1.amazonaws.com/RETAINED_OFFSITE_BUCKET/borq",
+    "region": "us-east-1",
+    "password": "RETAINED_RESTIC_PASSWORD",
+    "accessKey": "RECOVERY_OFFSITE_ACCESS_KEY",
+    "secretKey": "RECOVERY_OFFSITE_SECRET_KEY"
+  },
+  "source": "RETAINED_MANAGEMENT_SOURCE_ID",
+  "destination": {
+    "endpoint": "https://replacement-rustfs.example.com",
+    "region": "us-east-1",
+    "bucket": "replacement-management",
+    "prefix": "incident-unique/management",
+    "pathStyle": true,
+    "accessKey": "REPLACEMENT_RUSTFS_ADMIN_ACCESS_KEY",
+    "secretKey": "REPLACEMENT_RUSTFS_ADMIN_SECRET_KEY"
+  },
+  "local": {
+    "endpoint": "https://replacement-rustfs.example.com",
+    "region": "us-east-1",
+    "bucket": "replacement-management",
+    "prefix": "incident-unique/management",
+    "pathStyle": true,
+    "accessKey": "REPLACEMENT_RUSTFS_ADMIN_ACCESS_KEY",
+    "secretKey": "REPLACEMENT_RUSTFS_ADMIN_SECRET_KEY"
+  },
+  "openbao": {
+    "address": "http://127.0.0.1:18200",
+    "originalToken": "ORIGINAL_OPENBAO_ADMIN_TOKEN",
+    "sealKey": "ORIGINAL_OPENBAO_STATIC_SEAL_KEY"
+  }
+}

@@ -1,0 +1,103 @@
+service:
+  type: NodePort
+  endpoint:
+    nodePort: {{ rustfsNodePort }}
+fullnameOverride: rustfs
+replicaCount: 1
+mode:
+  standalone:
+    enabled: true
+    strategy:
+      type: Recreate
+  distributed:
+    enabled: false
+secret:
+  existingSecret: borq-rustfs
+ingress:
+  enabled: false
+storageclass:
+  name: {{ .StorageClass | quote }}
+  dataStorageSize: {{ if eq .Profile "production" }}100Gi{{ else }}1Gi{{ end }}
+  logStorageSize: 128Mi
+config:
+  rustfs:
+    obs_log_directory: ""
+extraEnv:
+  - name: RUSTFS_KMS_ENABLE
+    value: "true"
+  - name: RUSTFS_KMS_BACKEND
+    value: vault-transit
+  - name: RUSTFS_KMS_VAULT_ADDRESS
+    value: "https://openbao-kms.{{ .Namespace }}.svc:8202"
+  - name: RUSTFS_KMS_VAULT_CA_CERT
+    value: /run/borq-kms/ca.crt
+  - name: RUSTFS_KMS_VAULT_MOUNT_PATH
+    value: borq-rustfs-kms
+  - name: RUSTFS_KMS_VAULT_TRANSIT_METADATA_KV_MOUNT
+    value: secret
+  - name: RUSTFS_KMS_VAULT_TRANSIT_METADATA_PREFIX
+    value: borq/platform/rustfs-kms/metadata
+  - name: RUSTFS_KMS_DEFAULT_KEY_ID
+    value: borq-managed-backups-v1
+  - name: RUSTFS_KMS_ENABLE_CACHE
+    value: "false"
+extraVolumes:
+  - name: kms-ca
+    secret:
+      secretName: borq-openbao-kms-tls
+      items:
+        - key: ca.crt
+          path: ca.crt
+extraVolumeMounts:
+  - name: kms-ca
+    mountPath: /run/borq-kms
+    readOnly: true
+resources:
+  requests:
+    cpu: 20m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+extraManifests:
+  - apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: borq-rustfs-buckets
+      annotations:
+        helm.sh/hook: post-install,post-upgrade
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 180
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: buckets
+              image: public.ecr.aws/aws-cli/aws-cli:2.38.1
+              command: ["/bin/sh", "-ec"]
+              args:
+                - >-
+                  aws --endpoint-url http://rustfs-svc:9000 s3api head-bucket --bucket {{ managementBucket .ClusterName | quote }}
+                  || aws --endpoint-url http://rustfs-svc:9000 s3api create-bucket --bucket {{ managementBucket .ClusterName | quote }}
+              env:
+                - name: AWS_DEFAULT_REGION
+                  value: us-east-1
+                - name: AWS_EC2_METADATA_DISABLED
+                  value: "true"
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: borq-rustfs
+                      key: RUSTFS_ACCESS_KEY
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: borq-rustfs
+                      key: RUSTFS_SECRET_KEY
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 192Mi

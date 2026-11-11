@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: borq-data-recovery
+  namespace: borq-mgmt
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  containers:
+    - name: recovery
+      image: ghcr.io/stefanmcshane/borq:0.2.1
+      command: ["/bin/sh", "-c", "sleep 86400"]
+      volumeMounts:
+        - name: state
+          mountPath: /var/lib/borq
+  volumes:
+    - name: state
+      persistentVolumeClaim:
+        claimName: borq-data

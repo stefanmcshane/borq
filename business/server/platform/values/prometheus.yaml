@@ -1,0 +1,40 @@
+alertmanager:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+server:
+  fullnameOverride: prometheus-server
+  persistentVolume:
+    enabled: true
+    size: {{ if eq .Profile "dev" }}1Gi{{ else }}5Gi{{ end }}
+    storageClass: {{ .StorageClass | quote }}
+  retention: {{ if eq .Profile "dev" }}96h{{ else }}7d{{ end }}
+  retentionSize: {{ if eq .Profile "dev" }}768MB{{ else }}4GB{{ end }}
+  extraFlags:
+    - web.enable-lifecycle
+    - web.enable-remote-write-receiver
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+configmapReload:
+  prometheus:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+
+# Alloy owns discovery; the management store only ingests selected remote writes.
+# Remove the chart's default jobs before supplying an empty scrape configuration.
+scrapeConfigs: null
+serverFiles:
+  prometheus.yml:
+    scrape_configs: []

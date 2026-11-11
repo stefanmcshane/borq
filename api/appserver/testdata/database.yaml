@@ -1,0 +1,5 @@
+managedAddons:
+  postgres:
+    - name: source
+      credentials:
+        rotationPeriod: 1m

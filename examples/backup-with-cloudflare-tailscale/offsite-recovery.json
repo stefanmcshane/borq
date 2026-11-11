@@ -1,0 +1,10 @@
+{
+  "offsite": {
+    "repository": "s3:https://s3.us-east-1.amazonaws.com/REPLACE_WITH_EXISTING_BACKUP_BUCKET/borq",
+    "region": "us-east-1",
+    "password": "REPLACE_WITH_LONG_RANDOM_PASSWORD_RETAINED_OUTSIDE_THE_CLUSTER",
+    "accessKey": "REPLACE_WITH_S3_ACCESS_KEY",
+    "secretKey": "REPLACE_WITH_S3_SECRET_KEY"
+  },
+  "source": ""
+}

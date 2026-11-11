@@ -1,0 +1,16 @@
+Basecoat 1.0.2, Vega component style
+Source: https://cdn.jsdelivr.net/npm/basecoat-css@1.0.2/dist/basecoat.cdn.min.css
+Documentation: https://basecoatui.com/
+License: MIT (see basecoat.LICENSE).
+
+Inter variable font, Fontsource package 5.2.8
+Source: https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5.2.8/files/inter-latin-wght-normal.woff2
+License: SIL Open Font License 1.1 (see inter.LICENSE).
+
+Local browser runtime dependencies
+astro 5.18.2 (MIT); see astro-LICENSE.
+svelte 5.57.2 (MIT); see svelte-LICENSE.
+yaml 2.9.1 (ISC); see yaml-LICENSE.
+zod 3.25.76 (MIT); see zod-LICENSE.
+
+Joyful word dictionaries are adapted locally; see postgres-editor-NOTICE and joyful-LICENSE.

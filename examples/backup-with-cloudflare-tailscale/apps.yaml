@@ -1,0 +1,35 @@
+apps:
+  - name: frontend
+    image: ghcr.io/replace-me/frontend:replace-me
+    port: 3000
+    replicas: 1
+    ingresses:
+      - name: public
+        host: app.example.com
+        path: /
+    checks:
+      startup:
+        path: /
+        port: 3000
+      readiness:
+        path: /
+        port: 3000
+
+  - name: backend
+    image: ghcr.io/replace-me/backend:replace-me
+    port: 8080
+    replicas: 1
+    env:
+      name: postgres-appdb-replace-with-database-id
+      version: latest
+    ingresses:
+      - name: public
+        host: api.example.com
+        path: /
+    checks:
+      startup:
+        path: /healthz
+        port: 8080
+      readiness:
+        path: /healthz
+        port: 8080

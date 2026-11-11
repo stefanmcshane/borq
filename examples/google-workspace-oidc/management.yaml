@@ -1,0 +1,9 @@
+borqPublicUrl: https://borq.example.com
+
+organizations:
+  - name: example
+    oidc:
+      issuerUrl: https://accounts.google.com
+      clientId: REPLACE_WITH_GOOGLE_CLIENT_ID.apps.googleusercontent.com
+      clientSecret: REPLACE_WITH_GOOGLE_CLIENT_SECRET
+      adminEmail: admin@example.com

@@ -1,0 +1,26 @@
+# Select the organization and space through the CLI or API.
+# Only frontend is publicly exposed; backend remains accessible inside the namespace.
+# Publish the default <organization>-<space>-backend config separately when needed.
+# An unpublished implicit default is an empty environment; plan pins existing latest versions.
+apps:
+  - name: frontend
+    image: nginx:1.27.5
+    port: 80
+    checks:
+      readiness:
+        path: /
+      startup:
+        path: /
+    ingresses:
+      - name: public
+        host: app.borq.test
+  - name: backend
+    image: nginx:1.27.5
+    port: 80
+    env:
+      version: latest
+    checks:
+      readiness:
+        path: /
+      startup:
+        path: /

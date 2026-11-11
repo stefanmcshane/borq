@@ -1,0 +1,39 @@
+---
+import App from "../components/App.svelte";
+---
+
+<!doctype html>
+<html lang="en" class="dark" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Borq · Workspace</title>
+    <script is:inline src="/assets/theme.js"></script>
+    <link rel="icon" href="/assets/borq.svg" type="image/svg+xml" />
+    <link
+      rel="preload"
+      href="/assets/inter-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/assets/basecoat.min.css" />
+    <link rel="stylesheet" href="/assets/theme.css" />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">
+      Skip to workspace
+    </a>
+    <App client:only="svelte">
+      <main slot="fallback" id="workspace" class="error-page">
+        <p role="status">Loading Borq workspace…</p>
+        <noscript>
+          JavaScript is required to manage your workspace. The{" "}
+          <a href="/api/docs/">API reference</a> is also available.
+        </noscript>
+      </main>
+    </App>
+  </body>
+</html>

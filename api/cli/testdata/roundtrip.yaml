@@ -1,0 +1,34 @@
+apps:
+  - name: frontend
+    image: nginx:1.27.5
+    port: 8080
+    env:
+      name: frontend-config
+      version: "2"
+    command: /bin/sh -c "exec nginx -g 'daemon off;'"
+    ingresses:
+      - name: public
+        host: app.borq.test
+    checks:
+      readiness:
+        path: /ready
+        timeoutSeconds: 3
+      startup:
+        path: /startup
+        periodSeconds: 2
+        failureThreshold: 60
+  - name: backend
+    image: nginx:1.27.5
+    replicas: 0
+    predeploy:
+      command: /bin/sh -c 'echo migrate'
+      timeoutSeconds: 120
+    checks:
+      readiness:
+        enabled: false
+        path: /disabled-ready
+        periodSeconds: 7
+      startup:
+        enabled: false
+        path: /disabled-start
+        failureThreshold: 19

@@ -1,0 +1,91 @@
+Requires an existing Kubernetes cluster selected in your kubeconfig.
+
+Extract this bundle and run:
+
+  ./borq management bootstrap --timeout 30m
+
+Bootstrap uses your selected Kubernetes context and connects through the
+Kubernetes API. You do not need a cluster name from kind or a mapped host port.
+The selected kubeconfig supplies the cluster name. Reruns preserve installed
+naming and addresses.
+Use --kubeconfig PATH to select a different kubeconfig explicitly.
+
+When management.yaml enables Tailscale and Cloudflare, export these credentials
+before running management apply:
+  BORQ_TAILSCALE_CLIENT_ID
+  BORQ_TAILSCALE_CLIENT_SECRET
+  BORQ_CLOUDFLARE_API_TOKEN
+The Cloudflare domain, zoneId and acmeEmail belong in management.yaml.
+
+Bootstrap installs Borq and waits only for its private API. Borq independently
+installs its supporting services; management apply is not needed to start them.
+Export the existing management keys:
+  ./borq management keys
+Both commands use the current Kubernetes context unless --kubeconfig is supplied.
+KUBECONFIG files are merged like kubectl; otherwise ~/.kube/config is used.
+
+This creates borq-management-recovery.json and prints its absolute path. The
+private file contains Borq's administrator token, OpenBao's administrator token
+and OpenBao's auto-unseal key. Save a copy in secure storage outside the cluster;
+keep it private and out of source control. Use --output-file PATH to select a
+new location. Reruns reuse matching material and refuse to overwrite incomplete
+or different files. You can run keys as often as needed; it does not create or rotate keys.
+If setup is still starting, keys waits up to five minutes by default (--timeout
+changes this). Missing bootstrap and timeout errors explain the next step.
+
+Start the private port-forward printed by management keys in another terminal,
+then log in using the recovery file:
+  ./borq login --api-url http://127.0.0.1:7833 --token-file borq-management-recovery.json
+Login saves only the Borq administrator token, never the OpenBao credentials.
+It also accepts a raw API token file; omit --token-file for a hidden token prompt.
+After verifying your secure backup and logging in, remove the working recovery file.
+Apply uses the saved login:
+  ./borq management apply -f management.yaml
+This configures networking, organizations and spaces. Use organization sign-in
+and account API tokens after OIDC setup for normal access.
+
+The planned disaster recovery command is:
+  ./borq management bootstrap-from-restore
+It is not implemented yet and makes no changes. The intended flow retrieves
+backups with independently retained offsite credentials/password, restores
+OpenBao with the saved management keys, then recovers RustFS and Borq before
+resuming reconciliation. The exported auto-unseal key also reconstructs management
+backup encryption; there is no separate backup decryption key file.
+
+For browser setup or recovery, open PRINTED_PRIVATE_HTTPS_URL/login/admin and
+enter the administrator token. Create the organization with its login provider,
+then enroll the initial administrator's passkey. Normal organization sign-in is
+at /login. Only the approved initial administrator can sign in for now.
+After organization sign-in, /account downloads a token limited to the permissions
+you choose. Run chmod 600 on that file before using it with ./borq login.
+API, MCP, CLI, and UI requests share the same organization permission checks.
+
+Management bootstrap installs Borq on the existing cluster; Borq installs
+supporting services automatically. Management apply configures the installation. Linking queues target components;
+deployment spaces are created separately.
+Kubernetes installation, machines and networking are managed separately.
+
+For kind, bootstrap detects the bundled Linux image archive beside the executable
+and imports it into the selected local cluster using kind (required on PATH).
+Keep the executable and its matching server archive together. An explicit
+--server-image overrides archive discovery; use a published registry image for
+remote clusters. Saved local k3d development clusters also support bundled images.
+
+Plain kind requires a load-balancer provider for Traefik's LoadBalancer service.
+Some desktop Kubernetes distributions supply one. See:
+https://kind.sigs.k8s.io/docs/user/loadbalancer/
+The automatic bootstrap connection does not provide public ingress routing.
+
+Client settings: ~/.config/borq/config.yaml (or $XDG_CONFIG_HOME/borq/config.yaml)
+--profile NAME selects named client defaults.
+
+The binaries are cross-compiled for Apple Silicon and Linux ARM64. This bundle is
+not notarized and has not been executed on macOS.
+
+To detach this installation safely, first print its teardown plan:
+  ./borq management destroy --kubeconfig ./management.kubeconfig
+Review it, then execute with the same namespace and --confirm:
+  ./borq management destroy --kubeconfig ./management.kubeconfig --confirm
+This removes owned Borq workloads and exposure, not the Kubernetes cluster.
+Volumes, backups, credentials and shared controllers remain. Keep the credentials
+and network metadata until provider cleanup succeeds; a failed run is retryable.

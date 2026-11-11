@@ -1,0 +1,85 @@
+injector:
+  enabled: false
+server:
+  extraArgs: "-config=/openbao/borq-bootstrap/bootstrap.hcl"
+  volumes:
+    - name: borq-bootstrap
+      secret:
+        secretName: borq-openbao-admin
+    - name: kms-tls
+      secret:
+        secretName: borq-openbao-kms-tls
+    - name: postgres-ca
+      configMap:
+        name: borq-postgres-ca
+        optional: true
+  volumeMounts:
+    - name: borq-bootstrap
+      mountPath: /openbao/borq-bootstrap
+      readOnly: true
+    - name: kms-tls
+      mountPath: /openbao/kms-tls
+      readOnly: true
+    - name: postgres-ca
+      mountPath: /openbao/postgres-ca
+      readOnly: true
+  dev:
+    enabled: false
+  standalone:
+    enabled: true
+    config: |
+      ui = false
+      disable_mlock = true
+      api_addr = "http://127.0.0.1:8200"
+      cluster_addr = "https://127.0.0.1:8201"
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+      }
+      listener "tcp" {
+        address = "[::]:8202"
+        cluster_address = "[::]:8203"
+        tls_cert_file = "/openbao/kms-tls/tls.crt"
+        tls_key_file = "/openbao/kms-tls/tls.key"
+        tls_auto_reload = true
+        tls_auto_reload_interval = "5s"
+      }
+      storage "raft" {
+        path = "/openbao/data/raft"
+        node_id = "openbao-0"
+      }
+  service:
+    type: NodePort
+    nodePort: {{ openBaoNodePort }}
+  dataStorage:
+    enabled: true
+    size: 1Gi
+    storageClass: {{ .StorageClass | quote }}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+ui:
+  enabled: false
+
+extraObjects:
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: openbao-kms
+      labels:
+        app.kubernetes.io/managed-by: borq
+        app.kubernetes.io/part-of: borq
+    spec:
+      type: ClusterIP
+      ports:
+        - name: https-kms
+          port: 8202
+          targetPort: 8202
+      selector:
+        app.kubernetes.io/name: openbao
+        app.kubernetes.io/instance: openbao
+        component: server

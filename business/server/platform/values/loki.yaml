@@ -1,0 +1,94 @@
+deploymentMode: SingleBinary
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+{{ if .S3.Bucket }}
+    type: s3
+    bucketNames:
+      chunks: {{ .S3.Bucket | quote }}
+      ruler: {{ .S3.Bucket | quote }}
+      admin: {{ .S3.Bucket | quote }}
+    s3:
+      endpoint: {{ s3Endpoint .S3.Endpoint | quote }}
+      region: {{ .S3.Region | quote }}
+      accessKeyId: ${accessKey}
+      secretAccessKey: ${secretKey}
+      session_token: ${sessionToken}
+      insecure: {{ s3Insecure .S3.Endpoint }}
+      s3ForcePathStyle: {{ .S3.PathStyle }}
+{{ else if eq .Profile "dev" }}
+    type: s3
+    bucketNames:
+      chunks: {{ managementBucket .ClusterName | quote }}
+      ruler: {{ managementBucket .ClusterName | quote }}
+      admin: {{ managementBucket .ClusterName | quote }}
+    s3:
+      endpoint: rustfs-svc.{{ .Namespace }}.svc:9000
+      region: us-east-1
+      accessKeyId: ${RUSTFS_ACCESS_KEY}
+      secretAccessKey: ${RUSTFS_SECRET_KEY}
+      s3ForcePathStyle: true
+      insecure: true
+{{ else }}
+    type: filesystem
+{{ end }}
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: {{ if or .S3.Bucket (eq .Profile "dev") }}s3{{ else }}filesystem{{ end }}
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    retention_period: {{ if eq .Profile "dev" }}96h{{ else }}168h{{ end }}
+  compactor:
+    retention_enabled: true
+    delete_request_store: {{ if or .S3.Bucket (eq .Profile "dev") }}s3{{ else }}filesystem{{ end }}
+singleBinary:
+  replicas: 1
+{{ if .S3.Bucket }}
+  podAnnotations:
+    borq.run/s3-credentials: {{ .S3.CredentialsRef | quote }}
+{{ end }}
+{{ if or .S3.Bucket (eq .Profile "dev") }}
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: {{ if .S3.Bucket }}{{ sharedS3SecretName .S3.CredentialsRef }}{{ else }}borq-rustfs{{ end }}
+{{ end }}
+  persistence:
+    enabled: true
+    size: {{ if eq .Profile "dev" }}1Gi{{ else }}5Gi{{ end }}
+    storageClass: {{ .StorageClass | quote }}
+    whenDeleted: Retain
+    whenScaled: Retain
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+sidecar:
+  rules:
+    enabled: false

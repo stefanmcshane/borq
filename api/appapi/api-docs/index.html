@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Borq API</title>
+    <link rel="stylesheet" href="./swagger-ui.css">
+  </head>
+  <body style="margin: 0">
+    <div id="swagger-ui"></div>
+    <noscript>Enable JavaScript to explore the Borq API.</noscript>
+    <script src="./swagger-ui-bundle.js"></script>
+    <script>
+      SwaggerUIBundle({
+        url: "../openapi.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        docExpansion: "none",
+        filter: true,
+        defaultModelsExpandDepth: 0,
+        validatorUrl: null
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+managedAddons:
+  postgres:
+    - name: appdb
+      instances: 1
+      storage: 10Gi
+      database: app
+      username: app
+      backup:
+        enabled: true
+        schedule: "0 0 * * *" # UTC; WAL archiving also supports point-in-time recovery.
+        recoveryWindowDays: 7

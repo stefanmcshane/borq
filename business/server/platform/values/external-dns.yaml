@@ -1,0 +1,26 @@
+provider:
+  name: cloudflare
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+namespaced: true
+sourceNamespace: {{ quote .Namespace }}
+sources: [crd]
+policy: sync
+registry: txt
+txtOwnerId: {{ quote .NetworkOwner }}
+txtPrefix: "_borq."
+domainFilters: [{{ quote .Network.Cloudflare.WildcardDomain }}]
+extraArgs:
+  txt-wildcard-replacement: "_wildcard"
+  zone-id-filter: {{ quote .Network.Cloudflare.ZoneID }}
+  label-filter: "borq.run/network-dns=true"
+env:
+  - name: CF_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: borq-network-credentials
+        key: cloudflareApiToken

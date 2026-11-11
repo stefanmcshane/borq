@@ -1,0 +1,13 @@
+backups:
+  enabled: true
+  interval: 1h
+  keepLast: 24
+offsite:
+  enabled: true
+  interval: 6h
+  keepLast: 28
+  repository: s3:https://s3.us-east-1.amazonaws.com/REPLACEMENT_OFFSITE_BUCKET/incident-unique
+  region: us-east-1
+  password: REPLACEMENT_RESTIC_PASSWORD_RETAINED_OUTSIDE_CLUSTER
+  accessKey: REPLACEMENT_OFFSITE_ACCESS_KEY
+  secretKey: REPLACEMENT_OFFSITE_SECRET_KEY

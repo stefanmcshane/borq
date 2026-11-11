@@ -1,0 +1,17 @@
+.gocache/
+dist
+.release
+tmp/
+borq
+*.borq-plan.json
+.prod-test.env
+
+# Frontend dependencies stay local; static output is part of the Go source bundle.
+api/webui/site/node_modules/
+api/webui/site/.astro/
+!api/webui/site/dist/
+!api/webui/site/dist/**
+borq-*-admin-*.token
+borq-user.token
+borq-recovery-key.txt
+borq-management-recovery.json

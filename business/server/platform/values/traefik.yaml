@@ -1,0 +1,33 @@
+fullnameOverride: borq-traefik
+deployment:
+  replicas: 1
+service:
+  spec:
+    type: NodePort
+gateway:
+  enabled: false
+gatewayClass:
+  enabled: false
+providers:
+  kubernetesIngress:
+    enabled: false
+  kubernetesCRD:
+    enabled: false
+  kubernetesGateway:
+    enabled: true
+    labelSelector: borq.run/network=true,app.kubernetes.io/managed-by=borq
+resources:
+  requests:
+    cpu: 20m
+    memory: 48Mi
+  limits:
+    memory: 192Mi
+
+metrics:
+  prometheus:
+    service:
+      enabled: true
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: /metrics

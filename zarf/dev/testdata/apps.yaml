@@ -1,0 +1,9 @@
+apps:
+  - name: workflow
+    image: nginx:1.27.5
+    port: 80
+    checks:
+      readiness:
+        path: /
+      startup:
+        path: /

@@ -1,0 +1,69 @@
+{{- range .Values.apps }}
+{{- $app := . }}
+{{- with .predeploy }}
+{{- if and .command $app.runPredeploy }}
+{{- $identity := printf "%s/%s/%s/%s" $.Values.namespace $.Values.targetID $app.name $.Values.planID }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s-pre" ($app.name | trunc 40 | trimSuffix "-") ($identity | sha256sum | trunc 12) | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: predeploy
+    borq.run/predeploy-name: pre
+spec:
+  completions: 1
+  parallelism: 1
+  activeDeadlineSeconds: {{ .timeoutSeconds }}
+  backoffLimit: {{ .backoffLimit }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml $app.resourceMetadata.annotations | nindent 8 }}
+      labels:
+        {{- toYaml $app.resourceMetadata.labels | nindent 8 }}
+        borq.run/logs: "true"
+        borq.run/metrics: "true"
+        borq.run/revision: {{ $app.revision | quote }}
+        app.kubernetes.io/managed-by: borq
+        borq.run/target-id: {{ $.Values.targetID | quote }}
+        borq.run/phase: predeploy
+        borq.run/predeploy-name: pre
+    spec:
+      restartPolicy: Never
+      {{- if $app.sqlite.enabled }}
+      serviceAccountName: {{ $app.sqlite.account | quote }}
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 2000
+      volumes:
+        {{- include "sqlite.volumes" $app | nindent 8 }}
+      initContainers:
+        {{- include "sqlite.init" $app | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $app.name | quote }}
+          image: {{ $app.image | quote }}
+          imagePullPolicy: Always
+          command: {{ .command | toJson }}
+          args: []
+          {{- if $app.sqlite.enabled }}
+          env:
+            - name: {{ $app.sqlite.variable }}
+              value: {{ $app.sqlite.path | quote }}
+          volumeMounts:
+            {{- include "sqlite.mount" $app | nindent 12 }}
+          {{- else }}
+          env: []
+          {{- end }}
+          envFrom: {{ $app.envFrom | toJson }}
+{{- end }}
+{{- end }}
+{{- end }}

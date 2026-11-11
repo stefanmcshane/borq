@@ -1,0 +1,47 @@
+borqPublicUrl: https://borq.example.com
+
+network:
+  tailscale:
+    clientId: REPLACE_WITH_TAILSCALE_OAUTH_CLIENT_ID
+    clientSecret: REPLACE_WITH_TAILSCALE_OAUTH_CLIENT_SECRET
+  cloudflare:
+    wildcardDomain: "*.example.com"
+    zoneId: "00000000000000000000000000000000" # Replace with your Cloudflare zone ID.
+    acmeEmail: admin@example.com
+    apiToken: REPLACE_WITH_CLOUDFLARE_API_TOKEN
+    exposure: tunnel
+    tunnel:
+      enabled: true
+
+# Primary archives use the managed persistent RustFS store.
+backups:
+  enabled: true
+  interval: 1h
+  keepLast: 24
+
+# Repository credentials come from offsite-recovery.json at apply time.
+offsite:
+  enabled: true
+  interval: 6h
+  keepLast: 28
+
+organizations:
+  - name: example
+    managedAddons: true
+    oidc:
+      issuerUrl: https://accounts.google.com
+      clientId: REPLACE_WITH_GOOGLE_CLIENT_ID.apps.googleusercontent.com
+      clientSecret: REPLACE_WITH_GOOGLE_CLIENT_SECRET
+      adminEmail: admin@example.com
+    clusters:
+      - name: management
+        inCluster: true
+        reconcile: true
+    spaces:
+      - name: production
+        cluster: management
+        registries:
+          github-packages:
+            server: ghcr.io
+            username: REPLACE_WITH_GITHUB_USERNAME
+            token: REPLACE_WITH_GHCR_READ_PACKAGES_PAT

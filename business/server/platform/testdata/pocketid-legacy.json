@@ -1,0 +1,340 @@
+{
+  "deployment": {
+    "metadata": {
+      "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "namespace": "borq-mgmt",
+      "labels": {
+        "app.kubernetes.io/managed-by": "borq",
+        "app.kubernetes.io/name": "pocket-id",
+        "borq.io/pocket-id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "annotations": {
+        "borq.io/pocket-id-definition": "6fea8f7e7804b543328d2db6156e78f44ecec385448fdf293df8f76d7c770021",
+        "borq.io/pocket-id-issuer": "https://id.example.test"
+      }
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/managed-by": "borq",
+          "app.kubernetes.io/name": "pocket-id",
+          "borq.io/pocket-id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/instance": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "app.kubernetes.io/managed-by": "borq",
+            "app.kubernetes.io/name": "pocket-id",
+            "app.kubernetes.io/version": "v2.19.1",
+            "borq.io/pocket-id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "helm.sh/chart": "pocket-id-0.0.0"
+          },
+          "annotations": {
+            "borq.io/pocket-id-config": "412bfeaf5e4d94e4da1d3f686737169e28e96d05ac77ba4755072a8db215f4db",
+            "example.test/chart-override": "retained"
+          }
+        },
+        "spec": {
+          "volumes": [
+            {
+              "name": "data",
+              "persistentVolumeClaim": {
+                "claimName": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            },
+            {
+              "name": "setup-guard",
+              "configMap": {
+                "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            },
+            {
+              "name": "backup-config",
+              "configMap": {
+                "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-backup"
+              }
+            },
+            {
+              "name": "proxy-tmp",
+              "emptyDir": {
+                "sizeLimit": "64Mi"
+              }
+            }
+          ],
+          "initContainers": [
+            {
+              "name": "sqlite-backup",
+              "image": "litestream/litestream:0.3.14@sha256:c5a1e1b01916b3a110f6600820ef176d048d9b9c2411ef0a680de0caa68934a5",
+              "command": [
+                "litestream"
+              ],
+              "args": [
+                "replicate",
+                "-config",
+                "/etc/litestream/litestream.yml"
+              ],
+              "env": [
+                {
+                  "name": "AWS_ACCESS_KEY_ID",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-backup",
+                      "key": "AWS_ACCESS_KEY_ID"
+                    }
+                  }
+                },
+                {
+                  "name": "AWS_SECRET_ACCESS_KEY",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-backup",
+                      "key": "AWS_SECRET_ACCESS_KEY"
+                    }
+                  }
+                },
+                {
+                  "name": "AWS_EC2_METADATA_DISABLED",
+                  "value": "true"
+                }
+              ],
+              "resources": {
+                "limits": {
+                  "memory": "128Mi"
+                },
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "32Mi"
+                }
+              },
+              "restartPolicy": "Always",
+              "volumeMounts": [
+                {
+                  "name": "data",
+                  "mountPath": "/app/data"
+                },
+                {
+                  "name": "backup-config",
+                  "readOnly": true,
+                  "mountPath": "/etc/litestream"
+                }
+              ],
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "allowPrivilegeEscalation": false
+              }
+            }
+          ],
+          "containers": [
+            {
+              "name": "pocket-id",
+              "image": "ghcr.io/pocket-id/pocket-id:v2.19.1@sha256:f085157f0b6ea4b2e8aa5ecfd99eada0d83a4960f3a3dcfd46014097d0ef7ab5",
+              "command": [
+                "/bin/sh",
+                "-ec",
+                "exec /app/pocket-id \u003e/dev/null 2\u003e\u00261"
+              ],
+              "envFrom": [
+                {
+                  "secretRef": {
+                    "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-config"
+                  }
+                }
+              ],
+              "env": [
+                {
+                  "name": "HOST",
+                  "value": "127.0.0.1"
+                },
+                {
+                  "name": "PORT",
+                  "value": "1412"
+                },
+                {
+                  "name": "APP_URL",
+                  "value": "https://id.example.test"
+                },
+                {
+                  "name": "DB_CONNECTION_STRING",
+                  "value": "/app/data/pocket-id.db"
+                },
+                {
+                  "name": "UPLOAD_PATH",
+                  "value": "/app/data/uploads"
+                },
+                {
+                  "name": "UI_CONFIG_DISABLED",
+                  "value": "true"
+                },
+                {
+                  "name": "AUTO_CREATE_OIDC_CLIENT_SECRET",
+                  "value": "false"
+                },
+                {
+                  "name": "ALLOW_INSECURE_CALLBACK_URLS",
+                  "value": "false"
+                },
+                {
+                  "name": "ANALYTICS_DISABLED",
+                  "value": "true"
+                },
+                {
+                  "name": "VERSION_CHECK_DISABLED",
+                  "value": "true"
+                },
+                {
+                  "name": "ENCRYPTION_KEY",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "key": "encryption-key"
+                    }
+                  }
+                },
+                {
+                  "name": "STATIC_API_KEY",
+                  "valueFrom": {
+                    "secretKeyRef": {
+                      "name": "pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "key": "api-key"
+                    }
+                  }
+                }
+              ],
+              "resources": {
+                "limits": {
+                  "memory": "512Mi"
+                },
+                "requests": {
+                  "cpu": "75m",
+                  "memory": "128Mi"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "name": "data",
+                  "mountPath": "/app/data"
+                },
+                {
+                  "name": "proxy-tmp",
+                  "mountPath": "/tmp"
+                }
+              ],
+              "livenessProbe": {
+                "httpGet": {
+                  "path": "/healthz",
+                  "port": 1411
+                },
+                "timeoutSeconds": 2,
+                "periodSeconds": 15,
+                "successThreshold": 1,
+                "failureThreshold": 3
+              },
+              "readinessProbe": {
+                "httpGet": {
+                  "path": "/healthz",
+                  "port": 1411
+                },
+                "timeoutSeconds": 2,
+                "periodSeconds": 5,
+                "successThreshold": 1,
+                "failureThreshold": 3
+              },
+              "startupProbe": {
+                "httpGet": {
+                  "path": "/healthz",
+                  "port": 1411
+                },
+                "timeoutSeconds": 2,
+                "periodSeconds": 2,
+                "successThreshold": 1,
+                "failureThreshold": 60
+              },
+              "imagePullPolicy": "IfNotPresent",
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "allowPrivilegeEscalation": false
+              }
+            },
+            {
+              "name": "setup-guard",
+              "image": "nginx/nginx-unprivileged:1.30.6-alpine-slim@sha256:984a21e29bb10d4c0e122374b97b89a2101823a9331e0f3c6c04bc285ccf447f",
+              "command": [
+                "nginx"
+              ],
+              "args": [
+                "-c",
+                "/etc/borq/nginx.conf",
+                "-g",
+                "daemon off;"
+              ],
+              "ports": [
+                {
+                  "name": "http",
+                  "containerPort": 1411
+                }
+              ],
+              "resources": {
+                "limits": {
+                  "memory": "64Mi"
+                },
+                "requests": {
+                  "cpu": "10m",
+                  "memory": "16Mi"
+                }
+              },
+              "volumeMounts": [
+                {
+                  "name": "setup-guard",
+                  "readOnly": true,
+                  "mountPath": "/etc/borq"
+                },
+                {
+                  "name": "proxy-tmp",
+                  "mountPath": "/tmp"
+                }
+              ],
+              "securityContext": {
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "readOnlyRootFilesystem": true,
+                "allowPrivilegeEscalation": false
+              }
+            }
+          ],
+          "automountServiceAccountToken": false,
+          "securityContext": {
+            "runAsUser": 65532,
+            "runAsGroup": 65532,
+            "runAsNonRoot": true,
+            "fsGroup": 65532,
+            "fsGroupChangePolicy": "OnRootMismatch",
+            "seccompProfile": {
+              "type": "RuntimeDefault"
+            }
+          }
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      }
+    },
+    "status": {}
+  },
+  "backupConfiguration": "{\"dbs\":[{\"path\":\"/app/data/pocket-id.db\",\"replicas\":[{\"type\":\"s3\",\"endpoint\":\"http://rustfs-svc.borq-mgmt.svc:9000\",\"region\":\"us-east-1\",\"bucket\":\"borq-pocketid-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"path\":\"sqlite\",\"force-path-style\":true,\"retention\":\"168h\",\"snapshot-interval\":\"24h\",\"sync-interval\":\"1s\"}]}]}"
+}

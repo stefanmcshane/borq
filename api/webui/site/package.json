@@ -1,0 +1,29 @@
+{
+  "name": "borq-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev --host 127.0.0.1",
+    "build": "python3 ../../../zarf/scripts/with-ui-lock.py node scripts/build.mjs",
+    "check": "astro check && svelte-check --tsconfig ./tsconfig.json",
+    "test:browser": "node --max-old-space-size=512 --test --test-concurrency=1 --test-timeout=120000 test/browser.test.mjs",
+    "format": "prettier --plugin=prettier-plugin-astro --plugin=prettier-plugin-svelte --write src public/assets/theme.js astro.config.mjs tsconfig.json package.json test",
+    "test": "node --max-old-space-size=256 --test --test-concurrency=2 --test-timeout=15000 test/postgres-editor.test.mjs"
+  },
+  "dependencies": {
+    "@astrojs/svelte": "^7.2.2",
+    "astro": "^5.15.0",
+    "svelte": "^5.0.0",
+    "yaml": "^2.8.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "playwright-core": "1.64.1",
+    "prettier": "3.9.10",
+    "prettier-plugin-astro": "1.1.2",
+    "prettier-plugin-svelte": "4.1.1",
+    "svelte-check": "^4.3.0",
+    "typescript": "^5.9.3"
+  }
+}

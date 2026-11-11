@@ -1,0 +1,103 @@
+{{- range .Values.apps }}
+{{- if .sqlite.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .sqlite.volume | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .sqlite.account | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .sqlite.account | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: [{{ .sqlite.state | quote }}]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .sqlite.account | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .sqlite.account | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .sqlite.account | quote }}
+    namespace: {{ $.Values.namespace | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .sqlite.recoveryConfig | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+data:
+  sqlite-prepare.py: |
+    {{- $.Files.Get "files/sqlite-prepare.py" | nindent 4 }}
+{{- if .sqlite.backups }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .sqlite.config | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+data:
+  litestream.yml: |
+    {{- .sqlite.configuration | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

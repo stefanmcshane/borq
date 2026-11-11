@@ -1,0 +1,39 @@
+apiVersion: v1
+entries:
+  nats:
+    - name: nats
+      version: 1.2.0
+      urls: [nats-1.2.0.tgz]
+    - name: nats
+      version: 1.10.0
+      urls: [nats-1.10.0.tgz]
+    - name: nats
+      version: 1.11.0-rc.1
+      urls: [nats-1.11.0-rc.1.tgz]
+    - name: nats
+      version: 1.10.0
+      urls: [nats-1.10.0.tgz]
+    - name: nats
+      version: latest
+      urls: [nats-latest.tgz]
+    - name: nats
+      version: 1.12.0
+      urls: []
+    - null
+  common:
+    - name: common
+      type: library
+      version: 1.0.0
+      urls: [common-1.0.0.tgz]
+  another:
+    - name: another
+      version: 2.0.0+build.1
+      urls: [another-2.0.0+build.1.tgz]
+  mismatched:
+    - name: different
+      version: 1.0.0
+      urls: [different-1.0.0.tgz]
+  invalid/name:
+    - name: invalid/name
+      version: 1.0.0
+      urls: [invalid-1.0.0.tgz]

@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pocketid-PROVIDER_ID
+  namespace: borq-mgmt
+  labels:
+    app.kubernetes.io/managed-by: borq
+    app.kubernetes.io/name: pocket-id
+    borq.io/pocket-id: PROVIDER_ID
+  annotations:
+    borq.io/pocket-id-issuer: https://id.example.com
+immutable: true
+type: Opaque
+stringData:
+  encryption-key: ORIGINAL_ENCRYPTION_KEY
+  api-key: ORIGINAL_API_KEY
+  archive-recipient-sha256: SHA256_HEX_OF_ORIGINAL_AGE_RECIPIENT
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pocketid-PROVIDER_ID
+  namespace: borq-mgmt
+  labels:
+    app.kubernetes.io/managed-by: borq
+    app.kubernetes.io/name: pocket-id
+    borq.io/pocket-id: PROVIDER_ID
+  annotations:
+    borq.io/pocket-id-issuer: https://id.example.com
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pocketid-PROVIDER_ID-restore
+  namespace: borq-mgmt
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: ORIGINAL_SCOPED_BACKUP_ACCESS_KEY
+  AWS_SECRET_ACCESS_KEY: ORIGINAL_SCOPED_BACKUP_SECRET_KEY
+  LITESTREAM_AGE_IDENTITY: ORIGINAL_AGE_SECRET_KEY
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pocketid-PROVIDER_ID-restore
+  namespace: borq-mgmt
+data:
+  litestream.yml: |
+    dbs:
+      - path: /app/data/pocket-id.db
+        replicas:
+          - type: s3
+            endpoint: http://rustfs-svc.borq-mgmt.svc:9000
+            region: us-east-1
+            bucket: borq-pocketid-PROVIDER_ID
+            path: sqlite
+            force-path-style: true
+            age:
+              identities: ["${LITESTREAM_AGE_IDENTITY}"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pocketid-PROVIDER_ID-restore
+  namespace: borq-mgmt
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    fsGroupChangePolicy: OnRootMismatch
+  containers:
+    - name: restore
+      image: litestream/litestream:0.3.14@sha256:c5a1e1b01916b3a110f6600820ef176d048d9b9c2411ef0a680de0caa68934a5
+      args: [restore, -config, /etc/litestream/litestream.yml, /app/data/pocket-id.db]
+      envFrom:
+        - secretRef:
+            name: pocketid-PROVIDER_ID-restore
+      env:
+        - name: AWS_EC2_METADATA_DISABLED
+          value: "true"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: data
+          mountPath: /app/data
+        - name: config
+          mountPath: /etc/litestream
+          readOnly: true
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: pocketid-PROVIDER_ID
+    - name: config
+      configMap:
+        name: pocketid-PROVIDER_ID-restore

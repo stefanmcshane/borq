@@ -1,0 +1,19 @@
+root = "."
+tmp_dir = "tmp/air"
+
+[build]
+cmd = "make _dev-build"
+bin = "./tmp/air/borq"
+entrypoint = ["./tmp/air/borq", "server", "--port=27833", "--telemetry-port=27834"]
+include_ext = ["go", "py", "toml", "yaml", "yml", "json", "html", "css", "js", "mjs", "ts", "svelte", "astro", "svg"]
+include_dir = ["api", "business", "cmd", "foundations"]
+include_file = ["go.mod", "go.sum"]
+exclude_dir = [".git", ".codex", "dist", "tmp", "api/webui/site/node_modules", "api/webui/site/dist", "api/webui/site/.astro", "api/webui/site/test"]
+exclude_regex = ["_test.go", 'api/webui/site/(dist|\.astro|node_modules|test)(/|$)']
+delay = 1000
+stop_on_error = false
+send_interrupt = true
+kill_delay = "1s"
+
+[log]
+time = true

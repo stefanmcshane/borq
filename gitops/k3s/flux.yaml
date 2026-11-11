@@ -1,0 +1,71 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-controllers
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./gitops/k3s/controllers
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  wait: true
+  timeout: 15m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-cloudflare-operator
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: platform-controllers
+  interval: 1h
+  path: ./config/default
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: cloudflare-operator
+  wait: true
+  timeout: 10m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-secrets
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: platform-controllers
+    - name: platform-cloudflare-operator
+  interval: 10m
+  path: ./gitops/k3s/secrets
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  wait: true
+  timeout: 5m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-services
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: platform-secrets
+    - name: platform-cloudflare-operator
+  interval: 10m
+  path: ./gitops/k3s/services
+  postBuild:
+    substituteFrom:
+      - kind: Secret
+        name: platform-config
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  wait: true
+  timeout: 10m

@@ -1,0 +1,39 @@
+{
+  "target": {
+    "path": "deployment/borq",
+    "namespace": "borq-mgmt"
+  },
+  "feature": {
+    "env": false,
+    "fs": "local",
+    "network": {
+      "incoming": {
+        "mode": "steal",
+        "ports": [
+          7833,
+          7834
+        ],
+        "port_mapping": [
+          [
+            27833,
+            7833
+          ],
+          [
+            27834,
+            7834
+          ]
+        ]
+      },
+      "outgoing": {
+        "ignore_localhost": true
+      },
+      "dns": true
+    }
+  },
+  "agent": {
+    "namespace": "borq-mgmt",
+    "privileged": true,
+    "ttl": 120,
+    "startup_timeout": 120
+  }
+}

@@ -1,0 +1,62 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: api/webui/site/package-lock.json
+      - name: Build standalone binaries
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: make build-release-binaries IMAGE_TAG="${RELEASE_TAG#v}"
+      - name: Verify packages
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "$(dist/release/linux_amd64/borq --version)" = "borq $version"
+          for platform in darwin_arm64 linux_amd64; do
+            test "$(tar -tzf "dist/release/borq_${version}_${platform}.tar.gz")" = borq
+          done
+          make test-release-oidc BORQ_RELEASE_BINARY="$PWD/dist/release/linux_amd64/borq"
+          cd dist/release
+          sha256sum --check checksums.txt
+      - name: Publish binary packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            release_flags=(--verify-tag --title "Borq ${RELEASE_TAG#v}" --generate-notes)
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              release_flags+=(--prerelease --latest=false)
+            fi
+            gh release create "$RELEASE_TAG" "${release_flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" dist/release/*.tar.gz dist/release/checksums.txt --clobber

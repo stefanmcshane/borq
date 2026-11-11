@@ -1,0 +1,23 @@
+# Apply after management bootstrap:
+#   borq management apply -f clusters/cluster.yaml
+# GHCR currently is the only supported registry. Inline credentials are moved
+# into OpenBao; management export returns reusable credentialsRef values.
+
+# Management image pull credentials. Kubernetes retries while ESO creates the Secret.
+registries: {}
+  # ghcr.io:
+  #   username: management-github-user
+  #   token: REPLACE_WITH_MANAGEMENT_TOKEN
+  # Later applies can use credentialsRef instead of username and token.
+
+# Application image pull credentials belong to each space, including spaces
+# sharing one application cluster. Omit registry settings to retain current auth.
+organizations: []
+  # - name: example
+  #   spaces:
+  #     - name: production
+  #       # cluster: linked-cluster-name # Required when creating a new space.
+  #       registries:
+  #         ghcr.io:
+  #           username: application-github-user
+  #           token: REPLACE_WITH_SPACE_TOKEN

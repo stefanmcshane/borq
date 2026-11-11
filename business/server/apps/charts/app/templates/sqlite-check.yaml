@@ -1,0 +1,81 @@
+{{- range .Values.apps }}
+{{- if .sqlite.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .sqlite.check | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    {{- toYaml .resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ .name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+    borq.run/phase: sqlite
+spec:
+  schedule: "0 3 * * 0"
+  suspend: {{ not .sqlite.backups }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            {{- toYaml .resourceMetadata.labels | nindent 12 }}
+            app.kubernetes.io/name: {{ .name | quote }}
+            borq.run/target-id: {{ $.Values.targetID | quote }}
+            borq.run/phase: sqlite-check
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            fsGroup: 2000
+          volumes:
+            - name: borq-sqlite
+              emptyDir:
+                sizeLimit: 1Gi
+            - name: borq-litestream-config
+              configMap:
+                name: {{ .sqlite.config | quote }}
+            - name: borq-sqlite-recovery
+              configMap:
+                name: {{ .sqlite.recoveryConfig | quote }}
+          initContainers:
+            - name: restore
+              image: {{ .sqlite.image | quote }}
+              imagePullPolicy: Always
+              command: ["litestream"]
+              args: ["restore", "-config", "/etc/litestream/litestream.yml", "-o", {{ printf "%s.restoring" .sqlite.path | quote }}, {{ .sqlite.path | quote }}]
+              envFrom:
+                - secretRef:
+                    name: {{ .sqlite.secret | quote }}
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {memory: 256Mi}
+              volumeMounts:
+                {{- include "sqlite.mount" . | nindent 16 }}
+                - name: borq-litestream-config
+                  mountPath: /etc/litestream
+                  readOnly: true
+          containers:
+            - name: verify
+              image: {{ .sqlite.recoveryImage | quote }}
+              imagePullPolicy: Always
+              command: ["python", "/etc/borq-sqlite/sqlite-prepare.py"]
+              args: ["verify", {{ .sqlite.path | quote }}, "", ""]
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {memory: 128Mi}
+              volumeMounts:
+                {{- include "sqlite.mount" . | nindent 16 }}
+                - name: borq-sqlite-recovery
+                  mountPath: /etc/borq-sqlite
+                  readOnly: true
+{{- end }}
+{{- end }}

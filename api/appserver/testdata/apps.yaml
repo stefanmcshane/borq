@@ -1,0 +1,20 @@
+apps:
+  - name: frontend
+    image: BORQ_TEST_IMAGE
+    port: 80
+    command: >-
+      /bin/sh -c "printf 'borq ready\n' > /usr/share/nginx/html/healthz;
+      printf 'borq frontend\n' > /usr/share/nginx/html/index.html;
+      exec nginx -g 'daemon off;'"
+    ingresses:
+      - name: public
+        host: BORQ_TEST_HOST
+  - name: backend
+    image: BORQ_TEST_IMAGE
+    port: 80
+    command: >-
+      /bin/sh -c "printf 'borq ready\n' > /usr/share/nginx/html/healthz;
+      exec nginx -g 'daemon off;'"
+    env:
+      name: backend-config
+      version: latest

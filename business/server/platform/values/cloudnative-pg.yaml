@@ -1,0 +1,9 @@
+fullnameOverride: borq-cloudnative-pg
+monitoring:
+  podMonitorEnabled: false
+resources:
+  requests:
+    cpu: 20m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

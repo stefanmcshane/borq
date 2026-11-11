@@ -1,0 +1,943 @@
+import { trimInput, trimFormInputs, trimPastedInput } from "./input";
+
+export function initializeControls() {
+  const subscriptions = [];
+  function listen(event, callback, options) {
+    document.addEventListener(event, callback, options);
+    subscriptions.push(() =>
+      document.removeEventListener(event, callback, options),
+    );
+  }
+  listen(
+    "focusout",
+    (event) => {
+      if (event.target instanceof Element) trimInput(event.target);
+    },
+    true,
+  );
+  listen(
+    "click",
+    (event) => {
+      if (!(event.target instanceof Element)) return;
+      const button = event.target.closest("button, input");
+      if (
+        (button instanceof HTMLButtonElement ||
+          button instanceof HTMLInputElement) &&
+        button.type === "submit" &&
+        button.form
+      )
+        trimFormInputs(button.form);
+    },
+    true,
+  );
+  listen(
+    "keydown",
+    (event) => {
+      if (
+        event.key === "Enter" &&
+        !event.isComposing &&
+        event.target instanceof HTMLInputElement &&
+        event.target.form
+      ) {
+        trimFormInputs(event.target.form);
+      }
+    },
+    true,
+  );
+  listen("paste", trimPastedInput, true);
+  const codeBlockSources = new WeakMap();
+  function renderConfigurationDiffs() {
+    document
+      .querySelectorAll("pre.configuration-diff:not([data-highlighted])")
+      .forEach(function (diff) {
+        codeBlockSources.set(diff, diff.textContent);
+        const lines = diff.textContent.split("\n");
+        if (!lines[0].startsWith("--- ") || !lines[1]?.startsWith("+++ "))
+          return;
+        const body = document.createElement("span");
+        body.className = "diff-lines";
+        let before = 0,
+          after = 0,
+          added = 0,
+          removed = 0;
+        for (const line of lines.slice(2)) {
+          const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+          if (hunk) {
+            before = Number(hunk[1]);
+            after = Number(hunk[2]);
+            if (body.childElementCount) {
+              const separator = document.createElement("span");
+              separator.className = "diff-separator";
+              separator.textContent = "⋯";
+              body.append(separator);
+            }
+            continue;
+          }
+          if (!line) continue;
+          const isAdded = line[0] === "+",
+            isRemoved = line[0] === "-";
+          const row = document.createElement("span");
+          row.className =
+            "diff-line" +
+            (isAdded ? " diff-added" : isRemoved ? " diff-removed" : "");
+          const values = [
+            isAdded ? "" : String(before++),
+            isRemoved ? "" : String(after++),
+            isAdded ? "+" : isRemoved ? "−" : " ",
+            line.slice(1),
+          ];
+          values.forEach(function (value, index) {
+            const cell = document.createElement("span");
+            cell.className =
+              index < 2
+                ? "diff-number"
+                : index === 2
+                  ? "diff-marker"
+                  : "diff-code";
+            if (index < 2) cell.setAttribute("aria-hidden", "true");
+            cell.textContent = value;
+            row.append(cell);
+          });
+          body.append(row);
+          if (isAdded) added++;
+          if (isRemoved) removed++;
+        }
+        const header = document.createElement("span");
+        header.className = "diff-header";
+        const title = document.createElement("span");
+        title.textContent = "Current → Planned";
+        const summary = document.createElement("span");
+        summary.className = "diff-summary";
+        for (const [count, kind, sign] of [
+          [added, "added", "+"],
+          [removed, "removed", "−"],
+        ]) {
+          const badge = document.createElement("span");
+          badge.className = "diff-count-" + kind;
+          badge.textContent = sign + count;
+          badge.setAttribute("aria-label", count + " lines " + kind);
+          summary.append(badge);
+        }
+        header.append(title, summary);
+        diff.replaceChildren(header, body);
+        diff.dataset.highlighted = "true";
+        diff.tabIndex = 0;
+        diff.setAttribute("role", "region");
+        diff.setAttribute("aria-label", "Configuration changes");
+      });
+  }
+
+  renderConfigurationDiffs();
+
+  listen("borq:render", renderConfigurationDiffs);
+
+  function initializeCodeBlocks() {
+    document.querySelectorAll("pre").forEach(function (code) {
+      if (code.closest(".code-block")) return;
+      const block = document.createElement("div");
+      block.className = "code-block";
+      const toolbar = document.createElement("div");
+      toolbar.className = "code-block-toolbar";
+      const status = document.createElement("span");
+      status.className = "code-copy-status";
+      status.setAttribute("role", "status");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn";
+      button.dataset.variant = "outline";
+      button.dataset.size = "sm";
+      button.dataset.copyCode = "";
+      button.textContent = "Copy";
+      button.setAttribute(
+        "aria-label",
+        "Copy " + (code.getAttribute("aria-label") || "code"),
+      );
+      code.tabIndex = 0;
+      toolbar.append(status, button);
+      code.before(block);
+      block.append(toolbar, code);
+    });
+  }
+
+  async function copyCodeText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {}
+    const focused = document.activeElement;
+    const input = document.createElement("textarea");
+    input.className = "clipboard-fallback";
+    input.value = text;
+    input.readOnly = true;
+    input.setAttribute("aria-label", "Text to copy");
+    document.body.append(input);
+    input.select();
+    try {
+      if (!document.execCommand("copy"))
+        throw new Error("Clipboard unavailable");
+    } finally {
+      input.remove();
+      focused?.focus({ preventScroll: true });
+    }
+  }
+
+  const codeCopyTimers = new WeakMap();
+  listen("click", async function (event) {
+    const button = event.target.closest("[data-copy-code]");
+    if (!button || button.disabled) return;
+    const block = button.closest(".code-block");
+    const code = block.querySelector("pre");
+    const status = block.querySelector(".code-copy-status");
+    clearTimeout(codeCopyTimers.get(button));
+    status.textContent = "";
+    const keyboardFocus = document.activeElement === button;
+    button.disabled = true;
+    let copied = false;
+    try {
+      await copyCodeText(codeBlockSources.get(code) ?? code.textContent);
+      copied = true;
+      block.querySelector(".code-copy-manual")?.remove();
+      code.hidden = false;
+      status.textContent = "Copied";
+      codeCopyTimers.set(
+        button,
+        setTimeout(function () {
+          status.textContent = "";
+        }, 2000),
+      );
+    } catch {
+      const source = codeBlockSources.get(code) ?? code.textContent;
+      let manual = block.querySelector(".code-copy-manual");
+      if (!manual) {
+        manual = document.createElement("textarea");
+        manual.className = "textarea code-editor code-copy-manual";
+        manual.readOnly = true;
+        manual.setAttribute("aria-label", "Text to copy");
+        block.append(manual);
+      }
+      manual.value = source;
+      manual.rows = Math.min(16, Math.max(3, source.split("\n").length));
+      code.hidden = true;
+      manual.focus({ preventScroll: true });
+      manual.select();
+      status.textContent = "Text selected. Use your browser’s Copy command.";
+    } finally {
+      button.disabled = false;
+      if (copied && keyboardFocus) button.focus({ preventScroll: true });
+    }
+  });
+
+  initializeCodeBlocks();
+  listen("borq:render", initializeCodeBlocks);
+
+  function renderInternalAddresses() {
+    document
+      .querySelectorAll("[data-internal-access]")
+      .forEach(function (panel) {
+        const editor = panel.closest("#application-editor");
+        const name = editor.querySelector('[name="name"]').value;
+        const port = Number(editor.querySelector('[name="port"]').value);
+        const namespace = panel.dataset.namespace;
+        const valid =
+          /^[a-z]([a-z0-9-]*[a-z0-9])?$/.test(name) &&
+          name.length <= 50 &&
+          Number.isInteger(port) &&
+          port > 0 &&
+          port <= 65535 &&
+          namespace;
+        const address = panel.querySelector("[data-internal-address]");
+        address.hidden = !valid;
+        address.textContent = valid
+          ? `http://${name}.${namespace}.svc:${port}`
+          : "";
+        panel.querySelector("[data-internal-title]").textContent =
+          port === 0 ? "No network service" : "Internal access only";
+        panel.querySelector("[data-internal-help]").textContent =
+          port === 0
+            ? "Set a container port to give this app an internal address."
+            : valid
+              ? "Available after deployment to apps in this cluster. Add a public route for HTTPS access."
+              : "Enter a valid application name and port to preview its internal address.";
+      });
+  }
+
+  renderInternalAddresses();
+
+  listen("borq:render", renderInternalAddresses);
+
+  listen("input", function (event) {
+    if (
+      event.target.closest("#application-editor") &&
+      (event.target.name === "name" || event.target.name === "port")
+    )
+      renderInternalAddresses();
+  });
+
+  listen("click", function (event) {
+    const add = event.target.closest("[data-environment-add]");
+    if (add) {
+      const editor = add.closest(".environment-editor");
+      const rows = editor.querySelector("[data-environment-rows]");
+      rows.append(
+        editor
+          .querySelector("[data-environment-template]")
+          .content.cloneNode(true),
+      );
+      rows.lastElementChild.querySelector("input").focus();
+      return;
+    }
+    const remove = event.target.closest("[data-environment-remove]");
+    if (remove) {
+      const row = remove.closest("[data-environment-row]");
+      const next = row.nextElementSibling || row.previousElementSibling;
+      const addButton = row
+        .closest(".environment-editor")
+        .querySelector("[data-environment-add]");
+      row.remove();
+      (next ? next.querySelector("input") : addButton).focus();
+    }
+  });
+
+  function showSelectedHistoryRange() {
+    const range =
+      document.querySelector("#application-metrics")?.dataset.selectedRange ||
+      "1h";
+    document
+      .querySelectorAll(".range-controls button")
+      .forEach(function (button) {
+        button.setAttribute("aria-pressed", String(button.value === range));
+      });
+  }
+
+  showSelectedHistoryRange();
+
+  listen("borq:render", showSelectedHistoryRange);
+
+  listen("change", function (event) {
+    if (
+      event.target.closest(".log-controls") &&
+      (event.target.name === "follow" || event.target.name === "range")
+    ) {
+      event.target.form.requestSubmit();
+    }
+  });
+
+  listen("click", function (event) {
+    if (!event.target.closest("[data-download-logs]")) return;
+    const output = document.querySelector("[data-log-output]");
+    if (!output) return;
+    const lines = Array.from(
+      output.querySelectorAll(".log-line, .log-event"),
+      function (line) {
+        return (
+          line.querySelector("time").dateTime +
+          " " +
+          (line.querySelector(".log-source")?.innerText || "event") +
+          " " +
+          (line.querySelector(
+            ".log-message, .log-event-copy, .log-event-message",
+          )?.textContent || "")
+        );
+      },
+    );
+    const address = URL.createObjectURL(
+      new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" }),
+    );
+    const link = document.createElement("a");
+    link.href = address;
+    link.download = "application-logs.txt";
+    link.click();
+    setTimeout(function () {
+      URL.revokeObjectURL(address);
+    }, 1000);
+  });
+
+  function updateLogDownload() {
+    const button = document.querySelector("[data-download-logs]");
+    if (button)
+      button.disabled = !document.querySelector(
+        "[data-log-output] .log-line, [data-log-output] .log-event",
+      );
+  }
+
+  updateLogDownload();
+
+  listen("borq:render", updateLogDownload);
+
+  const interactiveUsageCharts = new WeakSet();
+
+  function initializeUsageCharts() {
+    document.querySelectorAll("[data-usage-chart]").forEach(function (stage) {
+      if (interactiveUsageCharts.has(stage)) return;
+      interactiveUsageCharts.add(stage);
+      const svg = stage.querySelector("svg");
+      const points = Array.from(stage.querySelectorAll("[data-chart-point]"));
+      const events = Array.from(stage.querySelectorAll("[data-chart-event]"));
+      const tooltip = stage.querySelector(".chart-tooltip");
+      const cursor = stage.querySelector(".chart-cursor");
+      let pointIndex = Math.max(0, points.length - 1),
+        eventIndex = 0;
+      function show(point, markers, x) {
+        const nearby = markers.slice().sort(function (a, b) {
+          return (
+            Math.abs(Number(a.dataset.x) - x) -
+            Math.abs(Number(b.dataset.x) - x)
+          );
+        });
+        const lines = [];
+        if (point)
+          lines.push(
+            point.dataset.time,
+            point.dataset.value + " " + stage.dataset.unit,
+          );
+        else if (nearby.length) lines.push(nearby[0].dataset.time);
+        else lines.push("No measurement at this time");
+        const summaries = new Map();
+        nearby.forEach(function (marker) {
+          if (!summaries.has(marker.dataset.message))
+            summaries.set(marker.dataset.message, marker);
+        });
+        Array.from(summaries.values())
+          .slice(0, 3)
+          .forEach(function (marker) {
+            lines.push(marker.dataset.clock + " · " + marker.dataset.message);
+          });
+        if (summaries.size > 3)
+          lines.push("+" + (summaries.size - 3) + " more · see timeline below");
+        tooltip.replaceChildren(
+          ...lines.map(function (text) {
+            const row = document.createElement("div");
+            row.textContent = text;
+            return row;
+          }),
+        );
+        tooltip.hidden = false;
+        tooltip.style.left =
+          Math.max(
+            0,
+            Math.min(
+              stage.clientWidth - tooltip.offsetWidth,
+              (x / 600) * stage.clientWidth,
+            ),
+          ) + "px";
+        tooltip.style.transform = "none";
+        cursor.setAttribute("visibility", "visible");
+        cursor.querySelector("line").setAttribute("x1", x);
+        cursor.querySelector("line").setAttribute("x2", x);
+        const dot = cursor.querySelector("circle");
+        dot.style.display = point ? "" : "none";
+        if (point) {
+          dot.setAttribute("cx", point.getAttribute("cx"));
+          dot.setAttribute("cy", point.getAttribute("cy"));
+        }
+      }
+      function hide() {
+        tooltip.hidden = true;
+        cursor.setAttribute("visibility", "hidden");
+      }
+      svg.addEventListener("pointermove", function (event) {
+        const matrix = svg.getScreenCTM();
+        if (!matrix) return;
+        const x = Math.max(
+          0,
+          Math.min(
+            600,
+            new DOMPoint(event.clientX, event.clientY).matrixTransform(
+              matrix.inverse(),
+            ).x,
+          ),
+        );
+        const point = points.reduce(function (closest, item) {
+          return !closest ||
+            Math.abs(Number(item.getAttribute("cx")) - x) <
+              Math.abs(Number(closest.getAttribute("cx")) - x)
+            ? item
+            : closest;
+        }, null);
+        const available =
+          point &&
+          Math.abs(Number(point.getAttribute("cx")) - x) <=
+            Math.max(3, Number(stage.dataset.step) * 0.75);
+        show(
+          available ? point : null,
+          events.filter(function (marker) {
+            return Math.abs(Number(marker.dataset.x) - x) < 8;
+          }),
+          x,
+        );
+      });
+      svg.addEventListener("pointerleave", hide);
+      svg.addEventListener("blur", hide);
+      svg.addEventListener("focus", function () {
+        const point = points[pointIndex];
+        if (point) show(point, [], Number(point.getAttribute("cx")));
+        else if (events.length)
+          show(null, [events[0]], Number(events[0].dataset.x));
+      });
+      svg.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          hide();
+          return;
+        }
+        if (["ArrowUp", "ArrowDown"].includes(event.key) && events.length) {
+          event.preventDefault();
+          eventIndex = Math.max(
+            0,
+            Math.min(
+              events.length - 1,
+              eventIndex + (event.key === "ArrowUp" ? -1 : 1),
+            ),
+          );
+          show(
+            null,
+            [events[eventIndex]],
+            Number(events[eventIndex].dataset.x),
+          );
+        }
+        if (
+          !points.length ||
+          !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
+        )
+          return;
+        event.preventDefault();
+        pointIndex =
+          event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? points.length - 1
+              : Math.max(
+                  0,
+                  Math.min(
+                    points.length - 1,
+                    pointIndex + (event.key === "ArrowLeft" ? -1 : 1),
+                  ),
+                );
+        const point = points[pointIndex],
+          x = Number(point.getAttribute("cx"));
+        show(
+          point,
+          events.filter(function (marker) {
+            return Math.abs(Number(marker.dataset.x) - x) < 8;
+          }),
+          x,
+        );
+      });
+    });
+  }
+
+  initializeUsageCharts();
+
+  listen("borq:render", initializeUsageCharts);
+
+  listen("borq:render", initializeUsageCharts);
+
+  function revealSelectedApplicationTab() {
+    document
+      .querySelectorAll(".application-tabs")
+      .forEach(function (navigation) {
+        const selected = navigation.querySelector('[aria-current="page"]');
+        if (!selected) return;
+        const container = navigation.getBoundingClientRect(),
+          tab = selected.getBoundingClientRect();
+        if (tab.left < container.left)
+          navigation.scrollLeft += tab.left - container.left;
+        else if (tab.right > container.right)
+          navigation.scrollLeft += tab.right - container.right;
+      });
+  }
+
+  revealSelectedApplicationTab();
+
+  listen("borq:render", revealSelectedApplicationTab);
+
+  listen(
+    "deployment-complete",
+    function (event) {
+      if (event.target.closest(".inline-operation")) event.stopPropagation();
+    },
+    true,
+  );
+
+  const customChartEditors = new WeakSet();
+
+  function initializeCustomChartEditors() {
+    document
+      .querySelectorAll("[data-custom-chart-editor]")
+      .forEach(function (form) {
+        if (customChartEditors.has(form)) return;
+        customChartEditors.add(form);
+        const repository = form.elements.namedItem("repository");
+        const status = form.querySelector("#custom-chart-status");
+        const indicator = form.querySelector("[data-repository-indicator]");
+        const versionIndicator = form.querySelector("[data-version-indicator]");
+        const versionStatus = form.querySelector(
+          "#custom-chart-version-status",
+        );
+        const defaults = form.querySelector("[data-custom-chart-defaults]");
+        const defaultsPopout = form.querySelector(
+          "#custom-chart-defaults-popout",
+        );
+        const defaultsContent = form.querySelector("#custom-chart-defaults");
+        const save = form.querySelector("[data-custom-chart-save]");
+        let charts = [],
+          pending,
+          versionsPending,
+          timer,
+          requestedRepository;
+        const field = (name) => form.elements.namedItem(name);
+        function focusDefaults() {
+          if (
+            defaultsPopout.matches(":popover-open") &&
+            !defaultsPopout.contains(document.activeElement)
+          )
+            defaultsPopout
+              .querySelector("[data-focus]")
+              .focus({ preventScroll: true });
+        }
+        defaultsPopout.addEventListener("toggle", focusDefaults);
+        function clearDefaults() {
+          if (defaultsPopout.matches(":popover-open"))
+            defaultsPopout.hidePopover();
+          defaultsContent.replaceChildren();
+        }
+
+        function showIndicator(element, state) {
+          const paths = {
+            loading:
+              "M20 7v5h-5M4 17v-5h5M6.1 8a7 7 0 0 1 11.5-2L20 9M4 15l2.4 3A7 7 0 0 0 17.9 16",
+            loaded: "m5 12 4 4L19 6",
+            failed: "m12 3 10 18H2L12 3ZM12 9v4m0 4h.01",
+          };
+          element.dataset.state = state;
+          element.hidden = !paths[state];
+          element.querySelector("path").setAttribute("d", paths[state] || "");
+        }
+
+        function showRepositoryStatus(state, message) {
+          showIndicator(indicator, state);
+          status.textContent = message;
+        }
+
+        function showVersionStatus(state, message) {
+          showIndicator(versionIndicator, state);
+          versionStatus.textContent = message;
+        }
+
+        function updateActions() {
+          const ready =
+            !pending &&
+            !versionsPending &&
+            repository.value.trim() &&
+            field("chart").value.trim() &&
+            field("version").value.trim();
+          defaults.disabled = !ready;
+          save.disabled = !ready;
+        }
+
+        function input(name, value) {
+          const control = document.createElement("input");
+          control.className = "input";
+          control.name = name;
+          control.required = true;
+          control.autocomplete = "off";
+          control.value = value;
+          control.placeholder = name === "chart" ? "redis" : "1.2.3";
+          field(name).replaceWith(control);
+        }
+
+        function select(name, values, value) {
+          const control = document.createElement("select");
+          control.className = "select";
+          control.name = name;
+          control.required = true;
+          control.add(
+            new Option(
+              "Choose a " + (name === "chart" ? "chart" : "version"),
+              "",
+            ),
+          );
+          values.forEach((item) => control.add(new Option(item, item)));
+          if (value && !values.includes(value))
+            control.add(new Option(value + " (saved selection)", value));
+          control.value = value;
+          field(name).replaceWith(control);
+        }
+
+        async function chooseVersions(value = "") {
+          versionsPending?.abort();
+          versionsPending = undefined;
+          clearDefaults();
+          select("version", [], "");
+          const chart = field("chart").value;
+          if (!chart) {
+            field("version").disabled = true;
+            showVersionStatus("idle", "Choose a chart to load versions.");
+            updateActions();
+            return;
+          }
+          const controller = new AbortController();
+          versionsPending = controller;
+          field("version").disabled = true;
+          showVersionStatus("loading", "Loading versions…");
+          updateActions();
+          try {
+            const parameters = new URLSearchParams({
+              repository: repository.value.trim(),
+              chart,
+            });
+            const response = await fetch(
+              "/api/ui/custom-charts/versions?" + parameters,
+              { signal: controller.signal, cache: "no-store" },
+            );
+            const versions = await response.json();
+            if (!response.ok)
+              throw new Error(versions.message || "Could not load versions.");
+            if (controller.signal.aborted) return;
+            if (!versions.length)
+              throw new Error("No versions were found for this chart.");
+            select("version", versions, value);
+            showVersionStatus(
+              "loaded",
+              versions.length +
+                (versions.length === 1
+                  ? " version loaded."
+                  : " versions loaded."),
+            );
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            input("version", value);
+            showVersionStatus(
+              "failed",
+              error.message +
+                " Enter an exact version or select the chart again to retry.",
+            );
+          } finally {
+            if (versionsPending === controller) {
+              versionsPending = undefined;
+              field("version").disabled = false;
+              updateActions();
+            }
+          }
+        }
+
+        function reset() {
+          clearTimeout(timer);
+          pending?.abort();
+          pending = undefined;
+          versionsPending?.abort();
+          versionsPending = undefined;
+          form.removeAttribute("aria-busy");
+          charts = [];
+          select("chart", [], "");
+          select("version", [], "");
+          field("version").disabled = true;
+          showVersionStatus("idle", "Choose a chart to load versions.");
+          clearDefaults();
+          updateActions();
+        }
+
+        async function loadCharts(preserve) {
+          clearTimeout(timer);
+          const chart = preserve ? field("chart").value : "";
+          const version = preserve ? field("version").value : "";
+          reset();
+          const address = repository.value.trim();
+          requestedRepository = address;
+          if (address.startsWith("oci://")) {
+            input("chart", chart);
+            input("version", version);
+            showVersionStatus("manual", "Enter an exact chart version.");
+            showRepositoryStatus(
+              "manual",
+              "Chart listing is unavailable for OCI repositories. Enter the published chart name and exact version.",
+            );
+            updateActions();
+            return;
+          }
+          if (!address) {
+            showRepositoryStatus(
+              "idle",
+              "Enter a repository to choose a chart and version.",
+            );
+            return;
+          }
+          const controller = new AbortController();
+          pending = controller;
+          showRepositoryStatus("loading", "Loading charts…");
+          form.setAttribute("aria-busy", "true");
+          updateActions();
+          try {
+            const response = await fetch(
+              "/api/ui/custom-charts/repository?" +
+                new URLSearchParams({ repository: address }),
+              { signal: controller.signal, cache: "no-store" },
+            );
+            const result = await response.json();
+            if (!response.ok)
+              throw new Error(result.message || "Could not load charts.");
+            if (controller.signal.aborted) return;
+            if (!result.length)
+              throw new Error(
+                "No installable charts were found in this repository.",
+              );
+            charts = result;
+            select(
+              "chart",
+              charts.map((chart) => chart.name),
+              chart,
+            );
+            chooseVersions(version);
+            showRepositoryStatus(
+              "loaded",
+              charts.length +
+                (charts.length === 1
+                  ? " chart loaded. Choose a version after selecting the chart."
+                  : " charts loaded. Choose a chart, then a version."),
+            );
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            input("chart", chart);
+            input("version", version);
+            showVersionStatus("manual", "Enter an exact chart version.");
+            showRepositoryStatus(
+              "failed",
+              error.message +
+                " Enter the chart and version manually, or edit the repository URL to retry.",
+            );
+          } finally {
+            if (pending === controller) {
+              pending = undefined;
+              form.removeAttribute("aria-busy");
+              updateActions();
+            }
+          }
+        }
+
+        repository.addEventListener("input", function () {
+          reset();
+          requestedRepository = undefined;
+          if (!repository.value.trim()) {
+            showRepositoryStatus(
+              "idle",
+              "Enter a repository to choose a chart and version.",
+            );
+            return;
+          }
+          showRepositoryStatus("loading", "Loading charts…");
+          timer = setTimeout(() => loadCharts(false), 500);
+        });
+        repository.addEventListener("change", function () {
+          if (requestedRepository !== repository.value.trim())
+            loadCharts(false);
+        });
+        form.addEventListener("change", function (event) {
+          if (
+            event.target.name === "chart" &&
+            event.target.tagName === "SELECT"
+          )
+            chooseVersions();
+          if (event.target.name === "chart" || event.target.name === "version")
+            clearDefaults();
+          updateActions();
+        });
+        form.addEventListener("input", function (event) {
+          if (event.target.name === "chart" || event.target.name === "version")
+            clearDefaults();
+          updateActions();
+        });
+
+        loadCharts(true);
+      });
+  }
+
+  initializeCustomChartEditors();
+
+  listen("borq:render", initializeCustomChartEditors);
+
+  listen("click", function (event) {
+    const selected = event.target.closest(".breadcrumb-dropdown");
+    document
+      .querySelectorAll(".breadcrumb-dropdown[open]")
+      .forEach(function (menu) {
+        if (menu !== selected || event.target.closest("a")) menu.open = false;
+      });
+  });
+
+  listen("keydown", function (event) {
+    if (event.key !== "Escape") return;
+    const menu = document.querySelector(".breadcrumb-dropdown[open]");
+    if (!menu) return;
+    menu.open = false;
+    menu.querySelector("summary").focus();
+    event.preventDefault();
+  });
+
+  function openSetupDialog() {
+    const dialog = document.querySelector("dialog[data-auto-open]");
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+      dialog
+        .querySelector("[data-focus], input:not([type=hidden]), textarea")
+        ?.focus();
+      dialog.removeAttribute("data-auto-open");
+    }
+  }
+
+  openSetupDialog();
+
+  listen("borq:render", openSetupDialog);
+
+  listen("click", function (event) {
+    const opener = event.target.closest("[data-dialog-open]");
+    if (opener) {
+      document
+        .querySelectorAll(".breadcrumb-dropdown[open]")
+        .forEach(function (menu) {
+          menu.open = false;
+        });
+      const dialog = document.getElementById(opener.dataset.dialogOpen);
+      dialog?.showModal();
+      dialog
+        ?.querySelector("[data-focus], input:not([type=hidden]), textarea")
+        ?.focus();
+    }
+    if (event.target.closest("[data-dialog-close]"))
+      event.target.closest("dialog").close();
+  });
+
+  function lowercasePostgresName(event) {
+    const input = event.target;
+    if (
+      event.isComposing ||
+      !input.matches("[data-postgres-name]") ||
+      input.closest(".postgres-editor")
+    )
+      return;
+    const value = input.value.replace(/[A-Z]/g, function (character) {
+      return character.toLowerCase();
+    });
+    if (value === input.value) return;
+    const start = input.selectionStart,
+      end = input.selectionEnd,
+      direction = input.selectionDirection;
+    input.value = value;
+    input.setSelectionRange(start, end, direction);
+  }
+
+  listen("input", lowercasePostgresName);
+
+  listen("compositionend", lowercasePostgresName);
+
+  listen("change", function (event) {
+    if (event.target.matches("select[data-settings-navigation]")) {
+      const link = document.createElement("a");
+      link.href = event.target.value;
+      document.body.append(link);
+      link.click();
+      link.remove();
+    }
+  });
+  return () => {
+    for (const unsubscribe of subscriptions) unsubscribe();
+  };
+}

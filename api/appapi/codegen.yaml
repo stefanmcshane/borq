@@ -1,0 +1,12 @@
+package: appapi
+compatibility:
+  allow-unexported-struct-field-names: true
+generate:
+  models: true
+  client: true
+  std-http-server: true
+  embedded-spec: true
+output: generated.go
+output-options:
+  name-normalizer: ToCamelCaseWithInitialisms
+  skip-prune: true

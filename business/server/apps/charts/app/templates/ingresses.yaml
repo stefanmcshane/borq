@@ -1,0 +1,100 @@
+{{- range .Values.apps }}
+{{- $app := . }}
+{{- range .ingresses }}
+{{- $name := printf "%s-%s" $app.name .name }}
+{{- if not .tunnel }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .tlsSecret | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+spec:
+  secretName: {{ .tlsSecret | quote }}
+  dnsNames: [{{ .host | quote }}]
+  issuerRef:
+    name: {{ $.Values.certificateIssuer | quote }}
+    kind: ClusterIssuer
+  secretTemplate:
+    {{- toYaml $app.resourceMetadata | nindent 4 }}
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+spec:
+  gatewayClassName: borq-traefik
+  listeners:
+    {{- if .tunnel }}
+    - name: web
+      hostname: {{ .host | quote }}
+      port: 8000
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- else }}
+    - name: websecure
+      hostname: {{ .host | quote }}
+      port: 8443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - name: {{ .tlsSecret | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  annotations:
+    {{- toYaml $app.resourceMetadata.annotations | nindent 4 }}
+    external-dns.kubernetes.io/hostname: {{ .host | quote }}
+  labels:
+    {{- toYaml $app.resourceMetadata.labels | nindent 4 }}
+    app.kubernetes.io/name: {{ $app.name | quote }}
+    app.kubernetes.io/managed-by: borq
+    borq.run/target-id: {{ $.Values.targetID | quote }}
+spec:
+  parentRefs:
+    - name: {{ $name | quote }}
+      sectionName: {{ if .tunnel }}web{{ else }}websecure{{ end }}
+  hostnames: [{{ .host | quote }}]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .path | quote }}
+      {{- if .tunnel }}
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+      {{- end }}
+      backendRefs:
+        - name: {{ $app.name | quote }}
+          port: {{ $app.port }}
+{{- end }}
+{{- end }}

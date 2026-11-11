@@ -1,0 +1,270 @@
+package platform
+
+import (
+	"context"
+	"encoding/json"
+	"maps"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/matryer/is"
+	"github.com/stefanmcshane/borq/foundations/kubernetes"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes/fake"
+)
+
+// TestCatalogDependencyOrder verifies stable display and upgrade order, required
+// install dependencies, and production includes persistent RustFS without moving Loki storage.
+func TestCatalogDependencyOrder(t *testing.T) {
+	is := is.New(t)
+	dev, err := normalizeSettings(Settings{})
+	is.NoErr(err)
+	is.Equal(dev.Namespace, "borq-mgmt")
+	is.Equal(dev.StorageClass, "local-path")
+	is.Equal(componentNames(managementCatalog(dev, false)), "openbao,external-secrets,rustfs,prometheus,loki,cert-manager,traefik")
+	is.Equal(componentNames(managementCatalog(dev, true)), "external-secrets,openbao,rustfs,loki,prometheus,cert-manager,traefik")
+	prod, err := normalizeSettings(Settings{Profile: "prod"})
+	is.NoErr(err)
+	is.Equal(componentNames(managementCatalog(prod, false)), "openbao,external-secrets,rustfs,prometheus,loki,cert-manager,traefik")
+	external := prod
+	external.S3 = S3Settings{Bucket: "explicit-external"}
+	is.Equal(componentNames(managementCatalog(external, false)), "openbao,external-secrets,prometheus,loki,cert-manager,traefik")
+	is.Equal(componentNames(targetCatalog(false)), "cert-manager,external-secrets,traefik,alloy,snapshot-controller")
+	is.Equal(componentNames(targetCatalog(true)), "cert-manager,external-secrets,alloy,traefik,snapshot-controller")
+	for _, catalog := range [][]component{managementCatalog(dev, false), managementCatalog(dev, true), managementCatalog(prod, false), managementCatalog(prod, true), targetCatalog(false), targetCatalog(true)} {
+		seen := map[string]bool{}
+		for _, definition := range catalog {
+			is.True(!seen[definition.Name])
+			for _, dependency := range definition.DependsOn {
+				is.True(seen[dependency]) // Every catalog is acyclic in both install and upgrade order.
+			}
+			seen[definition.Name] = true
+		}
+	}
+	dependencies := map[string][]string{}
+	for _, definition := range managementCatalog(dev, false) {
+		dependencies[definition.Name] = definition.DependsOn
+	}
+	is.Equal(dependencies["rustfs"], []string{"openbao", "external-secrets"})
+	is.Equal(dependencies["loki"], []string{"rustfs"})
+	for _, definition := range managementCatalog(prod, false) {
+		if definition.Name == "rustfs" {
+			is.Equal(definition.DependsOn, []string{"openbao", "external-secrets"})
+		} else {
+			is.Equal(len(definition.DependsOn), 0)
+		}
+	}
+	is.Equal(targetCatalog(false)[3].DependsOn, []string{"external-secrets"})
+}
+
+// TestCatalogValuesResolveWithoutSecrets verifies every pinned component has
+// valid Borq-owned values and telemetry credentials stay in Secret references.
+func TestCatalogValuesResolveWithoutSecrets(t *testing.T) {
+	is := is.New(t)
+	for _, profile := range []string{"dev", "production"} {
+		settings, err := normalizeSettings(Settings{ClusterName: "harbor", Profile: profile, StorageClass: "borq-local", LokiURL: "https://management.test/loki/api/v1/push", PrometheusURL: "https://management.test/api/v1/write"})
+		is.NoErr(err)
+		definitions := append(managementCatalog(settings, false), targetCatalog(false)...)
+		for _, definition := range definitions {
+			values, err := renderComponentValues(definition, valuesInput{Settings: settings, ClusterID: "cluster-1"})
+			is.NoErr(err)
+			is.True(len(values) > 0)
+			is.True(definition.Version != "")
+			if definition.Name == "rustfs" {
+				job := values["extraManifests"].([]any)[0].(map[string]any)
+				pod := job["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+				command := pod["containers"].([]any)[0].(map[string]any)["args"].([]any)[0].(string)
+				is.True(strings.Contains(command, `head-bucket --bucket "borq-harbor-data"`))
+				is.True(strings.Contains(command, `create-bucket --bucket "borq-harbor-data"`))
+			}
+			if definition.Name == "loki" && profile == "dev" {
+				buckets := values["loki"].(map[string]any)["storage"].(map[string]any)["bucketNames"].(map[string]any)
+				for _, key := range []string{"chunks", "ruler", "admin"} {
+					is.Equal(buckets[key], "borq-harbor-data")
+				}
+			}
+			if definition.Name == "openbao" {
+
+				server := values["server"].(map[string]any)
+				is.Equal(server["dev"].(map[string]any)["enabled"], false)
+				is.Equal(server["dataStorage"].(map[string]any)["enabled"], true)
+				is.Equal(server["dataStorage"].(map[string]any)["storageClass"], "borq-local")
+				standalone := server["standalone"].(map[string]any)
+				is.Equal(standalone["enabled"], true)
+				is.True(strings.Contains(standalone["config"].(string), `storage "raft"`))
+				service := server["service"].(map[string]any)
+				is.Equal(service["type"], "NodePort")
+				is.Equal(service["nodePort"], float64(30200))
+			}
+		}
+		alloy, err := renderComponentValues(targetCatalog(false)[3], valuesInput{Settings: settings, ClusterID: "cluster-1"})
+		is.NoErr(err)
+		content := alloy["alloy"].(map[string]any)["configMap"].(map[string]any)["content"].(string)
+		is.True(strings.Contains(content, `bearer_token_file = "/var/run/borq-telemetry/TELEMETRY_TOKEN"`))
+		is.True(!strings.Contains(content, `sys.env("TELEMETRY_TOKEN")`))
+		volumes := alloy["controller"].(map[string]any)["volumes"].(map[string]any)["extra"].([]any)
+		is.Equal(volumes[0].(map[string]any)["secret"].(map[string]any)["secretName"], "borq-telemetry")
+		is.True(strings.Contains(content, `borq_cluster = "cluster-1"`))
+		is.True(strings.Contains(content, `prometheus.scrape "cadvisor"`))
+		is.True(strings.Contains(content, `loki.source.kubernetes_events "lifecycle"`))
+		is.True(strings.Contains(content, `target_label = "borq_revision"`))
+		is.True(strings.Contains(content, `target_label = "image"`))
+	}
+}
+
+// TestPodHistoryChartScope verifies development renders a scheduled worker with
+// namespace-only pod permissions, while production retains its existing policy.
+func TestPodHistoryChartScope(t *testing.T) {
+	is := is.New(t)
+	for _, profile := range []string{"dev", "production"} {
+		values, err := renderComponentValues(component{Name: "external-secrets", Values: "external-secrets.yaml"}, valuesInput{Settings: Settings{Profile: profile, Namespace: "custom-platform"}})
+		is.NoErr(err)
+		objects, present := values["extraObjects"].([]any)
+		is.Equal(present, profile == "dev")
+		if !present {
+			continue
+		}
+		is.Equal(len(objects), 5)
+		byKind := map[string]map[string]any{}
+		for _, entry := range objects {
+			object := entry.(map[string]any)
+			byKind[object["kind"].(string)] = object
+		}
+		role := byKind["Role"]
+		is.True(role != nil)
+		rules := role["rules"].([]any)
+		pods := rules[0].(map[string]any)
+		is.Equal(pods["resources"], []any{"pods"})
+		is.Equal(pods["verbs"], []any{"list", "delete"})
+		for _, entry := range rules[1:] {
+			is.Equal(entry.(map[string]any)["verbs"], []any{"get"})
+		}
+		subject := byKind["RoleBinding"]["subjects"].([]any)[0].(map[string]any)
+		is.Equal(subject["namespace"], "custom-platform")
+		spec := byKind["CronJob"]["spec"].(map[string]any)
+		is.Equal(spec["schedule"], "*/5 * * * *")
+		is.Equal(spec["concurrencyPolicy"], "Forbid")
+		job := spec["jobTemplate"].(map[string]any)["spec"].(map[string]any)
+		pod := job["template"].(map[string]any)["spec"].(map[string]any)
+		is.Equal(pod["serviceAccountName"], subject["name"])
+		container := pod["containers"].([]any)[0].(map[string]any)
+		retention := container["env"].([]any)[1].(map[string]any)
+		is.Equal(retention["name"], "KEEP_FAILED_PODS")
+		is.Equal(retention["value"], "5")
+		is.True(byKind["ConfigMap"]["data"].(map[string]any)["cleanup.py"].(string) != "")
+	}
+}
+
+// TestSecretBindingsUsePublicVaultAndValuesProperty verifies copyable Kubernetes
+// bindings use the management endpoint and unwrap Borq's KV document.
+func TestSecretBindingsUsePublicVaultAndValuesProperty(t *testing.T) {
+	is := is.New(t)
+	store := secretStore("borq-openbao", "borq", "https://vault.test", "borq-target", "borq-openbao")
+	vault := store.Object["spec"].(map[string]any)["provider"].(map[string]any)["vault"].(map[string]any)
+	is.Equal(vault["server"], "https://vault.test")
+	is.Equal(vault["path"], "borq-target")
+	secret := externalSecret("borq-telemetry", "borq", "borq-openbao", "borq/platform/telemetry")
+	secret = secret.DeepCopy()
+	labels, found, err := unstructured.NestedStringMap(secret.Object, "spec", "target", "template", "metadata", "labels")
+	is.NoErr(err)
+	is.True(found)
+	is.Equal(labels["app.kubernetes.io/managed-by"], "borq")
+	extract := secret.Object["spec"].(map[string]any)["dataFrom"].([]any)[0].(map[string]any)["extract"].(map[string]any)
+	is.Equal(extract["property"], "values")
+	is.Equal(extract["key"], "borq/platform/telemetry")
+}
+
+// TestBootstrapAdminCredentialIsStable verifies repeated bootstrap preserves
+// the original token and production recovery material instead of rotating them.
+func TestBootstrapAdminCredentialIsStable(t *testing.T) {
+	is := is.New(t)
+	client := fake.NewClientset()
+	connection := kubernetes.NewConnectionForTest(client)
+	ctx := context.Background()
+	is.NoErr(ensureAdminSecret(ctx, connection, "borq"))
+	first, err := connection.Secrets().Get(ctx, "borq", "borq-openbao-admin")
+	is.NoErr(err)
+	is.Equal(len(first.Data["token"]), 64)
+	is.True(first.Data["sealKey"] != "")
+	is.Equal(first.Data["bootstrap.hcl"], vaultBootstrapConfig)
+	is.NoErr(ensureAdminSecret(ctx, connection, "borq"))
+	second, err := connection.Secrets().Get(ctx, "borq", "borq-openbao-admin")
+	is.NoErr(err)
+	is.True(maps.Equal(first.Data, second.Data))
+}
+
+// TestComponentSecretGateRequiresExpectedKeys verifies components cannot start
+// while ESO's Secret is absent or lacks a required credential.
+func TestComponentSecretGateRequiresExpectedKeys(t *testing.T) {
+	is := is.New(t)
+	client := fake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ready", Namespace: "borq"}, Data: map[string][]byte{"TOKEN": []byte("value")}})
+	connection := kubernetes.NewConnectionForTest(client)
+	is.NoErr(waitForSecret(context.Background(), connection, "borq", "ready", []string{"TOKEN"}, time.Second))
+	err := waitForSecret(context.Background(), connection, "borq", "ready", []string{"MISSING"}, time.Millisecond)
+	is.True(err != nil)
+	err = waitForSecret(context.Background(), connection, "borq", "absent", []string{"TOKEN"}, time.Millisecond)
+	is.True(err != nil)
+}
+
+// TestManagementProfileMigrationGuard verifies storage-changing profile switches
+// are rejected before any write, including explicit catalog upgrade requests.
+func TestManagementProfileMigrationGuard(t *testing.T) {
+	is := is.New(t)
+	encoded, err := json.Marshal(Result{Profile: "dev", Namespace: "borq"})
+	is.NoErr(err)
+	client := fake.NewClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "borq-platform-management", Namespace: "borq"}, Data: map[string]string{"state.json": string(encoded)}})
+	connection := kubernetes.NewConnectionForTest(client)
+	ctx := context.Background()
+	is.NoErr(checkManagementProfile(ctx, connection, Settings{Profile: "dev", Namespace: "borq"}))
+	err = checkManagementProfile(ctx, connection, Settings{Profile: "production", Namespace: "borq"})
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), "data migration"))
+	for _, action := range client.Actions() {
+		is.Equal(action.GetVerb(), "get")
+	}
+	is.NoErr(checkManagementProfile(ctx, connection, Settings{Profile: "production", Namespace: "fresh"}))
+}
+
+// TestSharedControllerRecoveryEvidence limits startup recovery to interrupted
+// shared releases on this physical cluster, including older target state records.
+func TestSharedControllerRecoveryEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		scope     string
+		namespace string
+		state     ComponentState
+		expected  []string
+	}{
+		{"management install", "management", ManagementNamespace, ComponentState{Name: "traefik", Namespace: SystemNamespace, Status: "installing"}, []string{"traefik"}},
+		{"target upgrade", "target", SystemNamespace, ComponentState{Name: "cert-manager", Status: "installing"}, []string{"cert-manager"}},
+		{"pending retry", "management", ManagementNamespace, ComponentState{Name: "traefik", Namespace: SystemNamespace, Status: "pending-upgrade"}, []string{"traefik"}},
+		{"completed run", "target", SystemNamespace, ComponentState{Name: "traefik", Status: "deployed"}, nil},
+		{"not started", "target", SystemNamespace, ComponentState{Name: "traefik", Status: "pending"}, nil},
+		{"different namespace", "management", ManagementNamespace, ComponentState{Name: "traefik", Status: "installing"}, nil},
+		{"unrelated controller", "target", SystemNamespace, ComponentState{Name: "external-secrets", Status: "installing"}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert := is.New(t)
+			encoded, err := json.Marshal(Result{Namespace: test.namespace, Components: []ComponentState{test.state}})
+			assert.NoErr(err)
+			client := fake.NewClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "borq-platform-" + test.scope, Namespace: test.namespace}, Data: map[string]string{"state.json": string(encoded)}})
+			recovery, err := sharedRecoveryComponents(context.Background(), kubernetes.NewConnectionForTest(client), ManagementNamespace)
+			assert.NoErr(err)
+			assert.Equal(recovery, test.expected)
+			for _, action := range client.Actions() {
+				assert.Equal(action.GetVerb(), "get")
+			}
+		})
+	}
+}
+
+func componentNames(components []component) string {
+	names := make([]string, 0, len(components))
+	for _, definition := range components {
+		names = append(names, definition.Name)
+	}
+	return strings.Join(names, ",")
+}

@@ -1,0 +1,14 @@
+// Merge these entries into your existing tailnet policy.
+{
+  "tagOwners": {
+    "tag:borq-management-operator": ["autogroup:admin"],
+    "tag:borq-admin": ["tag:borq-management-operator"]
+  },
+  "grants": [
+    {
+      "src": ["autogroup:admin", "tag:borq-admin"],
+      "dst": ["tag:borq-admin"],
+      "ip": ["tcp:443"]
+    }
+  ]
+}

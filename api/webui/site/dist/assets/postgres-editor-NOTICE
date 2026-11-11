@@ -1,0 +1,5 @@
+name-generator.ts adapts the adjectives, colors, animals and nature dictionaries from
+Joyful, https://github.com/KayleeWilliams/joyful, commit
+072c4154f5ebb9b8131c0d99809d4d456526dfb2, src/lib/*.json.
+Only whole lowercase alphabetic words are included. See joyful-LICENSE (MIT).
+The local generator supports a fixed hyphen and maximum total character length.

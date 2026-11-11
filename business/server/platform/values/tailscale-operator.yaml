@@ -1,0 +1,27 @@
+# OAuth material is precreated in a Secret and never enters Helm release values.
+oauthSecretVolume:
+  secret:
+    secretName: operator-oauth
+operatorConfig:
+  defaultTags: [{{ quote .NetworkOperatorTag }}]
+  hostname: borq-operator
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  image:
+    tag: v1.104.2
+    pullPolicy: IfNotPresent
+proxyConfig:
+  defaultTags: {{ quote .Network.Tailscale.ProxyTag }}
+  defaultProxyClass: borq
+  image:
+    tag: v1.104.2
+ingressClass:
+  name: tailscale
+  enabled: true
+apiServerProxyConfig:
+  mode: "false"
+  allowImpersonation: "false"
