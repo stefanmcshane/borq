@@ -9,6 +9,8 @@ borq
 # Frontend dependencies stay local; static output is part of the Go source bundle.
 api/webui/site/node_modules/
 api/webui/site/.astro/
+zarf/install-worker/node_modules/
+zarf/install-worker/.wrangler/
 !api/webui/site/dist/
 !api/webui/site/dist/**
 borq-*-admin-*.token

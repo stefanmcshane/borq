@@ -33,6 +33,11 @@ test-dev-build: install-ui ## Verify build locking, failed UI publication, and A
 test-unit: build-ui check-ui test-ui-unit ## Run unit tests.
 	$(GO_TEST_ENV) $(BORQ_GO) test ./... -count=1
 	$(MAKE) test-pod-history
+	$(MAKE) test-install-worker
+
+.PHONY: test-install-worker
+test-install-worker: ## Verify installer version selection and real shell download/install behavior.
+	node --max-old-space-size=256 --test --test-concurrency=1 --test-timeout=15000 zarf/install-worker/test/*.test.mjs
 
 test-pod-history: ## Verify per-release failed pod retention (requires Python 3).
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s business/server/platform/testdata/pod_history -p '*_test.py'
