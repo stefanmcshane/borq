@@ -35,7 +35,6 @@ jobs:
       - name: Check Worker build
         run: npm run build --prefix zarf/install-worker
       - name: Deploy installer Worker
-        id: deploy
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -47,10 +46,6 @@ jobs:
             echo "Skipping deployment because newer installer changes are on main."
             exit 0
           fi
-          npm run deploy --prefix zarf/install-worker
-      - name: Diagnose Cloudflare access
-        if: failure() && steps.deploy.outcome == 'failure'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node zarf/install-worker/diagnose-access.mjs
+          version_tag="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          npm exec --prefix zarf/install-worker -- wrangler versions upload --cwd zarf/install-worker --tag "$version_tag"
+          npm exec --prefix zarf/install-worker -- wrangler versions deploy --cwd zarf/install-worker --version-tag "$version_tag@100" --yes
