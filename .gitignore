@@ -1,4 +1,5 @@
 .gocache/
+/.audit/
 dist
 .release
 tmp/
